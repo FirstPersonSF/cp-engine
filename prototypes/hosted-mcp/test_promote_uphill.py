@@ -251,8 +251,8 @@ def test_decorated_verbs_keep_their_real_parameters(server):
         "project_code", "description", "owner_email", "due_date", "direction",
         "source_meeting_id",
     ]
-    tool = server.mcp_server._tool_manager.get_tool("pull_element_from_project")
-    assert "to_code" in tool.parameters["properties"]
+    tool = server.mcp_server._tool_manager.get_tool("propose_spine_step")
+    assert "title" in tool.parameters["properties"]
 
 
 def test_the_instructions_state_the_rule(server):

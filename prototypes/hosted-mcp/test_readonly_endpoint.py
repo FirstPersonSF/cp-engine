@@ -393,11 +393,12 @@ def test_every_tool_call_writes_an_audit_row(server, harness, endpoint):
 def test_a_tool_that_audits_itself_writes_one_row_not_two(server, harness):
     """The fallback fires only when the tool did not audit."""
     monkey_rows_before = len(_audit_rows(harness))
-    tool = server.mcp_server._tool_manager.get_tool("wrap_bundle")
-    # wrap_bundle audits on its own success path; with the recording client
-    # its project lookup misses, so what matters is the COUNT, not the path.
-    _call(server.mcp_server, "wrap_bundle", _dummy_args(tool))
+    tool = server.mcp_server._tool_manager.get_tool("commitments_sweep")
+    # commitments_sweep audits on its own path (wrap_bundle did, until step 5a
+    # retired it): exactly one row, and its own rather than the fallback.
+    _call(server.mcp_server, "commitments_sweep", _dummy_args(tool))
     assert len(_audit_rows(harness)) - monkey_rows_before == 1
+    assert "fallback" not in json.dumps(_audit_rows(harness)[-1])
 
 
 def test_fallback_row_records_the_outcome_never_the_message(server, harness):

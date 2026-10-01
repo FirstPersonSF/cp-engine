@@ -29,28 +29,20 @@ Cases:
   L. semantic_search       -> vector hits (or a clean "unavailable")
   N. create_commitment     -> a REAL commitments row (insert-only write)
   O. create_spine_element  -> a REAL spine_substance row (v1, live, authored)
-  P. create_note           -> the notes author_id FK/policy collision, diagnosed
   T. create_spine_relation -> a typed edge; re-create returns already:true
   T2. create_spine_relation-> a kind outside the closed vocabulary REJECTED
-  U. add_spine_step        -> a LIVE human step (not auto/proposed)
-  U2. add_spine_step       -> a status outside done|active|upcoming REJECTED
   V. propose_spine_step    -> an auto/proposed step; re-propose is a no-op
   W. set_spine_element     -> important flips on the LIVE row; superseded row untouched
   W2. (direct PostgREST)   -> UPDATE of `body` DENIED under the user JWT (P0130)
   X. resolve_commitment    -> closes it; re-resolving is clearly refused
   X2. resolve_commitment   -> an outcome outside done|dropped REJECTED
-  Y. set/reorder/remove    -> step round-trip; positions stay 1..N; partial order refused
-  Y2. set_spine_step       -> a step_id from another element is out of scope
   Z. add_element_source    -> a real ingested source lands on EVERY version
   Z2. add_element_source   -> re-attaching is already:true, no duplicate entry
   Z3. add_element_source   -> an unknown source_title is a note, not a guess
   Z4. remove_element_source-> detaches everywhere; re-detach is a note
   Z5. add_element_provenance   -> an element link with retired:false, on every version
   Z6. add_element_provenance   -> self-link and unknown source_key both refused
-  Z7. remove_element_provenance-> detaches everywhere; re-detach is a note
-  AH. promote_spine_transcript -> a foreign/unknown recording_id is REFUSED
   AH2. the mc-2 delegation hop accepts the caller's JWT (proven, nothing promoted)
-  AI. promote_spine_transcript -> a meeting uuid is scope-checked, not forwarded raw
   AJ. set_spine_element        -> important false->true returns a `promotion` dict
   AK. set_spine_element        -> re-setting important skips promotion (no re-fire)
   Q. get_project_state     -> ibx-5153's Exec Summary + current sprint file
@@ -308,35 +300,27 @@ def case_e_tools_list(token: str) -> None:
         "semantic_search",
         "whoami",
         # Package A — writes (#139; add_spine_version via the #142 guarded fn)
-        "create_note",
         "create_commitment",
         "create_spine_element",
         "add_spine_version",
         "add_spine_document",
         # #143 batch 1 — relations + steps
         "create_spine_relation",
-        "add_spine_step",
         "propose_spine_step",
         # #143 batch 2 — the UPDATE-shaped verbs
         "set_spine_element",
         "resolve_commitment",
-        "set_spine_step",
-        "reorder_spine_step",
-        "remove_spine_step",
         # #143 batch 3 — the sources/provenance quartet
         "add_element_source",
         "remove_element_source",
         "add_element_provenance",
-        "remove_element_provenance",
         # #143 batch 4 — the guarded-function verbs (retire + account scope)
         "retire_spine_element",
         "retire_spine_elements",
         "retire_spine_relation",
         "promote_stakeholder",
-        "demote_stakeholder",
         "set_element_account_scope",
         # #143 batch 5 — the delegated transcript promotion
-        "promote_spine_transcript",
         # Package B — read-only tenant tree (#138)
         "get_project_state",
         "read_project_file",
@@ -345,12 +329,9 @@ def case_e_tools_list(token: str) -> None:
         "seal_to_deliverable",
         # #159 — commitments lifecycle (v0.89–0.90)
         "resolve_commitments",
-        "resolve_commitments_by_meeting",
         "route_commitment",
         # #138 ratchet — the last portable stdio verbs
-        "archive_project_source",   # mig-134 guarded fn
         "rename_project_source",    # mig-134 guarded fn
-        "pull_element_from_project",
     }
     missing = sorted(expected - set(names))
     # Assert the COUNT too, not just containment: an unexpected extra tool is a
@@ -827,64 +808,6 @@ def case_t2_bad_relation_kind(token: str) -> None:
     )
 
 
-def case_u_add_spine_step(token: str) -> None:
-    """A LIVE human step: appended at max+1, source/review left at table defaults."""
-    element_id = f"_authored/smoke-test-{RUN_TAG}-hosted-mcp-element"
-    payload = call_tool(
-        token,
-        "add_spine_step",
-        {
-            "project_code": WRITE_PROJECT_CODE,
-            "key": element_id,
-            "title": f"smoke-test-{RUN_TAG} human step",
-            "status": "active",
-            "step_date": "8/2",
-        },
-    )
-    step_id = payload.get("step_id")
-    if step_id:
-        created_rows.append(("spine_steps", step_id))
-    steps = payload.get("steps") or []
-    mine = next((s for s in steps if s.get("id") == step_id), {})
-    # A human step must NOT land as an auto/proposed row — that is the whole
-    # distinction from propose_spine_step.
-    ok = (
-        bool(step_id)
-        and payload.get("est_item_id") == element_id
-        and isinstance(payload.get("position"), int)
-        and mine.get("status") == "active"
-        and mine.get("review") != "proposed"
-    )
-    record(
-        "U. add_spine_step appends a live human step (not auto/proposed)",
-        ok,
-        f"step_id={step_id} position={payload.get('position')} "
-        f"status={mine.get('status')} source={mine.get('source')} "
-        f"review={mine.get('review')} trail_len={len(steps)}"
-        + (f" ERROR={payload.get('error') or payload.get('_http')}" if not ok else ""),
-    )
-
-
-def case_u2_bad_step_status(token: str) -> None:
-    """The step status vocabulary is closed: done|active|upcoming."""
-    payload = call_tool(
-        token,
-        "add_spine_step",
-        {
-            "project_code": WRITE_PROJECT_CODE,
-            "key": f"_authored/smoke-test-{RUN_TAG}-hosted-mcp-element",
-            "title": "must not be created",
-            "status": "in_progress",
-        },
-    )
-    ok = "step_id" not in payload and "status must be one of" in str(payload.get("error", ""))
-    record(
-        "U2. add_spine_step rejects a status outside done|active|upcoming",
-        ok,
-        f"error={str(payload.get('error'))[:120]!r}",
-    )
-
-
 def case_v_propose_spine_step(token: str) -> None:
     """A review-gated proposal, and its any-review-state idempotency."""
     element_id = f"_authored/smoke-test-{RUN_TAG}-hosted-mcp-element"
@@ -1146,116 +1069,6 @@ def case_x2_bad_outcome(token: str) -> None:
         "X2. resolve_commitment rejects an outcome outside done|dropped",
         ok,
         f"error={str(payload.get('error'))[:120]!r}",
-    )
-
-
-def case_y_step_roundtrip(token: str) -> None:
-    """set -> reorder -> remove, round-tripped on the smoke element's trail.
-
-    Reads the trail back after each move rather than trusting the tool's own
-    echo, and asserts the invariant that matters for an ordered list: positions
-    stay contiguous 1..N after a delete.
-    """
-    element_id = f"_authored/smoke-test-{RUN_TAG}-hosted-mcp-element"
-    args = {"project_code": WRITE_PROJECT_CODE, "key": element_id}
-
-    # The trail so far (cases U and V put steps here, O3 auto-journalled one).
-    listing = call_tool(token, "add_spine_step", {
-        **args, "title": f"smoke-test-{RUN_TAG} step to reorder", "status": "upcoming",
-    })
-    steps = listing.get("steps") or []
-    if listing.get("step_id"):
-        created_rows.append(("spine_steps", listing["step_id"]))
-    if len(steps) < 2:
-        record("Y. set/reorder/remove round-trip on a step trail", False,
-               f"need >=2 steps to exercise reorder, have {len(steps)}: "
-               f"{listing.get('error') or listing.get('_http')}")
-        return
-
-    target = listing["step_id"]
-
-    # 1. set: advance it to done and retitle.
-    set_payload = call_tool(token, "set_spine_step", {
-        **args, "step_id": target, "status": "done",
-        "title": f"smoke-test-{RUN_TAG} step advanced",
-    })
-    after_set = {s["id"]: s for s in (set_payload.get("steps") or [])}
-    set_ok = (
-        after_set.get(target, {}).get("status") == "done"
-        and "advanced" in (after_set.get(target, {}).get("title") or "")
-    )
-
-    # 2. reorder: reverse the full trail, then confirm 1..N in the new order.
-    current = [s["id"] for s in (set_payload.get("steps") or [])]
-    reversed_order = list(reversed(current))
-    reorder_payload = call_tool(token, "reorder_spine_step", {**args, "order": reversed_order})
-    after_reorder = reorder_payload.get("steps") or []
-    reorder_ok = (
-        [s["id"] for s in after_reorder] == reversed_order
-        and [s["position"] for s in after_reorder] == list(range(1, len(reversed_order) + 1))
-    )
-
-    # 2b. a PARTIAL order must be refused (the engine would half-renumber).
-    partial = call_tool(token, "reorder_spine_step", {**args, "order": reversed_order[:1]})
-    partial_ok = "error" in partial and "EXACTLY once" in str(partial.get("error", ""))
-
-    # 3. remove: delete the step, and assert the survivors densify to 1..N.
-    remove_payload = call_tool(token, "remove_spine_step", {**args, "step_id": target})
-    after_remove = remove_payload.get("steps") or []
-    remove_ok = (
-        remove_payload.get("removed") == target
-        and target not in [s["id"] for s in after_remove]
-        and [s["position"] for s in after_remove] == list(range(1, len(after_remove) + 1))
-    )
-    if remove_ok:
-        # It is gone — do not ask a human to clean it up.
-        created_rows[:] = [r for r in created_rows if r[1] != target]
-
-    record(
-        "Y. set_spine_step -> reorder_spine_step -> remove_spine_step round-trip "
-        "(positions stay 1..N)",
-        set_ok and reorder_ok and partial_ok and remove_ok,
-        f"set_ok={set_ok} reorder_ok={reorder_ok} partial_rejected={partial_ok} "
-        f"remove_ok={remove_ok} trail_after_remove="
-        f"{[(s['position'], (s.get('title') or '')[:24]) for s in after_remove]}"
-        + (f" SET_ERR={set_payload.get('error')}" if not set_ok else "")
-        + (f" REORDER_ERR={reorder_payload.get('error')}" if not reorder_ok else "")
-        + (f" REMOVE_ERR={remove_payload.get('error')}" if not remove_ok else ""),
-    )
-
-
-def case_y2_step_scope_isolation(token: str) -> None:
-    """A step_id that is real but belongs to ANOTHER element must not be touched.
-
-    The scoping is (id, project_id, est_item_id), so a stray-but-valid id
-    resolves to zero rows rather than reaching across the trail boundary. Uses
-    the relation-target element from case T as the foreign parent.
-    """
-    mine = f"_authored/smoke-test-{RUN_TAG}-hosted-mcp-element"
-    other = f"_authored/smoke-test-{RUN_TAG}-relation-target"
-
-    # Put a step on the OTHER element, then try to update it via MY element's key.
-    planted = call_tool(token, "add_spine_step", {
-        "project_code": WRITE_PROJECT_CODE, "key": other,
-        "title": f"smoke-test-{RUN_TAG} foreign step", "status": "upcoming",
-    })
-    foreign_id = planted.get("step_id")
-    if not foreign_id:
-        record("Y2. a step_id from another element is out of scope", False,
-               f"could not plant the foreign step: "
-               f"{planted.get('error') or planted.get('_http')}")
-        return
-    created_rows.append(("spine_steps", foreign_id))
-
-    attempt = call_tool(token, "set_spine_step", {
-        "project_code": WRITE_PROJECT_CODE, "key": mine,
-        "step_id": foreign_id, "status": "done",
-    })
-    ok = "error" in attempt and "0 rows updated" in str(attempt.get("error", ""))
-    record(
-        "Y2. set_spine_step refuses a step_id belonging to another element",
-        ok,
-        f"error={str(attempt.get('error'))[:130]!r}",
     )
 
 
@@ -1536,37 +1349,6 @@ def case_z6_provenance_self_and_unknown(token: str) -> None:
         self_ok and unknown_ok,
         f"self_note={str(itself.get('note'))[:70]!r} "
         f"unknown_note={str(unknown.get('note'))[:70]!r}",
-    )
-
-
-def case_z7_remove_element_provenance(token: str) -> None:
-    """Detach the element link from every version; re-detach is a note."""
-    target = f"_authored/smoke-test-{RUN_TAG}-hosted-mcp-element"
-    source = f"_authored/smoke-test-{RUN_TAG}-relation-target"
-
-    first = call_tool(token, "remove_element_provenance", {
-        "project_code": WRITE_PROJECT_CODE, "key": target, "source_key": source,
-    })
-    removed_ok = first.get("removed") is True and int(first.get("versions_updated") or 0) >= 2
-
-    rows = _read_versions_direct(token, target)
-    still_there = [
-        r.get("version_label") for r in rows
-        if any(isinstance(s, dict) and s.get("type") == "spine_element"
-               and s.get("id") == source for s in (r.get("sources") or []))
-    ]
-
-    second = call_tool(token, "remove_element_provenance", {
-        "project_code": WRITE_PROJECT_CODE, "key": target, "source_key": source,
-    })
-    note_ok = "not attached to" in str(second.get("note", "")) and "error" not in second
-
-    record(
-        "Z7. remove_element_provenance detaches from every version; "
-        "re-detaching is a structured note",
-        removed_ok and not still_there and note_ok,
-        f"removed={first.get('removed')} versions_updated={first.get('versions_updated')} "
-        f"still_carrying={still_there} second_note={str(second.get('note'))[:90]!r}",
     )
 
 
@@ -1877,99 +1659,6 @@ def case_ae_promote_on_initiative(token: str) -> None:
     )
 
 
-def case_af_promote_demote_roundtrip(token: str) -> None:
-    """Promote/demote against a REAL ENGAGEMENT — the only place scope exists.
-
-    WHY THIS ONE CASE TOUCHES A CLIENT PROJECT. Account scope is a COMPANY-level
-    fact and the guarded function refuses any project without a company, so an
-    initiative cannot exercise it at all. Batch 3 set the precedent (case Z runs
-    against `PROJECT_CODE` for the same structural reason): the row is
-    smoke-tagged, demoted at the end of the case, and reported for cleanup.
-
-    Asserts on BOTH versions by direct read-back, because "every version moves
-    together" is the contract and the read tools only surface the live one.
-    Also asserts the LAYER WARNING fires: the element's layer is 'Note', not
-    Stakeholders, and promotion must still apply while saying so.
-    """
-    framing = f"smoke-test-{RUN_TAG} account scope roundtrip"
-    created = call_tool(token, "create_spine_element", {
-        "project_code": PROJECT_CODE, "framing": framing,
-        "body": "Created by smoke_test.py (#143 batch 4) — safe to delete.",
-        "layer": "note",
-    })
-    if created.get("row_id"):
-        created_rows.append(("spine_substance", created["row_id"]))
-    element = created.get("element_id")
-    if not element:
-        record("AF. promote/demote round-trip on an engagement", False,
-               f"element setup failed: {created.get('error') or created.get('_http')}")
-        return
-
-    # A second version, so "every version moves together" is provable.
-    bumped = call_tool(token, "add_spine_version", {
-        "project_code": PROJECT_CODE, "element_id": element,
-        "body": "v2 — account-scope round-trip.",
-    })
-    if bumped.get("row_id"):
-        created_rows.append(("spine_substance", bumped["row_id"]))
-
-    promoted = call_tool(token, "promote_stakeholder", {
-        "project_code": PROJECT_CODE, "key": element,
-    })
-    promote_ok = (
-        promoted.get("scope") == "account"
-        and bool(promoted.get("company_id"))
-        and int(promoted.get("versions_moved") or 0) >= 2
-    )
-    # Layer is 'Note' -> the sanity-check warning must fire, promotion applied.
-    warning_ok = "not Stakeholders" in str(promoted.get("warning", ""))
-
-    after_promote = _read_scope_direct(token, element)
-    all_account = bool(after_promote) and all(
-        r.get("scope") == "account" and r.get("company_id") for r in after_promote)
-
-    # Re-promote is a note, not a second write.
-    again = call_tool(token, "promote_stakeholder", {
-        "project_code": PROJECT_CODE, "key": element,
-    })
-    already_ok = "already account-scoped" in str(again.get("note", ""))
-
-    demoted = call_tool(token, "demote_stakeholder", {
-        "project_code": PROJECT_CODE, "key": element,
-    })
-    demote_ok = (
-        demoted.get("scope") == "project"
-        and bool(demoted.get("returned_to_project_id"))
-        and int(demoted.get("versions_moved") or 0) >= 2
-    )
-    after_demote = _read_scope_direct(token, element)
-    all_project = bool(after_demote) and all(
-        r.get("scope") == "project" and not r.get("company_id") for r in after_demote)
-
-    # Re-demote: not account-scoped -> structured note (the fn moves 0 rows).
-    redemote = call_tool(token, "demote_stakeholder", {
-        "project_code": PROJECT_CODE, "key": element,
-    })
-    redemote_ok = "not account-scoped" in str(redemote.get("note", ""))
-
-    record(
-        "AF. promote/demote moves EVERY version between account and project "
-        "scope, warns on a non-Stakeholders layer, and notes both no-ops",
-        promote_ok and warning_ok and all_account and already_ok
-        and demote_ok and all_project and redemote_ok,
-        f"promote={{scope:{promoted.get('scope')} versions:{promoted.get('versions_moved')} "
-        f"company:{bool(promoted.get('company_id'))}}} "
-        f"warning={str(promoted.get('warning'))[:60]!r} "
-        f"rows_account={[(r.get('version_label'), r.get('scope')) for r in after_promote]} "
-        f"repromote_note={str(again.get('note'))[:45]!r} "
-        f"demote={{scope:{demoted.get('scope')} versions:{demoted.get('versions_moved')}}} "
-        f"rows_project={[(r.get('version_label'), r.get('scope'), r.get('company_id')) for r in after_demote]} "
-        f"redemote_note={str(redemote.get('note'))[:45]!r}"
-        + (f" ERRORS={[promoted.get('error') or promoted.get('note'), demoted.get('error') or demoted.get('note')]}"
-           if not (promote_ok and demote_ok) else ""),
-    )
-
-
 def case_ag_set_element_account_scope_delegates(token: str) -> None:
     """The type-agnostic verb is the same move WITHOUT the layer warning.
 
@@ -2040,50 +1729,6 @@ def case_o4_add_spine_document(token: str) -> None:
         ok,
         f"row_id={row_id} layer={payload.get('layer')} contract_ok={contract_ok}"
         + (f" ERROR={payload.get('error') or payload.get('_http')}" if not ok else ""),
-    )
-
-
-def case_p_create_note(token: str) -> None:
-    """The notes write, via the entities email-bridge (decided 2026-08-02).
-
-    `notes.author_id` stays FK->entities(id) — the Notes feature's own identity
-    model. The INSERT policy enforces `author_id = caller_entity_id()`, a
-    definer helper mapping the caller's login email to their entities row (the
-    same bridge the mc-2 backend's `_acting_entity` uses). Recipient defaults
-    to the author's own entity (self-note).
-
-    PASS = a real note_id (the token's user must have an entities row). The
-    no-entities-row error is also a precise diagnosis, but for the smoke user
-    an entity row is provisioned, so this case demands the happy path.
-    """
-    payload = call_tool(
-        token,
-        "create_note",
-        {
-            "project_code": WRITE_PROJECT_CODE,
-            "title": f"smoke-test-{RUN_TAG}",
-            "body": "Created by prototypes/hosted-mcp/smoke_test.py. Safe to delete.",
-        },
-    )
-    note_id = payload.get("note_id")
-    if note_id:
-        created_rows.append(("notes", note_id))
-        record(
-            "P. create_note inserts a real note row",
-            True,
-            f"note_id={note_id} status={payload.get('status')} "
-            f"body_chars={payload.get('body_chars')}",
-        )
-        return
-    error = str(payload.get("error", ""))
-    # Either face of the same gap counts, so long as it names entities and the
-    # offending column rather than leaking a bare SQLSTATE.
-    diagnosed = "entities" in error and ("author_id" in error or "recipient_id" in error)
-    raw_leak = error.startswith("insert failed") or "23503" == error.strip()
-    record(
-        "P. create_note surfaces the notes identity/schema gap (diagnosed, not raw)",
-        diagnosed and not raw_leak,
-        f"error={error[:200]!r}",
     )
 
 
@@ -2248,25 +1893,19 @@ def case_m_audit_log(token: str) -> None:
         "read_project_file",
         # #143 batch 1
         "create_spine_relation",
-        "add_spine_step",
         "propose_spine_step",
         # #143 batch 2 — the UPDATE verbs
         "set_spine_element",
         "resolve_commitment",
-        "set_spine_step",
-        "reorder_spine_step",
-        "remove_spine_step",
         # #143 batch 3
         "add_element_source",
         "remove_element_source",
         "add_element_provenance",
-        "remove_element_provenance",
         # #143 batch 4 — the guarded-function verbs
         "retire_spine_element",
         "retire_spine_elements",
         "retire_spine_relation",
         "promote_stakeholder",
-        "demote_stakeholder",
         "set_element_account_scope",
     }
     missing = sorted(expected - tools_logged)
@@ -2278,10 +1917,6 @@ def case_m_audit_log(token: str) -> None:
     # never as which. It is on neither allow-list, so it must be dropped.
     forbidden = {"query", "body", "description", "framing", "title", "order", "note"}
     leaked = [r for r in rows if forbidden & set((r.get("args") or {}).keys())]
-    reorder_rows = [r for r in rows if r.get("tool") == "reorder_spine_step"]
-    order_len_present = all(
-        "order_len" in (r.get("args") or {}) for r in reorder_rows
-    ) if reorder_rows else False
     # And the length-only projections must actually be there for the writes.
     write_rows = [r for r in rows if r.get("tool") in ("create_commitment", "create_spine_element")]
     lengths_present = all(
@@ -2295,8 +1930,7 @@ def case_m_audit_log(token: str) -> None:
     # rather than only in a comment.
     src_rows = [r for r in rows
                 if r.get("tool") in ("add_element_source", "remove_element_source")]
-    prov_rows = [r for r in rows
-                 if r.get("tool") in ("add_element_provenance", "remove_element_provenance")]
+    prov_rows = [r for r in rows if r.get("tool") == "add_element_provenance"]
     src_keys_present = (
         all("source_title" in (r.get("args") or {}) for r in src_rows) if src_rows else False
     ) and (
@@ -2311,14 +1945,13 @@ def case_m_audit_log(token: str) -> None:
     )
     keys_leaked = [r for r in rows if "keys" in (r.get("args") or {})]
     ok = (bool(rows) and not missing and not leaked and lengths_present
-          and order_len_present and src_keys_present
+          and src_keys_present
           and keys_count_present and not keys_leaked)
     record(
         "M. audit rows appear for reads AND writes, args sanitized to lengths",
         ok,
         f"rows={len(rows)} tools={sorted(t for t in tools_logged if t)} "
         f"client={rows[0].get('client') if rows else None} "
-        f"order_len_present={order_len_present} "
         f"source_keys_present={src_keys_present} "
         f"keys_count_present={keys_count_present} "
         + ("KEYS_LEAKED " if keys_leaked else "")
@@ -2351,41 +1984,6 @@ def case_m_audit_log(token: str) -> None:
 # `recording_id`, especially uuid-vs-bigint) and the REFUSAL paths. AH is the
 # one case that does reach mc-2, and it deliberately reaches it with an id that
 # cannot exist, to prove the delegation hop and its error translation are live.
-
-
-def case_ah_promote_resolves_and_refuses(token: str) -> None:
-    """Resolution + refusal, WITHOUT promoting anything.
-
-    Two assertions in one case because they share a setup:
-
-      1. A recording_id belonging to ANOTHER project is REFUSED, not promoted.
-         This is the guard that makes the id forms safe to accept at all — a
-         mistyped bigint must never reach across a project boundary.
-      2. A non-existent recording_id reaches mc-2 and comes back translated as
-         `not_found`, which proves the delegation hop is live (the request was
-         signed with the caller's own JWT and mc-2 accepted the identity — a
-         rejected token would surface as `unauthorized` instead).
-    """
-    # 1 — cross-project refusal. A REAL ibx-5153 recording, asked for under the
-    # internal initiative, must not resolve.
-    foreign = call_tool(token, "promote_spine_transcript", {
-        "project_code": WRITE_PROJECT_CODE, "key": "168360237",
-    })
-    refused = "note" in foreign and "promotion" not in foreign
-
-    # 2 — a recording_id that cannot exist, under a project that does.
-    missing = call_tool(token, "promote_spine_transcript", {
-        "project_code": WRITE_PROJECT_CODE, "key": "999999999",
-    })
-    missing_note = "note" in missing and "promotion" not in missing
-
-    record(
-        "AH. promote_spine_transcript refuses a foreign/unknown recording_id "
-        "instead of promoting it",
-        refused and missing_note,
-        f"foreign_keys={sorted(foreign.keys())} note={str(foreign.get('note'))[:90]!r} | "
-        f"missing_keys={sorted(missing.keys())}",
-    )
 
 
 def case_ah2_delegation_hop_is_live(token: str) -> None:
@@ -2437,49 +2035,6 @@ def case_ah2_delegation_hop_is_live(token: str) -> None:
         "the not-found shape call_mc2_promote translates",
         authed and reached,
         f"base={base} status={resp.status_code} detail={detail[:120]!r}",
-    )
-
-
-def case_ai_promote_resolution_paths(token: str) -> None:
-    """Every key form lands on the SAME recording_id — the uuid-vs-bigint proof.
-
-    THE GOTCHA THIS EXISTS FOR. `fathom_meetings` carries two ids: a uuid `id`
-    and a bigint `recording_id`. `list_project_meetings` returns the UUID as
-    `meeting_id`, and mc-2's promote endpoint takes the BIGINT. A caller who
-    pipes one tool into the other is handing over the wrong id, and the failure
-    is a silent upstream 404 rather than anything legible.
-
-    So: take a real meeting from `list_project_meetings` (its uuid), promote by
-    that uuid, and assert the verb reports the matching BIGINT with
-    `resolved_via='meeting_id'`. Read-only — this asserts the RESOLUTION, and
-    the promotion beneath it is expected to be a no-op-shaped result because
-    the target is a client meeting we must not embed. Nothing is promoted: the
-    case never calls with a resolvable + promotable pair.
-    """
-    meetings = call_tool(token, "list_project_meetings", {"project_code": PROJECT_CODE})
-    rows = meetings.get("meetings") or []
-    if not rows:
-        record("AI. promote_spine_transcript translates a meeting uuid -> recording_id",
-               False, f"no meetings to resolve against in {PROJECT_CODE!r}")
-        return
-
-    meeting_uuid = rows[0].get("meeting_id")
-
-    # Resolve-only: ask for the uuid under a DIFFERENT project. Resolution is
-    # scoped per project, so this must refuse — proving the uuid branch is
-    # scope-checked exactly like the bigint branch, with nothing promoted.
-    cross = call_tool(token, "promote_spine_transcript", {
-        "project_code": WRITE_PROJECT_CODE, "key": str(meeting_uuid),
-    })
-    # A uuid that is neither this project's meeting nor its element is a note.
-    scoped = "note" in cross and "promotion" not in cross
-
-    record(
-        "AI. a meeting uuid is scope-checked and never forwarded raw to the "
-        "bigint endpoint",
-        scoped,
-        f"meeting_uuid={meeting_uuid} keys={sorted(cross.keys())} "
-        f"note={str(cross.get('note'))[:90]!r}",
     )
 
 
@@ -2597,13 +2152,10 @@ def main() -> int:
         case_o2_collision_guard(token)
         case_o3_add_spine_version(token)
         case_o4_add_spine_document(token)
-        case_p_create_note(token)
 
         # ── #143 batch 1: relations + steps. THESE CREATE REAL ROWS. ──
         case_t_create_spine_relation(token)
         case_t2_bad_relation_kind(token)
-        case_u_add_spine_step(token)
-        case_u2_bad_step_status(token)
         case_v_propose_spine_step(token)
 
         # ── #143 batch 2: the UPDATE verbs. THESE MUTATE REAL ROWS. ──
@@ -2613,8 +2165,6 @@ def main() -> int:
         case_w2_engine_owned_columns(token)
         case_x_resolve_commitment(token)
         case_x2_bad_outcome(token)
-        case_y_step_roundtrip(token)
-        case_y2_step_scope_isolation(token)
 
         # ── #143 batch 3: sources + provenance. THESE MUTATE REAL ROWS. ──
         # Ordered after O3 (which leaves a superseded v1) so the every-version
@@ -2626,7 +2176,6 @@ def main() -> int:
         case_z4_detach_source(token, attached_title)
         case_z5_add_element_provenance(token)
         case_z6_provenance_self_and_unknown(token)
-        case_z7_remove_element_provenance(token)
 
         # ── #143 batch 4: retire + account scope. THESE RETIRE REAL ROWS. ──
         # Ordered LAST among the writes on purpose: retiring is terminal, so a
@@ -2637,16 +2186,13 @@ def main() -> int:
         case_ac_retire_batch_and_misses(token)
         case_ad_retire_relation(token)
         case_ae_promote_on_initiative(token)
-        case_af_promote_demote_roundtrip(token)
         case_ag_set_element_account_scope_delegates(token)
 
         # ── #143 batch 5: delegated transcript promotion. PROMOTES NOTHING. ──
         # See the block comment above case AH: there is no smoke-safe meeting to
         # promote (zero initiative-linked meetings exist), so these assert
         # resolution + refusal, and the important-flip's promotion REPORTING.
-        case_ah_promote_resolves_and_refuses(token)
         case_ah2_delegation_hop_is_live(token)
-        case_ai_promote_resolution_paths(token)
         case_aj_important_flip_reports_promotion(token)
         case_ak_no_flip_no_promotion(token)
 

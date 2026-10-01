@@ -75,25 +75,6 @@ def test_semantic_search_reports_a_dead_spine_lookup():
 
 # ── writes: counted iterations are not counted effects ───────────────
 
-def test_reorder_counts_matched_rows_not_loop_passes():
-    """The spine_steps UPDATE policy matches only source='auto' AND
-    review='proposed', so human steps refuse renumbering with a 0-row 200 —
-    not an exception. Counting passes reports a reorder that did not happen."""
-    fn = body_of("reorder_spine_step")
-    assert "if result.data:" in fn, "must branch on matched rows"
-    assert "refused" in fn
-    # The verb rejects partial reorders on input; it must not silently create
-    # one on output.
-    assert "PARTIALLY" in fn or "partially" in fn
-
-
-def test_densify_is_verified_and_scoped():
-    fn = body_of("remove_spine_step")
-    assert "densify_refused" in fn
-    # Every other step write carries these guards; this one had drifted.
-    assert fn.count('.eq("project_id"') >= 2
-    assert fn.count('.eq("est_item_id"') >= 2
-
 
 def test_auto_step_retitle_is_verified():
     fn = body_of("upsert_auto_step")
@@ -183,36 +164,3 @@ def test_capture_never_raises():
     capture = obs[obs.index("def capture("):obs.index("# DIFF 3")]
     assert "except Exception:" in capture
     assert "pass" in capture
-
-
-# ── rounds: the kill list is the point ───────────────────────────────
-
-def test_a_kill_needs_both_idea_and_reason():
-    """A version bump keeps the survivor and loses the reasoning, so the next
-    round re-proposes what the last one killed. An entry without a `why` is an
-    omission, not a kill, and it teaches the next pass nothing."""
-    fn = body_of("record_round")
-    assert '"idea"' in fn and '"why"' in fn
-    assert "omission, not a kill" in fn
-
-
-def test_kills_are_written_into_the_body():
-    """They must survive in the element, not just in a response a session
-    throws away."""
-    fn = body_of("record_round")
-    assert "## Killed this round" in fn
-
-
-def test_rounds_reuse_the_version_machinery():
-    """Supersede semantics are already correct in add_spine_version; a round
-    that reimplemented them would drift from it."""
-    fn = body_of("record_round")
-    assert "add_spine_version(" in fn
-
-
-def test_the_verb_does_not_judge():
-    """A model picking the survivor AND writing the reasoning is a model
-    talking to itself across sessions — worse than no record, because it reads
-    like a human decision."""
-    fn = body_of("record_round")
-    assert "does not" in fn.lower() and "judge" in fn.lower()
