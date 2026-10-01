@@ -4,6 +4,22 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.130.0 — 2026-10-01
+
+**Architecture plan step 4b: stakeholders are spine cards in MC-2.** Minor: where
+stakeholders are kept changes. Each card's body starts with a structured details
+block (name, role, company, email, side, aliases) — `cp_engine.stakeholders`.
+Auto-ingest creates and updates cards, never sprint-file bullets; the cp.md
+strip ("Stakeholders (from spine cards)"), the #312 attribution check and the
+ingest prompt's known-people list read cards, including company-wide account
+cards. New templates carry no stakeholder sections. With `[stakeholders]
+retire_markdown = true`, sync imports any typed entry onto a card, quarantines
+the old `## Stakeholders` / `### Stakeholders` text to `exceptions/region-edits/`
+and removes the section. One-time migration: `scripts/step4b_migrate_stakeholders.py`.
+
+*Sync renders children before parents (#347)*, so one sync is complete: a new
+child ask reaches its account rollup the same sync, and a second sync is a no-op.
+
 ## v0.129.0 — 2026-10-01
 
 **Architecture plan step 4: one owner per concept** (asks and spine; stakeholders
