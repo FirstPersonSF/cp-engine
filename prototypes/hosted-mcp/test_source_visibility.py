@@ -1,7 +1,7 @@
 """Hosted source reads see what the store holds (cp-engine #324).
 
-The hosted server keeps its own copies of the source verbs (the vendored
-`cp_engine` is constants-and-lints only), so the #324 fixes are pinned here
+The hosted source verbs are still hosted code (their helpers are the
+engine's since architecture plan step 1), so the #324 fixes are pinned here
 separately from the stdio ones in tests/test_source_visibility_324.py:
 
   - `list_project_sources` carries `status_note` / `description` (the stdio
@@ -158,3 +158,49 @@ def test_spine_lint_flags_a_dangling_source_reviewed(server, db, monkeypatch, tm
     assert out["source_reviewed_checked"] is True
     assert len(out["warnings"]) == 1
     assert "Infoblox_Truth_AI_Depends_On_ECD_Creative_Room.md" in out["warnings"][0]
+
+
+def test_listing_hides_superseded_and_archived_by_the_engine_rule(server, db, monkeypatch):
+    """Architecture plan step 1c (H4): the supersede filter is
+    `project_sources.drop_superseded_assets`. A predecessor whose successor is
+    in the set is hidden, an archived row is hidden, and `superseded_hidden`
+    still counts predecessor ids."""
+    from cp_engine import project_sources
+
+    db.tables["rag_assets"] += [
+        {"id": "old", "project_id": "p-job", "company_id": "co-1", "scope": "project",
+         "title": "Brief v1.docx", "status": "active", "created_at": "2026-07-01"},
+        {"id": "new", "project_id": "p-job", "company_id": "co-1", "scope": "project",
+         "title": "Brief v2.docx", "status": "active", "created_at": "2026-07-02",
+         "prev_asset_id": "old"},
+        {"id": "gone", "project_id": "p-job", "company_id": "co-1", "scope": "project",
+         "title": "Gone.docx", "status": "archived", "created_at": "2026-07-03"},
+    ]
+    calls = []
+    real = project_sources.drop_superseded_assets
+    monkeypatch.setattr(server._engine_project_sources, "drop_superseded_assets",
+                        lambda rows: calls.append(len(rows)) or real(rows))
+    out = server.list_project_sources("p-job")
+    titles = {s["title"] for s in out["sources"]}
+    assert "Brief v2.docx" in titles
+    assert "Brief v1.docx" not in titles and "Gone.docx" not in titles
+    assert out["superseded_hidden"] == 1
+    assert calls, "the listing did not use the engine's supersede rule"
+
+
+def test_the_324_source_store_helpers_are_the_engines(server, db, tmp_path):
+    """Architecture plan step 1c: the chunk check, the workstream doc walk and
+    the ingested-title set are the engine's, not hosted twins."""
+    from cp_engine import mc2_db, project_sources, spine
+
+    assert server._asset_ids_with_chunks is mc2_db.asset_ids_with_chunks
+    assert server._workstream_docs is spine.workstream_docs
+    titles = server._ingested_source_titles(db, "p-job")
+    assert titles == project_sources.ingested_source_titles(db, "p-job", "co-1")
+    assert "Company Deck.pdf" in titles and "Other Company.pdf" not in titles
+
+    class Boom:
+        def table(self, _name):
+            raise RuntimeError("no")
+
+    assert server._ingested_source_titles(Boom(), "p-job") is None

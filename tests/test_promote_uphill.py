@@ -481,9 +481,9 @@ def test_stdio_verb_delegates_to_the_module(tenant, client, monkeypatch):
 
 # ── hosted parity ─────────────────────────────────────────────────────
 #
-# The hosted server does not import cp_engine, so its hash, its est_item_id
-# and its rule text are COPIES. A copy drifts; these pin each one to the
-# engine's original the way test_vendor_drift pins the vendored modules.
+# Since architecture plan step 1 the hosted server imports these from the
+# engine (prototypes/hosted-mcp/test_promote_uphill.py asserts identity);
+# these value checks stay as the cheap guard against a copy coming back.
 
 _SERVER_PATH = (
     Path(__file__).resolve().parents[1] / "prototypes" / "hosted-mcp" / "server.py"

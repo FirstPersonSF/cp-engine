@@ -467,7 +467,7 @@ def test_the_probe_reaches_the_constants_not_just_the_imports(server):
 
 
 def test_health_reports_degraded_when_a_symbol_is_missing(server, monkeypatch):
-    """BEHAVIOUR: a vendored module that imports but lacks a symbol the
+    """BEHAVIOUR: an engine module that imports but lacks a symbol the
     server reads must turn `/health` to `degraded` and name the symbol."""
     import asyncio
     import json
@@ -503,21 +503,34 @@ def test_the_probe_reports_rather_than_raises(server):
     assert all("dep" in r and "ok" in r for r in rows)
 
 
-def test_the_build_fingerprint_covers_the_vendor_tree(server):
-    """`commit` is "unknown" on a `railway up` deploy, so the fingerprint is
-    the only answer to "is the container what the repo is".
+def test_the_build_fingerprint_covers_the_installed_engine(server, monkeypatch, tmp_path):
+    """The fingerprint answers "is the container what the repo is", so it
+    must move when the ENGINE moves, not only when server.py does — the
+    engine is installed into the image from the same commit (architecture
+    plan step 1), and a fix that lives entirely in `src/cp_engine` (as #283's
+    lived in the old vendor tree) must change it.
 
-    It must hash `vendor/` as well as `server.py` — #283's fix lived entirely
-    in `vendor/`, so a fingerprint over server.py alone would not have moved
-    across the deploy that fixed it.
+    Behaviour, not source-grep: point `cp_engine` at a copy, change one
+    engine file, and require a different hash.
     """
-    import inspect
+    import shutil
+    import sys
+    import types
 
-    src = inspect.getsource(server.build_fingerprint)
-    assert "vendor" in src, "the fingerprint ignores the vendored closure"
     first = server.build_fingerprint()
     assert isinstance(first, str) and len(first) == 12
     assert first == server.build_fingerprint(), "fingerprint must be stable"
+
+    real = Path(sys.modules["cp_engine"].__file__).resolve().parent
+    copy = tmp_path / "cp_engine"
+    shutil.copytree(real, copy, ignore=shutil.ignore_patterns("__pycache__"))
+    fake = types.ModuleType("cp_engine")
+    fake.__file__ = str(copy / "__init__.py")
+    monkeypatch.setitem(sys.modules, "cp_engine", fake)
+    same = server.build_fingerprint()
+    assert same == first, "an identical engine tree must hash the same"
+    (copy / "clock.py").write_text("# changed\n", encoding="utf-8")
+    assert server.build_fingerprint() != first, "the fingerprint ignores the engine"
 
 
 def test_health_degrades_rather_than_lying(server):

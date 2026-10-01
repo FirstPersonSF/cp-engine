@@ -35,7 +35,7 @@ The read-only endpoint is `https://cp.mc-2.1p.is/mcp/read`. It is on branch
 `feat/141-readonly-connector` and is **not deployed yet**.
 
 1. Merge the branch, then deploy the way `prototypes/hosted-mcp/railway.toml`
-   says (`railway up` from that directory; pushing to `main` deploys nothing).
+   says (`prototypes/hosted-mcp/deploy.sh`; pushing to `main` deploys nothing).
 2. Leave `READ_RESOURCE_URL` unset. It defaults to `RESOURCE_URL + "/read"`,
    which is `https://cp.mc-2.1p.is/mcp/read`.
 3. Check it:

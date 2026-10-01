@@ -1,0 +1,13 @@
+# Context filter for `docker build -f prototypes/hosted-mcp/Dockerfile .`
+# from the repo root (BuildKit reads <Dockerfile>.dockerignore). Everything
+# out, then exactly what the Dockerfile COPYs back in.
+*
+!pyproject.toml
+!README.md
+!src/
+!prototypes/hosted-mcp/requirements.txt
+!prototypes/hosted-mcp/server.py
+!prototypes/hosted-mcp/observability.py
+!prototypes/hosted-mcp/BUILD_COMMIT
+**/__pycache__
+**/*.pyc

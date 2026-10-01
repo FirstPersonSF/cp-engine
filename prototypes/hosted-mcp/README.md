@@ -37,9 +37,19 @@ when a tool returns early or raises), and `client` records
 Live at **`https://cp.mc-2.1p.is/mcp`**, served by the `hosted-mcp` service in
 the **Mission Control** Railway project (not the separate, dead `hosted-cp`
 project). **The service has no GitHub connection — pushing to `main` deploys
-nothing**; deploys are local-source uploads via `railway up` from this
-directory. Full IDs, the deploy command, and the env-var contract are
-documented in [`railway.toml`](railway.toml).
+nothing**; deploys are local-source uploads, one command from anywhere in the
+checkout:
+
+```bash
+prototypes/hosted-mcp/deploy.sh -m "<what changed>"
+```
+
+The image installs cp-engine as a package from the same commit as
+`server.py` (there is no vendored copy any more), so `deploy.sh` stages a
+repo-root-shaped context and uploads that; a bare `railway up` from this
+directory fails the build. The service needs a `gh_token` build variable for
+cp-engine's private deps. Full IDs, the staging rules and the env-var contract
+are documented in [`railway.toml`](railway.toml).
 
 ## Run it
 

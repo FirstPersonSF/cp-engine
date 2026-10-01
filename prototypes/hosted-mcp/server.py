@@ -94,28 +94,40 @@ observability = importlib.util.module_from_spec(_obs_spec)
 sys.modules["hosted_mcp_observability"] = observability
 _obs_spec.loader.exec_module(observability)
 
-# ── `cp_engine` for the container ─────────────────────────────────────
+# ── `cp_engine` is an installed package ───────────────────────────────
 #
-# The four wrap-up verbs (#280) import `cp_engine.<module>` at CALL time, and
-# the Dockerfile ships `server.py` + `observability.py` only. So in production
-# those imports raised ModuleNotFoundError while every local test passed: the
-# suite runs inside the cp-engine repo, where the real package is importable.
-# Three of the four verbs were dead on arrival for the hosted teammates they
-# were built for (#283) — the same shape as the `__main__`-guard defect, where
-# the one condition that mattered was the one nothing exercised.
-#
-# `vendor/` carries the closure those verbs need. APPENDED, never prepended:
-# where the real `cp_engine` is installed it must win, so local runs and the
-# test suite exercise the SOURCE modules and the vendored copies are only ever
-# the container's fallback. Prepending would silently test the copies instead,
-# which is how a vendored tree drifts without anyone noticing.
-_vendor = Path(__file__).resolve().parent / "vendor"
-if _vendor.is_dir() and str(_vendor) not in sys.path:
-    sys.path.append(str(_vendor))
-
+# The image `pip install`s cp-engine from the same commit as this file
+# (Dockerfile, architecture plan step 1), the way the webhook does. Until then
+# a hand-vendored `vendor/cp_engine` closure stood in for it, guarded by a
+# drift test (#283, #287, #295); both are gone. Rules this file used to copy
+# are imported from the engine instead, so there is one implementation to fix.
+# In the test suite `pythonpath = ["src"]` makes the checkout's own engine the
+# one imported.
 # Dates in the tenant's timezone, not the container's UTC clock (#339).
-from cp_engine.clock import tenant_today  # noqa: E402
-# The card-kind READER, vendored (card_class.py). The write-time stamp below is
+from cp_engine.clock import tenant_now, tenant_today  # noqa: E402
+# One resolver per rule (architecture plan step 1b): workstream codes,
+# working dirs and project ids come from the engine, not hosted copies.
+from cp_engine import state as _engine_state  # noqa: E402
+from cp_engine.mc2_db import (  # noqa: E402
+    _resolve_project_id as _engine_resolve_project_id,
+    canonical_spine_code as _engine_canonical_spine_code,
+)
+from cp_engine import promote_uphill as _engine_promote_uphill  # noqa: E402
+from cp_engine.promote_uphill import level_for as _engine_level_for  # noqa: E402
+from cp_engine.state import slug_full_job_name as _engine_slug_full_job_name  # noqa: E402
+# Exec Summary region, markers, stamp and stale threshold (step 1c).
+from cp_engine import project_sources as _engine_project_sources  # noqa: E402
+from cp_engine import authored_element as _engine_authored_element  # noqa: E402
+from cp_engine import mc2_db as _engine_mc2_db  # noqa: E402
+from cp_engine import spine as _engine_spine  # noqa: E402
+from cp_engine import spine_steps as _engine_spine_steps  # noqa: E402
+from cp_engine.commitments import _valid_due_date as _engine_valid_due_date  # noqa: E402
+from cp_engine import wrap_report as _engine_wrap_report  # noqa: E402
+from cp_engine import exec_summary_draft as _engine_exec_summary_draft  # noqa: E402
+from cp_engine import render as _engine_render  # noqa: E402
+# The one "which sprint week" rule (architecture plan step 1a).
+from cp_engine.sprints import current_sprint_week_iso as _engine_sprint_week_iso  # noqa: E402
+# The card-kind READER (card_class.py). The write-time stamp below is
 # derived from it, so a hosted stamp cannot contradict what classify() reads.
 from cp_engine.card_class import classify as _classify_card  # noqa: E402
 
@@ -385,29 +397,17 @@ def user_client():
     return client
 
 
-_SLUG_NON_ALPHANUM = re.compile(r"[^a-z0-9]+")
-
-
-def _slug_full_job_name(full_job_name: str | None) -> str:
-    """Slugify MC-2's `full_job_name` into the canonical on-disk project id.
-
-    "SAP 5198 2027 Ad Videos" -> "sap-5198-2027-ad-videos". Mirrors
-    `cp_engine.state.slug_full_job_name`; kept local because this prototype
-    deliberately does not import cp_engine (same convention as the spine
-    authoring constants below). Keep in sync with that function.
-    """
-    if not full_job_name:
-        return ""
-    return _SLUG_NON_ALPHANUM.sub("-", full_job_name.lower()).strip("-")
-
+# "SAP 5198 2027 Ad Videos" -> "sap-5198-2027-ad-videos": the engine's one
+# slug rule for the canonical on-disk project id (architecture plan step 1b).
+_slug_full_job_name = _engine_slug_full_job_name
 
 
 # One owner column on every owner-scoped table since mc-2 mig 192 /
-# cp-engine #301 (`project_id`). Kept as a function so the six read loops
-# keep one spelling; `client` is unused.
+# cp-engine #301 (`project_id`) — the engine's `mc2_db.owner_columns`, as a
+# tuple so the read loops keep one spelling (architecture plan step 1c, H23).
 def _owner_columns(client) -> tuple[str, ...]:
-    """Mirrors `cp_engine.mc2_db.owner_columns` (always `project_id`)."""
-    return ("project_id",)
+    """`(mc2_db.owner_columns(client),)` — always `("project_id",)`."""
+    return (_engine_mc2_db.owner_columns(client),)
 
 
 def _looks_like_uuid(value: str) -> bool:
@@ -427,8 +427,8 @@ def _looks_like_uuid(value: str) -> bool:
 def resolve_project_id(client, project_code: str) -> str | None:
     """`<code>` -> a uuid usable as `spine_substance.project_id`.
 
-    A trimmed stand-in for `cp_engine.mc2_db._resolve_project_id`, in the order
-    that actually resolves against live data:
+    `cp_engine.mc2_db._resolve_project_id` behind a hosted fast path, in the
+    order that actually resolves against live data:
 
       1. (retired with #301 — internal workstreams are `projects` rows and
          resolve like any other; mig 192 kept their uuids.)
@@ -468,11 +468,7 @@ def resolve_project_id(client, project_code: str) -> str | None:
     # 0. A bare UUID is unambiguous — try it as a project id. Guarded by a
     #    parse so a malformed code never reaches the DB as a uuid filter.
     if _looks_like_uuid(project_code):
-        rows = (
-            client.table("projects").select("id").eq("id", project_code).limit(1).execute().data
-            or []
-        )
-        return rows[0]["id"] if rows else None
+        return _engine_resolve_project_id(client, project_code)
 
     # Exact dir-slug, then the `<prefix>-<number>` short form as a prefix match.
     for query in (
@@ -489,66 +485,11 @@ def resolve_project_id(client, project_code: str) -> str | None:
         if rows and rows[0].get("project_id"):
             return rows[0]["project_id"]
 
-    rows = (
-        client.table("projects").select("id").eq("code", project_code).limit(1).execute().data
-        or []
-    )
-    if rows:
-        return rows[0]["id"]
-
-    # 4. Raw `full_job_name` (the display form, "SAP 5198 2027 Ad Videos").
-    rows = (
-        client.table("projects")
-        .select("id")
-        .eq("full_job_name", project_code)
-        .limit(1)
-        .execute()
-        .data
-        or []
-    )
-    if rows:
-        return rows[0]["id"]
-
-    # 5. The canonical on-disk dir-slug, reversed out of `full_job_name`. The
-    #    number sits in the MIDDLE of this slug, so branch 6 can't see it.
-    #    Scope the scan by company prefix so it stays cheap, then slugify in
-    #    Python (no slugify in SQL).
-    prefix = project_code.split("-", 1)[0]
-    if prefix:
-        candidates = (
-            client.table("projects")
-            .select("id, full_job_name")
-            .ilike("code", f"{prefix}-%")
-            .execute()
-            .data
-            or []
-        )
-        for row in candidates:
-            if _slug_full_job_name(row.get("full_job_name")) == project_code:
-                return row["id"]
-
-    # 6. Legacy `<companyprefix>-<number>` via the companies/number join.
-    #    `companies.code` is stored UPPERCASE while the working-dir prefix is
-    #    lowercase, so match case-insensitively.
-    head, sep, tail = project_code.rpartition("-")
-    if not sep or not tail.isdigit():
-        return None
-    companies = (
-        client.table("companies").select("id").ilike("code", head).limit(1).execute().data or []
-    )
-    if not companies:
-        return None
-    rows = (
-        client.table("projects")
-        .select("id")
-        .eq("company_id", companies[0]["id"])
-        .eq("number", int(tail))
-        .limit(1)
-        .execute()
-        .data
-        or []
-    )
-    return rows[0]["id"] if rows else None
+    # Branches 3-6 ARE the engine's resolver (architecture plan step 1b):
+    # `projects.code`, raw `full_job_name`, the slugified `full_job_name`
+    # dir-slug, then `<company>-<number>`. One implementation; the spine
+    # lookups above are a hosted fast path in front of it, never a substitute.
+    return _engine_resolve_project_id(client, project_code)
 
 
 def resolve_company_id(client, project_id: str) -> str | None:
@@ -583,8 +524,8 @@ def _with_project_status(
     archived work is legitimately readable, and reversible.
 
     One primary-key read; fail-soft (a failed lookup adds nothing). The
-    wording is `cp_engine.project_status`, vendored and shared with the stdio
-    server so the two cannot say it differently.
+    wording is `cp_engine.project_status`, shared with the stdio server so
+    the two cannot say it differently.
     """
     from cp_engine.project_status import annotate_project
 
@@ -1036,20 +977,10 @@ mcp_server.tool = _audited_tool_decorator  # type: ignore[method-assign]
 # decides it "sounds account-level" — moving an item up the tree is
 # `promote_uphill`, an explicit verb that leaves a step. The parent comes
 # from the engine's committed path index (`.cp-engine/paths.json`, #302),
-# read off the tree clone; this server does not import cp_engine, so the
-# reader is mirrored here (`_indexed_project_dir` reads the same file).
+# read off the tree clone by the engine's own `promote_uphill.level_for`.
 
-# Mirrors `cp_engine.promote_uphill.LEVEL_RULE` — one spelling across the
-# CLI, the stdio server and this one (tests/test_promote_uphill.py pins it).
-_LEVEL_RULE = (
-    "LEVEL: writes land on the named workstream (`project_code`), and the "
-    "response echoes `level: {code, label, parent}` so you can see where it "
-    "landed. Default to the deepest workstream in focus (mode 2's loaded "
-    "project). To record something at the account or program level, name "
-    "THAT code — or call `promote_uphill` afterwards, which copies the item "
-    "to the parent and leaves a step. The level is never inferred from "
-    "content."
-)
+# One spelling across the CLI, the stdio server and this one: the engine's.
+_LEVEL_RULE = _engine_promote_uphill.LEVEL_RULE
 
 
 def _paths_index() -> tuple[dict[str, dict[str, Any]], str | None]:
@@ -1100,33 +1031,43 @@ def _not_in_tree_warning(code: str) -> str:
 
 
 def _level_for(project_code: str) -> dict[str, Any]:
-    """`{code, label, parent, indexed}` for a code. Exact key first, then the
-    `<code>-` prefix form (`ibx-5153` → `ibx-5153-ai-campaign`) when unique.
-    Mirrors `cp_engine.promote_uphill.level_for`, plus one hosted-only field:
+    """`{code, label, parent, indexed}` for a code — `cp_engine.promote_uphill
+    .level_for` over the tree clone (exact key, then the unique `<code>-`
+    prefix: `ibx-5153` → `ibx-5153-ai-campaign`), plus one hosted-only field:
     an unindexed level carries `warning` saying WHY (#313). The CLI reads its
     own checkout, where "not in the tree" is a local `cxp sync` away; here the
     clone trails a push, and a bare `label: null` was the only signal."""
-    rows, reason = _paths_index()
     wanted = (project_code or "").strip()
-    entry = rows.get(wanted)
-    if entry is None and wanted:
-        lowered = wanted.lower()
-        hits = [(k, v) for k, v in rows.items() if k.lower().startswith(lowered + "-")]
-        if len(hits) == 1:
-            wanted, entry = hits[0]
-    if not isinstance(entry, dict):
-        return {
-            "code": wanted, "label": None, "parent": None, "indexed": False,
-            "warning": (
-                f"level unknown: {reason}" if reason else _not_in_tree_warning(wanted)
-            ),
-        }
+    rows, reason = _paths_index()
+    if reason is None:
+        level = _engine_level_for(tree_root(), wanted)
+        if level["indexed"]:
+            return level
     return {
-        "code": wanted,
-        "label": entry.get("label"),
-        "parent": entry.get("parent"),
-        "indexed": True,
+        "code": wanted, "label": None, "parent": None, "indexed": False,
+        "warning": (
+            f"level unknown: {reason}" if reason else _not_in_tree_warning(wanted)
+        ),
     }
+
+
+def upstream_code(project_code: str, scope: dict[str, Any] | None = None) -> str:
+    """The FULL workstream code to forward to mc-2 → webhook (#345).
+
+    The webhook finds the working dir by full code only, so forwarding the
+    caller's short form (`ggl-5188`) 404'd with "no working dir for code"
+    while the same response's `level` had already resolved it to
+    `ggl-5188-calendar-maintenance`. Order: the tree index's code (what the
+    webhook's own lookup reads), then the DB-side canonical code from
+    `resolve_write_scope` (the slugified `full_job_name`, which names the
+    dir), then the caller's string.
+    """
+    level = _level_for(project_code)
+    if level.get("indexed"):
+        return level["code"]
+    if scope and scope.get("project_code"):
+        return scope["project_code"]
+    return (project_code or "").strip()
 
 
 def _names_its_level(fn=None, *, param: str = "project_code"):
@@ -1465,7 +1406,7 @@ def embed_query(text: str) -> list[float]:
     """Embed a query with the SAME model the corpus was ingested with.
 
     Uses the `voyageai` client directly rather than importing cp_engine's
-    ingest wiring — this prototype stays off the `cp` import path by design.
+    ingest wiring, which builds service-side clients this server must not hold.
     """
     if not _embedder_cache:
         import voyageai
@@ -2196,12 +2137,16 @@ def list_project_sources(project_code: str) -> dict[str, Any]:
     except Exception:  # noqa: BLE001 — the project's own rows still list
         pass
 
+    # The supersede rule is the engine's (`project_sources.drop_superseded_assets`,
+    # architecture plan step 1c, H4): a row with a successor in this set is
+    # hidden. `superseded_hidden` keeps reporting the predecessor-id count.
     superseded = {r["prev_asset_id"] for r in rows if r.get("prev_asset_id")}
+    rows = [r for r in _engine_project_sources.drop_superseded_assets(rows)
+            if r.get("status") != "archived"]
     # "Exists but empty" (#324): a zero-chunk asset is flagged, never
     # mistaken for a readable source. The check fails OPEN — when it cannot
     # run, nothing is flagged (we never call a document empty on a failed read).
-    listed = [r.get("id") for r in rows
-              if r.get("id") not in superseded and r.get("status") != "archived"]
+    listed = [r.get("id") for r in rows]
     try:
         have_chunks = _asset_ids_with_chunks(client, listed)
         empty_ids = {a for a in listed if a and str(a) not in have_chunks}
@@ -2227,7 +2172,6 @@ def list_project_sources(project_code: str) -> dict[str, Any]:
             **({"comment_count": _comment_count(r)} if _comment_count(r) else {}),
         }
         for r in rows
-        if r.get("id") not in superseded and r.get("status") != "archived"
     ]
     sources.sort(key=lambda s: str(s.get("created_at") or ""), reverse=True)
 
@@ -2243,26 +2187,11 @@ def list_project_sources(project_code: str) -> dict[str, Any]:
     }, client, project_id, project_code)
 
 
-def _asset_ids_with_chunks(client, asset_ids, *, batch: int = 50,
-                           page: int = 1000) -> set[str]:
-    """Which of `asset_ids` have at least one chunk — the hosted twin of
-    `cp_engine.mc2_db.asset_ids_with_chunks` (#324; the vendored mc2_db is
-    constants-only). Reads `asset_id` only, paged at max-rows so a long
-    document never reads as empty. Raises on a read error."""
-    ids = [a for a in dict.fromkeys(asset_ids) if a]
-    have: set[str] = set()
-    for i in range(0, len(ids), batch):
-        part = ids[i:i + batch]
-        start = 0
-        while True:
-            rows = (client.table("asset_chunks").select("asset_id")
-                    .in_("asset_id", part).order("id")
-                    .range(start, start + page - 1).execute().data or [])
-            have.update(str(r["asset_id"]) for r in rows if r.get("asset_id"))
-            if len(rows) < page or have.issuperset(part):
-                break
-            start += page
-    return have
+# Which of `asset_ids` have at least one chunk (#324 "exists but empty") —
+# the engine's `mc2_db.asset_ids_with_chunks` (architecture plan step 1c):
+# reads `asset_id` only, paged at max-rows so a long document never reads as
+# empty, and raises on a read error.
+_asset_ids_with_chunks = _engine_mc2_db.asset_ids_with_chunks
 
 
 def _resolve_source_asset(
@@ -2987,38 +2916,11 @@ def semantic_search(
 # live version" then picks arbitrarily. It stays on the `cp mcp` service-key
 # path until a reviewed UPDATE policy exists.
 
-# Canonical `layer` vocabulary, copied (not imported) from
-# `spine_authoring.authored_element.LAYER_ALIASES` — this prototype stays off
-# the cp_engine/spine_authoring import path by design. Keep in sync with that
-# package; it is the single source of truth for stored `layer` strings, and a
-# divergence here means the spine UI's by-layer filters miss what we wrote.
-_LAYER_ALIASES = {
-    "email": "Email",
-    "note": "Note",
-    "decision": "Decisions",
-    "decisions": "Decisions",
-    "source": "Source material",
-    "sourcematerial": "Source material",
-    "brief": "Brief",
-    "stakeholder": "Stakeholders",
-    "stakeholders": "Stakeholders",
-    "agreement": "Agreement",
-    "synthesis": "Synthesis",
-    # `output` folds into Deliverables (#172). It was mapped to a layer of its
-    # own here, but "Output" is NOT in cp_engine.spine.LAYERS — so every write
-    # through this alias minted a layer the engine does not recognise, and
-    # readers that compare `layer == "Deliverables"` silently skipped them
-    # (spine_stats counts zero of the 9; spine_recover never flags them for
-    # rebind). One concept, one name.
-    "output": "Deliverables",
-    "activity": "Activity",
-    "retrospective": "Retrospective",
-    "research": "Research",
-    "deliverable": "Deliverables",
-    "deliverables": "Deliverables",
-    "clientfeedback": "Client feedback",
-    "timeline": "Timeline",
-}
+# Canonical `layer` vocabulary: `spine_authoring.authored_element.LAYER_ALIASES`
+# via the engine's re-export (architecture plan step 1c, H16 part) — the single
+# source of truth for stored `layer` strings, so the spine UI's by-layer
+# filters see what this server writes.
+_LAYER_ALIASES = _engine_authored_element.LAYER_ALIASES
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
@@ -3058,16 +2960,9 @@ BRIEF_ITEM_ID = "_authored/inputs-briefing"
 CANON_TARGET_MAX = 7
 
 
-def canon_layer(type_: str) -> str:
-    """Map an element `type` onto its canonical `layer` string.
-
-    Case/space-insensitive; an unmapped value passes through unchanged so
-    already-canonical TitleCase forms are idempotent and a future kind is never
-    invented or dropped. Verbatim behaviour of `spine_authoring.canon_layer`.
-    """
-    if not type_:
-        return type_
-    return _LAYER_ALIASES.get(type_.lower().replace(" ", ""), type_)
+# Element `type` → canonical `layer`; case/space-insensitive, an unmapped
+# value passes through unchanged. The shared package's own function.
+canon_layer = _engine_authored_element.canon_layer
 
 
 # Layers where `serves` means RELEVANCE, not a work binding (#179 step 4).
@@ -3099,18 +2994,17 @@ def slugify(text: str) -> str:
 
 
 def valid_due_date(raw: str | None) -> str | None:
-    """ISO `YYYY-MM-DD` or None. Mirrors `cp_engine.commitments._valid_due_date`.
+    """ISO `YYYY-MM-DD` or None — `cp_engine.commitments._valid_due_date`
+    (architecture plan step 1c, H14), applied to `str(raw)` so a non-string
+    argument is parsed rather than raising.
 
     Only a real ISO date belongs in `due_date`; a caller's free-text date is
     rejected loudly rather than guessed at, because an invented deadline is
     worse than an undated row (which downstream flags as "needs a date").
     """
-    if not raw or not str(raw).strip():
+    if raw is None:
         return None
-    try:
-        return date.fromisoformat(str(raw).strip()).isoformat()
-    except ValueError:
-        return None
+    return _engine_valid_due_date(str(raw))
 
 
 def resolve_write_scope(client, project_code: str) -> dict[str, Any] | None:
@@ -3165,43 +3059,13 @@ def canonical_project_code(client, project_id: str, fallback: str) -> str:
     than swallowed — a resolver that quietly stops resolving is exactly the
     defect to never ship twice.
     """
-    try:
-        rows = (
-            client.table("spine_substance")
-            .select("project_code")
-            .eq("project_id", project_id)
-            # Deterministic pick: the newest version's spelling. Unordered
-            # limit(1) was a coin-flip on a drifted project (pre-mig-129).
-            .order("version_date", desc=True)
-            .limit(1)
-            .execute()
-            .data
-            or []
-        )
-        if rows and rows[0].get("project_code"):
-            return rows[0]["project_code"]
-    except Exception as exc:  # noqa: BLE001 — fall through to step 2, loudly
-        log.warning("canonical_project_code: spine lookup failed: %s", exc)
+    def _alert(stage: str, exc: Exception) -> None:
+        log.warning("canonical_project_code: %s lookup failed: %s", stage, exc)
         observability.capture(exc, area="canonical_project_code")
 
-    try:
-        rows = (
-            client.table("projects")
-            .select("full_job_name")
-            .eq("id", project_id)
-            .limit(1)
-            .execute()
-            .data
-            or []
-        )
-        slug = _slug_full_job_name(rows[0].get("full_job_name")) if rows else ""
-        if slug:
-            return slug
-    except Exception as exc:  # noqa: BLE001 — the caller's code is the last resort
-        log.warning("canonical_project_code: projects lookup failed: %s", exc)
-        observability.capture(exc, area="canonical_project_code")
-
-    return fallback
+    # The engine's rule (architecture plan step 1b); failures go to this
+    # server's log and alerting instead of stderr.
+    return _engine_canonical_spine_code(client, project_id, fallback, on_error=_alert)
 
 
 _ELEMENT_RESOLVE_COLUMNS = (
@@ -3385,8 +3249,8 @@ def _resolve_active_asset(
     first arm was read, so an account doc a sibling could list and pull could
     not be attached to that sibling's elements.
 
-    Resolution is `cp_engine.project_sources.pick_source` (vendored verbatim,
-    so the stdio engine and this server share one ladder): a rag_asset uuid,
+    Resolution is `cp_engine.project_sources.pick_source` (imported, so the
+    stdio engine and this server share one ladder): a rag_asset uuid,
     else a CASE-EXACT title, else a case-insensitive exact title, else a
     case-insensitive substring (query ⊆ stored). Several matches on one rung is
     genuine ambiguity: the candidates (id + title) come back and nothing is
@@ -3449,8 +3313,7 @@ def _resolve_active_asset(
         log.warning("_resolve_active_asset: account-scope read failed: %s", exc)
         observability.capture(exc, area="attach_account_sources")
 
-    superseded = {r["prev_asset_id"] for r in rows if r.get("prev_asset_id")}
-    rows = [r for r in rows if r.get("id") not in superseded]
+    rows = _engine_project_sources.drop_superseded_assets(rows)
     asset, note = pick_source(rows, source_title)
     if note is not None and account_read_failed:
         note = {**note, "account_sources_unread": True}
@@ -3591,23 +3454,28 @@ def _modify_element_sources(
 #  Spine steps — the shared write helpers (#143 batch 1)
 # ──────────────────────────────────────────────────────────────────────
 #
-# Copied, not imported, from `cp_engine.spine_steps` — the vocabularies and
-# row fields below are that module's, verbatim:
+# The vocabulary and read shape are `cp_engine.spine_steps`'s own (architecture
+# plan step 1c, inventory H12). The row semantics below follow that module:
 #
-#   STEP_STATUSES = ("done", "active", "upcoming")   NOTE_MAX = 8000
 #   add_step      -> source/review LEFT UNSET (the table's defaults stand for a
 #                    live human step: engine writes neither column)
 #   propose_step  -> source='auto', review='proposed'
 #   upsert_auto_step -> source='auto', review='proposed', status='done'
+#
+# The verbs themselves are NOT yet the engine's: hosted receives an already-
+# resolved est_item_id, reports a 0-row retitle (the UPDATE policy refusing a
+# row a human confirmed concurrently) instead of claiming `updated: True`, and
+# returns no `steps` list. Which behaviour wins is a decision; see the
+# architecture-plan step 1 report.
 #
 # The one hosted-specific constraint is the UPDATE policy: an authenticated
 # caller may update ONLY rows that are BOTH source='auto' AND review='proposed'.
 # That is exactly the guardrail `upsert_auto_step` already enforces in code, so
 # the engine semantics and the RLS policy agree rather than fight.
 
-STEP_STATUSES = ("done", "active", "upcoming")
-STEP_NOTE_MAX = 8000
-_STEP_SELECT = "id, est_item_id, position, title, status, step_date, note, source, review"
+STEP_STATUSES = _engine_spine_steps.STEP_STATUSES
+STEP_NOTE_MAX = _engine_spine_steps.NOTE_MAX
+_STEP_SELECT = _engine_spine_steps._STEP_SELECT
 
 
 def read_steps(client, project_id: str, est_item_id: str) -> list[dict[str, Any]]:
@@ -3633,8 +3501,8 @@ def upsert_auto_step(
 ) -> dict[str, Any]:
     """Auto-journal a content-write as a step, ONE per (element, day).
 
-    Mirrors `cp_engine.spine_steps.upsert_auto_step` exactly, including the part
-    that matters most — the collapse key IGNORES title. A second version bump of
+    Follows `cp_engine.spine_steps.upsert_auto_step`, including the part that
+    matters most — the collapse key IGNORES title. A second version bump of
     the same element on the same day RETITLES the day's existing proposed
     auto-step rather than stacking a near-identical row.
 
@@ -7648,8 +7516,9 @@ def create_spine_element(
     """Create a new AUTHORED spine element (live v1), under the caller's identity.
 
     INSERT-only into `spine_substance`, building the row shape
-    `spine_authoring.authored_element.build_create_rows` produces — copied, not
-    imported (this prototype stays off the cp_engine import path). The
+    `spine_authoring.authored_element.build_create_rows` produces — re-coded
+    here, not yet called (architecture plan step 1: the row shape needs a
+    field-by-field decision before it can be the engine's). The
     engine-owned values are taken verbatim from that builder and confirmed
     against live `_authored/%` rows rather than invented:
 
@@ -8214,8 +8083,9 @@ def add_spine_document(
 _TREE_LOCK = threading.Lock()
 _TREE_STATE: dict[str, Any] = {"root": None, "last_pull": 0.0}
 
-_EXEC_START = "<!-- cp-engine:start exec-summary -->"
-_EXEC_END = "<!-- cp-engine:end exec-summary -->"
+# The engine's region markers (architecture plan step 1c).
+_EXEC_START = _engine_render.EXEC_SUMMARY_START
+_EXEC_END = _engine_render.EXEC_SUMMARY_END
 _SPRINT_DIR_RE = re.compile(r"^\d{4}-W\d{2}$")
 
 
@@ -8451,115 +8321,79 @@ def tree_provenance() -> dict[str, Any]:
     return prov
 
 
-# The engine's committed path index (cp-engine #302, `state.PATHS_INDEX_REL`).
-# Mirrored here rather than imported: this server does not import cp_engine.
-_PATHS_INDEX_REL = ".cp-engine/paths.json"
-_PATHS_INDEX_VERSION = 1
-_SCOPE_DIRS = ("1p", "firstpersonsf", "canonic")
-
-
-def _indexed_project_dir(root: Path, code: str) -> Path | None:
-    """`.cp-engine/paths.json`'s answer for `code`, when it names a dir that
-    exists and carries a cp.md. None on any miss — the walk then decides."""
-    try:
-        doc = json.loads((root / _PATHS_INDEX_REL).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(doc, dict) or doc.get("version") != _PATHS_INDEX_VERSION:
-        return None
-    rows = doc.get("workstreams")
-    entry = rows.get(code) if isinstance(rows, dict) else None
-    if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
-        return None
-    candidate = root / entry["path"]
-    return candidate if (candidate / "cp.md").is_file() else None
-
-
-def _iter_workstream_dirs(parent: Path):
-    """Breadth-first walk of working-dir candidates under `parent` — the
-    mirror of `cp_engine.state.iter_workstream_dirs`. Every direct child is
-    a candidate and is descended into; deeper dirs are descended into only
-    when they carry a `cp.md` (a program, an account), so a job's own
-    `spine/`, `meetings/`, `sessions/` are never walked. `inactive/` bins,
-    dot-dirs and `_`-prefixed engine dirs are skipped."""
-    from collections import deque
-
-    if not parent.is_dir():
-        return
-    queue = deque([(parent, 0)])
-    while queue:
-        current, depth = queue.popleft()
-        try:
-            children = sorted(c for c in current.iterdir() if c.is_dir())
-        except OSError:
-            continue
-        for child in children:
-            name = child.name
-            if name == "inactive" or name.startswith((".", "_")):
-                continue
-            yield child
-            if depth == 0 or (child / "cp.md").is_file():
-                queue.append((child, depth + 1))
+# The engine's committed path index (cp-engine #302) and the scope roots
+# every resolver walks — the engine's constants, not copies.
+_PATHS_INDEX_REL = _engine_state.PATHS_INDEX_REL
+_PATHS_INDEX_VERSION = _engine_state.PATHS_INDEX_VERSION
+_SCOPE_DIRS = _engine_state.SCOPE_DIRS
 
 
 def find_project_dir(root: Path, project_code: str) -> Path | None:
-    """Locate a project's working dir in the tree.
+    """Locate a project's working dir in the tree — the ENGINE's resolvers.
 
-    The real layout is a TREE, not a flat `<scope>/<code>/`: an account node
-    is `1p/google/`, its jobs sit under it, a program under an account holds
-    its own jobs (`1p/google/ggl-5xxx-go-safety/ggl-5136-…/`), internal
-    workstreams sit directly under their scope. So this reads the engine's
-    committed path index first (cp-engine #302) and falls back to a
-    recursive walk of the scope roots, bounded by the tree's shape rather
-    than a hard-coded depth.
+    The layout is a TREE (an account's jobs under it, a program's jobs under
+    the program), so this asks the engine (architecture plan step 1b):
 
-    Match order is EXACT before PREFIX: `ibx-5153-ai-campaign` must not be
-    reachable-by-accident when a caller asks for something that exactly exists,
-    and a prefix match requires the `<code>-` boundary so `ggl-517` cannot claim
-    `ggl-5177`. `inactive/` subtrees are skipped — an inactive project is not
-    the project's current state.
+      1. `promote_uphill.level_for` turns the caller's spelling into the
+         indexed code — exact key, else the unique `<code>-` prefix
+         (`ggl-5188` → `ggl-5188-calendar-maintenance`), the same rule every
+         level echo uses;
+      2. `state.indexed_dir` — `.cp-engine/paths.json`'s answer, when the dir
+         exists;
+      3. `state.match_dir_by_name` under each scope root — an exact dir name
+         before a `<code>-` prefix (`ggl-517` cannot claim `ggl-5177`),
+         shallowest first. `inactive/` bins are skipped.
+
+    Hosted keeps two guards on top: the code is lower-cased (callers type
+    `GGL-5136`) and a hit must carry a `cp.md` — every tree read here starts
+    from one.
     """
     code = project_code.strip().lower()
-    indexed = _indexed_project_dir(root, code)
-    if indexed is not None:
-        return indexed
-    exact: Path | None = None
-    prefix: list[Path] = []
+    if not code:
+        return None
+    indexed_code = _engine_level_for(root, code)["code"]
+    hit = _engine_state.indexed_dir(root, indexed_code)
+    if hit is not None and (hit / "cp.md").is_file():
+        return hit
+    prefix_hit: Path | None = None
     for scope in _SCOPE_DIRS:
-        for candidate in _iter_workstream_dirs(root / scope):
-            name = candidate.name.lower()
-            if not (candidate / "cp.md").is_file():
-                continue
-            if name == code:
-                exact = exact or candidate
-            elif name.startswith(f"{code}-"):
-                prefix.append(candidate)
-    if exact:
-        return exact
-    return sorted(prefix)[0] if prefix else None
+        candidate = _engine_state.match_dir_by_name(root / scope, code)
+        if candidate is None or not (candidate / "cp.md").is_file():
+            continue
+        if candidate.name.lower() == code:
+            return candidate
+        prefix_hit = prefix_hit or candidate
+    return prefix_hit
 
 
 def extract_exec_summary(cp_md: Path) -> tuple[str | None, str | None]:
-    """(exec_summary_text, note) from a cp.md's engine-managed markers."""
+    """(exec_summary_text, note) from a cp.md's engine-managed markers —
+    `cp_engine.render.slice_exec_summary_region`, trimmed of surrounding
+    whitespace as this verb always returned it."""
     try:
         text = cp_md.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         return None, f"could not read {cp_md.name}: {exc}"
-    start = text.find(_EXEC_START)
-    end = text.find(_EXEC_END, start + 1) if start >= 0 else -1
-    if start < 0 or end < 0:
+    region = _engine_render.slice_exec_summary_region(text)
+    if region is None:
         return None, (
             "no exec-summary markers in cp.md — the region is scaffolded by "
             "`cp sync`, so an unsynced project legitimately has none"
         )
-    return text[start + len(_EXEC_START) : end].strip(), None
+    return region.strip(), None
 
 
-def current_sprint_week(today: date | None = None) -> str:
-    """Today's ISO sprint-dir name, `YYYY-W##`."""
-    d = today or tenant_today()
-    iso = d.isocalendar()
-    return f"{iso[0]}-W{iso[1]:02d}"
+def current_sprint_week(today: date | datetime | None = None) -> str:
+    """The currently-planned sprint's dir name, `YYYY-W##` — the ENGINE's rule.
+
+    `cp_engine.sprints.current_sprint_week_iso`: Mon/Tue are this week,
+    Wed–Sun roll forward to next week, read on the tenant clock (#339) — the
+    same rule as MC-2's `planningWeekMonday()` and every sprint dir `cxp sync`
+    creates. This used to be a plain calendar `isocalendar()`, which on a
+    Wednesday named LAST week (2026-09-30: hosted W40, engine and tree W41;
+    architecture plan step 1a).
+    """
+    return _engine_sprint_week_iso(today if today is not None else tenant_now())
 
 
 def find_sprint_file(root: Path, dir_slug: str, code: str) -> tuple[Path | None, str, str | None]:
@@ -8605,8 +8439,10 @@ def get_project_state(project_code: str) -> dict[str, Any]:
     Returns the `## Exec Summary` region of the project's `cp.md` (the
     engine-scaffolded, model-authored region between the `cp-engine:start
     exec-summary` / `:end` markers — the durable project-state surface) plus the
-    CURRENT sprint file's full text. If this ISO week has no sprint file, the
-    most recent week that does is returned instead and `sprint_note` says so.
+    CURRENT sprint file's full text — the currently-planned sprint week, which
+    rolls forward on Wednesday (the engine's rule). If that week has no sprint
+    file, the most recent week that does is returned instead and `sprint_note`
+    says so.
 
     Served from a shallow clone of TENANT_REPO, pulled on read with a debounce.
     With no TENANT_REPO configured the tool still EXISTS and returns a clean
@@ -8973,16 +8809,13 @@ def skill(name: str) -> str:
 #  Wrap bundle — the close-out retro's raw material (#184, hosted port)
 # ──────────────────────────────────────────────────────────────────────
 #
-# A faithful copy of `cp_engine.wrap_report`'s fold logic and the payload
-# `cp wrap <code> --bundle` prints. COPIED, not imported, on the same rule the
-# rest of this prototype follows: hosted-mcp never imports cp_engine, so that
-# the server can be deployed without the engine package and so that no import
-# can smuggle in a cached service-role client (`mc2_db.get_client`).
-#
-# The duplication is the known cost. The mitigation is that both halves are
-# pure functions over row dicts with a test suite on the engine side
-# (`tests/test_wrap_report.py`) — if this copy drifts, it drifts visibly in the
-# tail-share number, which is the one figure the report is built around.
+# The payload `cp wrap <code> --bundle` prints. The meetings fold and the date
+# parser are `cp_engine.wrap_report`'s (architecture plan step 1c). The effort
+# fold is still a copy: it breaks ties alphabetically where the engine's
+# `Counter.most_common()` keeps insertion order, so converting it would
+# reorder equal-hours people in this verb's output — left for a decision.
+# Nothing here calls `mc2_db.get_client` (the service-role client); every
+# read runs on the caller's RLS client.
 
 # Fields the model MUST NOT invent. Each ships as a labelled placeholder so a
 # human sees a prompt rather than an omission.
@@ -9025,108 +8858,35 @@ _WRAP_SPINE_COLUMNS = (
     "id, est_item_id, framing, layer, status, version_label, "
     "version_date, body, serves, scope, archived, project_id"
 )
-_WRAP_VERSION_NUM_RE = re.compile(r"\s*v?(\d+)", re.IGNORECASE)
 
 
-def _wrap_as_date(value: Any) -> date | None:
-    """Parse a date or ISO-ish timestamp defensively. None on anything else.
-
-    Mirrors `wrap_report._as_date`. Defensive because PostgREST hands back
-    `date` columns as bare strings and `timestamptz` columns with a time and a
-    zone suffix — and because ONE malformed row must not fail a wrap bundle.
-    """
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        return date.fromisoformat(text[:10])
-    except ValueError:
-        return None
+# `wrap_report._as_date`: PostgREST hands back `date` columns as bare
+# strings and `timestamptz` with a time and zone; one malformed row must not
+# fail a bundle (architecture plan step 1c, inventory H10).
+_wrap_as_date = _engine_wrap_report._as_date
 
 
 def wrap_summarize_meetings(rows: list[dict], tail_days: int = 14) -> dict[str, Any]:
-    """Fold `fathom_meetings` rows into the bundle's `meetings` block.
+    """`fathom_meetings` rows → the bundle's `meetings` block.
 
-    The DISTRIBUTION is the point, not the total. On ibx-5192, 66% of all
-    meeting time landed in the final two weeks of a 7.6-week engagement — the
-    signature of decisions being made at the end instead of the beginning, and
-    invisible in a headline count.
-
-    THE TRAP, and the reason this function exists rather than a one-line
-    comprehension: the tail window ALWAYS closes on the LAST MEETING, never on
-    today. A wrap run weeks after delivery must describe the engagement, not the
-    silence since — anchoring on `today` slides the window past every meeting
-    and reports a 0% tail share for a project that was in fact entirely
-    back-loaded. `tests/test_wrap_report.py::
-    test_tail_window_anchors_on_the_last_meeting_not_today` pins this on the
-    engine side; `tests/test_hosted_wrap_bundle.py` pins it on THIS copy —
-    both a parity check against the engine and a source-level guard. Do not
-    "fix" it by reaching for `date.today()`.
-
-    Tolerates missing/malformed dates and durations — a wrap report must not
-    fail because one meeting row is odd.
+    The fold IS `cp_engine.wrap_report.summarize_meetings` (architecture plan
+    step 1c): the tail window closes on the LAST MEETING, never on today — a
+    wrap run weeks after delivery must describe the engagement, not the
+    silence since. This only serializes it into the payload shape
+    `cxp wrap --bundle` prints (hours, not minutes).
     """
-    dated: list[tuple[date, int]] = []
-    for r in rows:
-        day = _wrap_as_date(r.get("meeting_date"))
-        if day is None:
-            continue
-        try:
-            minutes = int(r.get("duration_minutes") or 0)
-        except (TypeError, ValueError):
-            minutes = 0
-        dated.append((day, max(0, minutes)))
-
-    if not dated:
-        return {
-            "count": 0,
-            "total_hours": 0.0,
-            "first": None,
-            "last": None,
-            "tail_days": tail_days,
-            "tail_share": 0.0,
-            "tail_hours": 0.0,
-            "head_hours": 0.0,
-            "heaviest_days": [],
-        }
-
-    dated.sort()
-    first, last = dated[0][0], dated[-1][0]
-    cutoff = last - timedelta(days=tail_days)  # anchored on `last`, never today
-
-    per_day_minutes: dict[str, int] = {}
-    per_day_count: dict[str, int] = {}
-    tail = head = 0
-    for day, minutes in dated:
-        key = day.isoformat()
-        per_day_minutes[key] = per_day_minutes.get(key, 0) + minutes
-        per_day_count[key] = per_day_count.get(key, 0) + 1
-        if day > cutoff:
-            tail += minutes
-        else:
-            head += minutes
-
-    heaviest = sorted(
-        ((d, per_day_count[d], m) for d, m in per_day_minutes.items()),
-        key=lambda t: (-t[2], t[0]),
-    )[:5]
-
-    total_minutes = sum(m for _, m in dated)
+    m = _engine_wrap_report.summarize_meetings(rows, tail_days=tail_days)
     return {
-        "count": len(dated),
-        "total_hours": round(total_minutes / 60.0, 1),
-        "first": first.isoformat(),
-        "last": last.isoformat(),
-        "tail_days": tail_days,
-        "tail_share": round((tail / total_minutes) if total_minutes else 0.0, 3),
-        "tail_hours": round(tail / 60.0, 1),
-        "head_hours": round(head / 60.0, 1),
+        "count": m.count,
+        "total_hours": m.total_hours,
+        "first": m.first.isoformat() if m.first else None,
+        "last": m.last.isoformat() if m.last else None,
+        "tail_days": m.tail_days,
+        "tail_share": round(m.tail_share, 3),
+        "tail_hours": round(m.tail_minutes / 60.0, 1),
+        "head_hours": round(m.head_minutes / 60.0, 1),
         "heaviest_days": [
-            {"date": d, "meetings": c, "minutes": m} for d, c, m in heaviest
+            {"date": d, "meetings": c, "minutes": mins} for d, c, mins in m.heaviest_days
         ],
     }
 
@@ -9172,50 +8932,11 @@ def wrap_summarize_effort(
     }
 
 
-def _wrap_version_rank(row: dict[str, Any]) -> tuple[int, str]:
-    """Version ordering for rows of ONE element: numeric label, then date.
-
-    "v10" must beat "v9", which string comparison gets wrong. An unparseable
-    label ranks -1 and loses to any parseable one — the date is the tie-break.
-    """
-    m = _WRAP_VERSION_NUM_RE.match(str(row.get("version_label") or ""))
-    return (int(m.group(1)) if m else -1, str(row.get("version_date") or ""))
-
-
-def _wrap_one_live_per_element(rows: list[dict]) -> list[dict]:
-    """Collapse duplicate live rows to ONE per element (the #113 defense).
-
-    `spine_substance` stores one row per VERSION and a live-only fetch SHOULD
-    yield one row per element — but the live data carries elements with two
-    `status='live'` rows (sap-5174's e94d0a03: an authored v7 beside a
-    distilled v6 the mirror re-flipped live). A deliverables list that emits
-    the same title twice reads as two deliverables in the retro.
-
-    Keyed on `(est_item_id, scope, origin project_id for account rows)`:
-    authored ids are `_authored/<slug>` and only unique per project, so two
-    sibling projects can each legitimately promote `_authored/janet-dossier`.
-    Rows with no `est_item_id` are unidentifiable, never merged, and appended
-    at the end.
-    """
-    best: dict[tuple, dict] = {}
-    order: list[tuple] = []
-    passthrough: list[dict] = []
-    for r in rows:
-        if not r.get("est_item_id"):
-            passthrough.append(r)
-            continue
-        scope = r.get("scope") or "project"
-        key = (
-            r.get("est_item_id"),
-            scope,
-            r.get("project_id") if scope == "account" else None,
-        )
-        if key not in best:
-            best[key] = r
-            order.append(key)
-        elif _wrap_version_rank(r) >= _wrap_version_rank(best[key]):
-            best[key] = r
-    return [best[k] for k in order] + passthrough
+# The #113 defense — collapse duplicate live rows to ONE per element, the
+# highest version (numeric label, then date) — is the engine's single read-path
+# rule, `project_sources._one_live_per_element` (architecture plan step 1c,
+# inventory H11). It logs each collapsed row as dirty data.
+_wrap_one_live_per_element = _engine_project_sources._one_live_per_element
 
 
 def _wrap_feedback_artifacts(project_code: str) -> tuple[list[str], str | None]:
@@ -10174,7 +9895,8 @@ def capture_session(
             ),
         }
 
-    result = call_mc2_capture_session(project_code, summary, when)
+    # #345: forward the resolved FULL code; the webhook matches no short form.
+    result = call_mc2_capture_session(upstream_code(project_code, scope), summary, when)
     audit(
         client,
         "capture_session",
@@ -10217,14 +9939,11 @@ _EXEC_GUARDED_FIELDS: tuple[str, ...] = (
     "status", "objective", "where_it_stands", "next_up", "blockers",
 )
 
-# Mirrors `prep_planning._EXEC_SUMMARY_STALE_DAYS` and its stamp regex (this
-# server does not import prep_planning): a summary the planning bundle already
-# calls STALE is the one a partial refresh must not quietly re-stamp.
-_EXEC_STALE_GUARD_DAYS = 14
-_EXEC_STAMP_RE = re.compile(
-    r"^##\s+Exec Summary\s*·\s*updated\s+(?P<date>\d{4}-\d{2}-\d{2})",
-    re.MULTILINE,
-)
+# The engine's stale threshold for an Exec Summary stamp, and its comparison
+# (stale at >= 14 days): `exec_summary_draft.STALE_AFTER_DAYS`, the scope rule
+# of the weekly drafter. A summary that rule already calls stale is the one a
+# partial refresh must not quietly re-stamp (architecture plan step 1c).
+_EXEC_STALE_GUARD_DAYS = _engine_exec_summary_draft.STALE_AFTER_DAYS
 
 
 def _current_exec_stamp(project_code: str) -> date | None:
@@ -10243,8 +9962,7 @@ def _current_exec_stamp(project_code: str) -> date | None:
         if project_dir is None:
             return None
         text, _ = extract_exec_summary(project_dir / "cp.md")
-        m = _EXEC_STAMP_RE.search(text or "")
-        return date.fromisoformat(m.group("date")) if m else None
+        return _engine_exec_summary_draft.stamp_date(text or "")
     except Exception:  # noqa: BLE001 — fail open; the guard is advisory-strength
         return None
 
@@ -10461,7 +10179,8 @@ def capture_project_state(
     if stale is not None:
         return stale
 
-    result = call_mc2_capture_project_state(project_code, fields, entry)
+    # #345: forward the resolved FULL code; the webhook matches no short form.
+    result = call_mc2_capture_project_state(upstream_code(project_code, scope), fields, entry)
     audit(
         client,
         "capture_project_state",
@@ -10584,41 +10303,17 @@ def record_round(
 #  promote_uphill (#304) — the explicit move up the tree
 # ──────────────────────────────────────────────────────────────────────
 
-# Mirrors `cp_engine.promote_uphill` (constants + hash) — copied, not
-# imported; tests/test_promote_uphill.py pins the hash and the est_item_id.
-_PROMOTIONS_LABEL = "Promoted uphill"
-_PROMOTIONS_EST_ITEM_ID = "_authored/promoted-uphill"
-_PROMOTIONS_BODY = (
-    "Items promoted from child workstreams by `promote_uphill` / "
-    "`cxp promote-uphill`. Each promotion is one step on this element's "
-    "trail, naming the child it came from. The level of a capture is never "
-    "inferred from its content — a promotion is always someone's explicit "
-    "call, and this is where those calls are recorded."
-)
-_SOURCE_KIND_PROMOTED = "promoted"
-_TITLE_EXCERPT_CHARS = 80
-_COMMITMENT_COPY_COLUMNS = (
-    "id, project_id, status, cp_hash, description, owner_email, owner_name, "
-    "direction, due_date, work_item_id, work_item_kind, spine_element_id, "
-    "source_meeting_id"
-)
-
-
-def _promoted_hash(original: str, parent_code: str) -> str:
-    """The copy's `cp_hash`: the ORIGINAL's identity plus the parent code, so
-    the same item promoted twice collides and the same text on two children
-    does not. Byte-identical to `cp_engine.promote_uphill.promoted_hash`."""
-    import hashlib
-
-    raw = f"promote-uphill|{original}|{parent_code}".encode()
-    return hashlib.sha256(raw).hexdigest()[:8]
-
-
-def _promotion_step_title(child_code: str, text: str) -> str:
-    excerpt = " ".join((text or "").split())
-    if len(excerpt) > _TITLE_EXCERPT_CHARS:
-        excerpt = excerpt[:_TITLE_EXCERPT_CHARS].rstrip() + "…"
-    return f"Promoted from {child_code}: {excerpt}"
+# The engine's promotion constants, hash and step title (architecture plan
+# step 1c, inventory H20) — the same item promoted from the CLI and from here
+# must collide on one `cp_hash` and leave one trail shape.
+_PROMOTIONS_LABEL = _engine_promote_uphill.PROMOTIONS_LABEL
+_PROMOTIONS_EST_ITEM_ID = _engine_promote_uphill.PROMOTIONS_EST_ITEM_ID
+_PROMOTIONS_BODY = _engine_promote_uphill.PROMOTIONS_BODY
+_SOURCE_KIND_PROMOTED = _engine_promote_uphill.SOURCE_KIND_PROMOTED
+_TITLE_EXCERPT_CHARS = _engine_promote_uphill.TITLE_EXCERPT_CHARS
+_COMMITMENT_COPY_COLUMNS = _engine_promote_uphill.COMMITMENT_COPY_COLUMNS
+_promoted_hash = _engine_promote_uphill.promoted_hash
+_promotion_step_title = _engine_promote_uphill.promotion_step_title
 
 
 def _ensure_promotions_element(
@@ -10731,7 +10426,10 @@ def promote_uphill(
         # The file write happens upstream (mc-2 → webhook, the caller's own
         # token); the level echo is the CHILD's until the backend says where
         # the copy landed, and the backend's own `level` (the parent) wins.
-        out = call_mc2_promote_uphill(project_code, ref, note, (week or "").strip() or None)
+        # #345: forward the resolved FULL code; the webhook matches no short form.
+        out = call_mc2_promote_uphill(
+            upstream_code(project_code), ref, note, (week or "").strip() or None
+        )
         if not out.get("ok"):
             return {**out, "item_kind": "decision", "item_ref": ref,
                     "level": _level_for(project_code)}
@@ -11404,15 +11102,42 @@ def build_fingerprint() -> str:
     here = Path(__file__).resolve().parent
     digest = hashlib.sha256()
     paths = [here / "server.py", here / "observability.py"]
-    vendor = here / "vendor"
-    if vendor.is_dir():
-        paths += sorted(vendor.rglob("*.py"))
+    # The engine is part of the deployment now (architecture plan step 1):
+    # hash the INSTALLED package, not the repo's `src/`, so the answer is
+    # what this process imports. Read off `sys.modules` rather than imported
+    # here — liveness must not depend on an import succeeding.
+    engine = sys.modules.get("cp_engine")
+    engine_file = getattr(engine, "__file__", None)
+    if engine_file:
+        paths += sorted(Path(engine_file).resolve().parent.rglob("*.py"))
     for path in paths:
         try:
             digest.update(path.read_bytes())
         except OSError:
             digest.update(b"<unreadable>")
     return digest.hexdigest()[:12]
+
+
+_BUILD_COMMIT_FILE = Path(__file__).resolve().parent / "BUILD_COMMIT"
+
+
+def build_commit() -> str:
+    """The commit this container was built from, or "unknown".
+
+    Railway injects `RAILWAY_GIT_COMMIT_SHA` only for GitHub-triggered builds;
+    this service deploys by `deploy.sh`, which stages `git archive HEAD` and
+    writes that commit to `BUILD_COMMIT` beside this file (a `-dirty` suffix
+    when `--allow-dirty` staged the working tree). Neither present — a local
+    run, a plain `docker build` — is an explicit "unknown", never a guess.
+    """
+    sha = os.environ.get("RAILWAY_GIT_COMMIT_SHA", "")
+    if sha:
+        return sha[:12]
+    try:
+        text = _BUILD_COMMIT_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        text = ""
+    return text or "unknown"
 
 
 @mcp_server.custom_route("/health", methods=["GET"])
@@ -11432,10 +11157,10 @@ async def health(_request):
     The webhook solved this in 2026-08 for the same reason and its docstring
     says so. This mirrors it deliberately.
 
-    **`commit` is usually "unknown" here, and that is honest rather than
-    broken.** Railway injects `RAILWAY_GIT_COMMIT_SHA` only for
-    GitHub-triggered deploys, and this service deploys by `railway up` from a
-    CLI — so there is no commit to report.
+    **`commit` comes from `BUILD_COMMIT`** (see `build_commit()`): Railway
+    injects `RAILWAY_GIT_COMMIT_SHA` only for GitHub-triggered deploys, and
+    this service deploys by `deploy.sh`, which records the staged commit. The
+    engine is installed from that same commit, so it pins both.
 
     **`tool_count` answers "is it deployed", NOT "does it work" (#285).** It
     counts `list_tools()`, which proves a function object was registered at
@@ -11451,19 +11176,20 @@ async def health(_request):
         this file makes, plus the two module constants read while a query is
         built. `status` degrades to `"degraded"` when any fails. No caller
         identity needed: every #283 failure was import- or construction-time.
-      * **`build`** — a hash of `server.py`, `observability.py` and `vendor/`.
+      * **`build`** — a hash of `server.py`, `observability.py` and the
+        installed `cp_engine` package.
         `commit` is "unknown" on a `railway up` deploy (Railway injects the SHA
         only for GitHub-triggered builds), so this answers what a commit could
         not: whether the container holds what the repo holds. Two deploys were
         spent on a "stale tarball" theory for want of it.
 
-    **The container DOES ship cp_engine now** — `vendor/` carries the closure
-    the wrap-up verbs need (#283). An earlier version of this docstring said it
-    deliberately did not, which was true when written and is why the four verbs
-    were added without anyone noticing they broke the convention.
+    **The container installs cp_engine as a package** (architecture plan
+    step 1), from the same commit as this file. Before that a vendored closure
+    carried the modules the wrap-up verbs needed (#283), and before THAT the
+    container had none, which is why the four verbs broke on arrival.
     """
     tools = await mcp_server.list_tools()
-    commit = os.environ.get("RAILWAY_GIT_COMMIT_SHA", "")
+    commit = build_commit()
     deps_ok, deps = dependency_probe()
     return JSONResponse(
         {
@@ -11483,8 +11209,8 @@ async def health(_request):
             # one names what broke.
             "deps": [d for d in deps if not d["ok"]] or "all ok",
             "build": build_fingerprint(),
-            # Empty on a `railway up` deploy — see the docstring.
-            "commit": commit[:12] if commit else "unknown",
+            # BUILD_COMMIT from deploy.sh; "unknown" when absent.
+            "commit": commit,
             "deployment_id": os.environ.get("RAILWAY_DEPLOYMENT_ID") or "unknown",
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
@@ -11673,35 +11399,10 @@ def _find_workstream_dir(project_code: str):
     return None
 
 
-def _workstream_docs(ws_dir) -> tuple[dict[str, str], set[str]]:
-    """`({relpath: text}, {file names})` for ONE workstream directory —
-    the hosted twin of `cp_engine.spine.workstream_docs` (not vendored: the
-    lint modules stay filesystem-free). Stops at any subdirectory with its
-    own `cp.md`, so a child workstream's docs never lint against the
-    parent's store."""
-    docs: dict[str, str] = {}
-    names: set[str] = set()
-    stack = [ws_dir]
-    while stack:
-        d = stack.pop()
-        try:
-            entries = sorted(d.iterdir())
-        except OSError:
-            continue
-        for e in entries:
-            if e.name.startswith("."):
-                continue
-            if e.is_dir():
-                if not (e / "cp.md").is_file():
-                    stack.append(e)
-                continue
-            names.add(e.name)
-            if e.suffix.lower() == ".md":
-                try:
-                    docs[str(e.relative_to(ws_dir))] = e.read_text(encoding="utf-8")
-                except (OSError, UnicodeDecodeError):
-                    continue
-    return docs, names
+# `({relpath: text}, {file names})` for ONE workstream directory, stopping at
+# any subdirectory with its own `cp.md` — the engine's
+# `spine.workstream_docs` (architecture plan step 1c).
+_workstream_docs = _engine_spine.workstream_docs
 
 
 def _ingested_source_titles(client, project_id: str) -> set[str] | None:
@@ -11709,24 +11410,15 @@ def _ingested_source_titles(client, project_id: str) -> set[str] | None:
     its company's account-scoped titles, under the caller's identity — the
     hosted twin of `project_sources.ingested_source_titles` (#324). None
     when the read fails, so the check is skipped rather than every reference
-    reported as dangling."""
+    reported as dangling.
+
+    The title set is `project_sources.ingested_source_titles` (architecture
+    plan step 1c); this resolves the company and keeps the None-on-failure."""
     try:
-        titles: set[str] = set()
-        for column in _owner_columns(client):
-            for r in (client.table("rag_assets").select("title")
-                      .eq(column, project_id).execute().data or []):
-                if r.get("title"):
-                    titles.add(r["title"])
         proj = (client.table("projects").select("company_id")
                 .eq("id", project_id).limit(1).execute().data or [])
         company_id = proj[0].get("company_id") if proj else None
-        if company_id:
-            for r in (client.table("rag_assets").select("title")
-                      .eq("company_id", company_id).eq("scope", "account")
-                      .execute().data or []):
-                if r.get("title"):
-                    titles.add(r["title"])
-        return titles
+        return _engine_project_sources.ingested_source_titles(client, project_id, company_id)
     except Exception:  # noqa: BLE001 — see docstring
         return None
 
@@ -12282,7 +11974,8 @@ def rotate_word_count(project_code: str) -> dict[str, Any]:
     if scope is None:
         return {"error": f"no project or initiative resolves for code {project_code!r}"}
 
-    result = call_mc2_rotate_word_count(project_code)
+    # #345: forward the resolved FULL code; the webhook matches no short form.
+    result = call_mc2_rotate_word_count(upstream_code(project_code, scope))
     backend = result.get("backend") if isinstance(result.get("backend"), dict) else {}
     audit(
         client,
@@ -12314,7 +12007,7 @@ def rotate_word_count(project_code: str) -> dict[str, Any]:
 # test suite exercises exactly what the server serves.
 
 
-# The mechanism lives in `cp_engine.mcp_strict` (vendored verbatim) so the
+# The mechanism lives in `cp_engine.mcp_strict` (imported) so the
 # stdio `cxp mcp` server refuses the same way — one implementation, not two
 # that drift. Imported here, at the end, because the swap must see every tool.
 from cp_engine.mcp_strict import forbid_unknown_arguments  # noqa: E402
