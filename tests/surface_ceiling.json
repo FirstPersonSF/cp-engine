@@ -1,6 +1,9 @@
 {
   "_why": "Architecture plan step 0 (2026-09-30): the surface may shrink but not grow without a deliberate edit here. 64 hosted tools, 68 cxp commands and 36 tables carried the usage in which ~a quarter to a third did 90% of the work. Raising a number is a decision: say why in the commit.",
   "hosted_tools": 64,
-  "cxp_commands": 68,
-  "mc2_tables": 36
+  "cxp_commands": 69,
+  "mc2_tables": 37,
+  "_raised": [
+    "2026-09-30: cxp_commands 68\u219269 for `cxp health` (step 3, daily health line); mc2_tables 36\u219237 for `webhook_runs` (step 3, a run record on every webhook path)."
+  ]
 }

@@ -784,8 +784,12 @@ def run_all_lints(
             .data
         ) or []
         warnings.extend(lint_lifecycle(rows, relations_all))
-    except Exception:  # noqa: BLE001 — advisory pass, never fail the lint
-        pass
+    except Exception as exc:  # noqa: BLE001 — advisory pass, never fail the lint
+        # Degrade, but never let "could not check" read as "clean" (step 3).
+        warnings.append(
+            "lint incomplete: spine relations unreadable — lifecycle and "
+            f"archived-referrer checks did NOT run ({type(exc).__name__}: {exc})"
+        )
 
     warnings.extend(
         lint_curation(rows, today=today,
@@ -805,8 +809,12 @@ def run_all_lints(
             lint_archived_referrers(rows, archived_rows, relations_all)
         )
         warnings.extend(lint_partial_archive(every_row))
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001 — advisory pass, never fail the lint
+        warnings.append(
+            "lint incomplete: archived spine rows unreadable — archived-"
+            "referrer and partial-archive checks did NOT run "
+            f"({type(exc).__name__}: {exc})"
+        )
 
     if cp_md_text is not None:
         warnings.extend(lint_cp_placeholders(cp_md_text))

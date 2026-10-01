@@ -21,10 +21,6 @@ import cp_engine
 from cp_engine import ProjectState, SyncConfig, TenantConfig
 
 
-def test_runs_against_this_worktree():
-    assert "cp-engine-step3" in cp_engine.__file__
-
-
 # ──────────────────────────────────────────────────────────────────────
 #  fixtures
 # ──────────────────────────────────────────────────────────────────────

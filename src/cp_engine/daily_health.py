@@ -51,7 +51,7 @@ _ERR_CHARS = 90
 # Not in `mc2_db.Tables` yet: the hosted server vendors that class verbatim
 # and the drift test pins it. Move it there when step 1 (hosted imports the
 # engine) deletes the vendor tree. Created by webhook/migrations/04.
-WEBHOOK_RUNS = "webhook_runs"
+WEBHOOK_RUNS = Tables.WEBHOOK_RUNS
 
 
 @dataclass

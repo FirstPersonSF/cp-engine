@@ -356,8 +356,16 @@ def fetch_inputs(
                 created = str(a.get("created_at") or "")
                 if a.get("id") and created:
                     source_dates[str(a["id"])] = created[:10]
-        except Exception:  # noqa: BLE001 — advisory, see docstring
-            pass
+        except Exception as exc:  # noqa: BLE001 — advisory, see docstring
+            # The only caller is the CLI: print, so the degraded proposals
+            # are explained rather than silently weaker (step 3).
+            import sys
+
+            print(
+                f"(WARNING: source dates unreadable — proposals made without "
+                f"them: {type(exc).__name__}: {exc})",
+                file=sys.stderr,
+            )
     return rows, relations, source_dates
 
 

@@ -63,6 +63,7 @@ class Tables:
     UNROUTED_EMAILS = "unrouted_emails"  # inbound emails w/o a routable project (mig 122)
     AUTO_INGEST_RUNS = "auto_ingest_runs"
     SLACK_DIGEST_RUNS = "slack_digest_runs"  # per-channel digest outcomes (mig 168, #227)
+    WEBHOOK_RUNS = "webhook_runs"  # one row per webhook POST, every path (webhook mig 04, step 3)
     VENDORS = "vendors"  # cross-client partner registry (mig 169, RFP v3 §5)
     RFP_RESPONDENTS = "rfp_respondents"  # per-project RFP pipeline (mig 169, §3)
     ASSET_INGEST_RUNS = "asset_ingest_runs"
