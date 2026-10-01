@@ -4,6 +4,12 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.128.3 — 2026-10-01
+
+*`cxp health --json` reports each check's real status.* The ingest check's detail
+carries an `ok` run count, which overwrote the check's `ok` status in the JSON
+(`"ok": 1` instead of `true`). The Slack line was never affected.
+
 ## v0.128.2 — 2026-10-01
 
 **The daily sync and the Monday drafts run on a Railway cron.** GitHub ran the
