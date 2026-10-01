@@ -315,9 +315,17 @@ def world(tmp_path_factory):
 
 
 def _reset_hosted_tree():
+    """Forget the hosted server's clone — and delete it: `tree_root()` clones
+    into its own `mkdtemp()`, outside pytest's tmp dir."""
+    import shutil
+
     mod = sys.modules.get("server")
-    if mod is not None:
-        mod._TREE_STATE.clear()
+    if mod is None:
+        return
+    root = mod._TREE_STATE.get("root")
+    if root and Path(root).parent.name.startswith("hosted-cp-tree-"):
+        shutil.rmtree(Path(root).parent, ignore_errors=True)
+    mod._TREE_STATE.clear()
 
 
 def _run(tmp: Path, mp: pytest.MonkeyPatch) -> SimpleNamespace:
