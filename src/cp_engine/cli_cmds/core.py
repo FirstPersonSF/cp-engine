@@ -1003,10 +1003,13 @@ def promote_uphill_cmd(
 @click.option("--post", "do_post", is_flag=True,
               help="Post the line to the partners' Slack channel (default: print only).")
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable output.")
+@click.option("--channel", "channel", default=None, metavar="ID",
+              help="Slack channel to post to (else env CP_HEALTH_CHANNEL, else "
+              "the partners' channel).")
 @click.option("--scheduled", "scheduled", default=None, metavar="CRON",
               help="The cron expression that fired this run; skip unless it is "
                    "the slot that lands at 05:xx tenant time.")
-def health_cmd(do_post: bool, as_json: bool, scheduled: str | None) -> None:
+def health_cmd(do_post: bool, as_json: bool, scheduled: str | None, channel: str | None) -> None:
     """The daily health line: sync, ingest, webhook, hosted, CI, spine, summaries.
 
     Architecture plan step 3. Read-only everywhere; prints to stdout unless
@@ -1043,7 +1046,7 @@ def health_cmd(do_post: bool, as_json: bool, scheduled: str | None) -> None:
             click.echo("Error: --post needs the tenant config (run from the tenant root).", err=True)
             sys.exit(2)
         try:
-            ts = daily_health.post(report, config=config, client=client)
+            ts = daily_health.post(report, config=config, client=client, channel=channel)
         except Exception as exc:  # noqa: BLE001 — a post that failed must fail the run
             click.echo(f"Error: health line NOT posted: {exc}", err=True)
             sys.exit(2)

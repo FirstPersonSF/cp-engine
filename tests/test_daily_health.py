@@ -211,3 +211,24 @@ def test_cli_exits_nonzero_when_a_check_needs_a_look(monkeypatch, tmp_path):
 ])
 def test_exactly_one_morning_slot_per_day(when, expected):
     assert {c: dh.is_morning_slot(c, when) for c in expected} == expected
+
+
+def test_post_destination_precedence(monkeypatch):
+    """--channel beats CP_HEALTH_CHANNEL beats the partners' channel."""
+    import cp_engine.daily_health as dh
+    from cp_engine import dates_loop, slack
+
+    sent = {}
+    monkeypatch.setattr(slack, "load_slack_token", lambda config: "xoxb-test")
+    monkeypatch.setattr(slack, "post_channel", lambda web, channel_id, text: sent.setdefault("ch", channel_id) or "ts")
+    monkeypatch.setattr(dates_loop, "_partners_channel", lambda client, errors: "CPARTNERS")
+    report = dh.HealthReport(when=dh.tenant_now(), checks=[])
+
+    monkeypatch.setenv("CP_HEALTH_CHANNEL", "DENV")
+    dh.post(report, config=None, client=object(), channel="DFLAG")
+    assert sent.pop("ch") == "DFLAG"
+    dh.post(report, config=None, client=object())
+    assert sent.pop("ch") == "DENV"
+    monkeypatch.delenv("CP_HEALTH_CHANNEL")
+    dh.post(report, config=None, client=object())
+    assert sent.pop("ch") == "CPARTNERS"

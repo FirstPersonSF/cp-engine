@@ -467,17 +467,20 @@ def gather(
     return HealthReport(when=now, checks=checks)
 
 
-def post(report: HealthReport, *, config, client) -> str:
-    """Post to the partners' channel — the dates loop's rollup destination
-    (MC-2 app_config `dates_loop_partners_channel`), with the same bot token
-    (`slack.load_slack_token`). Raises when the channel is unset or the post
-    fails: a health line that silently didn't post is the thing it exists to
-    prevent."""
+def post(report: HealthReport, *, config, client, channel: str | None = None) -> str:
+    """Post the health line, with the dates loop's bot token
+    (`slack.load_slack_token`). Destination, first set wins: `channel`
+    (`cxp health --channel`), env `CP_HEALTH_CHANNEL`, then the partners'
+    channel (MC-2 app_config `dates_loop_partners_channel`). Raises when no
+    destination is set or the post fails: a health line that silently didn't
+    post is the thing it exists to prevent."""
     from cp_engine import slack as slack_mod
     from cp_engine.dates_loop import _partners_channel
 
     errors: list[str] = []
-    channel = _partners_channel(client, errors) if client is not None else None
+    channel = channel or os.environ.get("CP_HEALTH_CHANNEL") or None
+    if not channel and client is not None:
+        channel = _partners_channel(client, errors)
     if not channel:
         raise slack_mod.SlackError(
             "partners channel unset — set MC-2 app_config "
