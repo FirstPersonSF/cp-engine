@@ -294,9 +294,6 @@ def test_registry_covers_known_tables() -> None:
         # Read via the cp_prompt_resolve RPC; written only through the
         # team-gated definer fns.
         "cp_prompt", "cp_prompt_override",
-        # Weekly-sort pre-pass output (mig 142). One active proposal per
-        # substance row; a re-run supersedes rather than overwrites.
-        "spine_sort_proposals",
         # Accept-and-flag envelope breaches (mig 193, plan D7); cp-engine
         # reads the open rows for the `envelope-strip` region (#303).
         "workstream_flags",

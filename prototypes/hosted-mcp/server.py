@@ -3860,7 +3860,7 @@ def _stamp_card_kind(row: dict[str, Any]) -> str | None:
     none of them wrote the column: measured 2026-09-30, 29 of the 38 live rows
     with a NULL `card_kind` carried an `author_id` — the hosted create path's
     signature — all written after the cxp side began stamping (#246). NULL
-    reads as "not work" to `route_queue` and `weekly_sort`.
+    reads as "not work" to `card_class.classify`.
 
     Same rule as `spine_authoring.authored_element.card_kind_for` on the cxp
     side: stamp only what STRUCTURE decides. Placement is structural (item =

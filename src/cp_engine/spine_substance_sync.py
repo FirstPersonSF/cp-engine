@@ -72,8 +72,8 @@ def substance_to_rows(
                 # Stamped here for the same reason the authored write path
                 # stamps it (#179): `card_kind` was backfilled once by
                 # `cxp card-kinds` and nothing wrote it afterwards, so rows
-                # created since carried NULL — and `route_queue`/`weekly_sort`
-                # both read NULL as "not work". Measured 2026-09-14: 5 live
+                # created since carried NULL — and `card_class` reads NULL as
+                # "not work". Measured 2026-09-14: 5 live
                 # distilled rows had drifted this way, all placement='item',
                 # i.e. real work slots invisible as work.
                 #
