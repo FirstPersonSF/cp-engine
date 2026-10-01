@@ -99,3 +99,18 @@ def test_migration_collapses_variants_and_never_mints_twins_on_rerun(tmp_path):
     apply_plan(client, plan2, project_company=sh.project_companies(client),
                company_names={"co-ibx": "Infoblox"}, today=date(2026, 10, 2))
     assert len(sh.fetch_cards(client)) == 2
+
+
+def test_confirmed_pairs_canonicalize_by_evidence():
+    from cp_engine.stakeholder_import import CANONICAL_EVIDENCE, canonical
+
+    pairs = [("ggl", "CBins", "Chris Bins"), ("ggl", "Nathan Johnson", "Nate Johnson"),
+             ("ggl", "Ealing", "Elin"), ("ggl", "Luis", "Louise Dreier"),
+             ("ibx", "Jared", "Jarrod Kelsey"), ("slt", "Adele", "Adelle Bonavire"),
+             ("ggl", "Stefan Muma", "Stefan Mumaw"), ("ggl", "Jeff Amon", "Geoff Ahmann")]
+    for co, variant, canon in pairs:
+        assert canonical(variant, co, {}) == canon
+        assert canon in CANONICAL_EVIDENCE
+    # Company-scoped: "Jared" elsewhere is left alone; Tyler is never Nate.
+    assert canonical("Jared", "ggl", {}) == "Jared"
+    assert canonical("Tyler Johnson", "ggl", {}) == "Tyler Johnson"

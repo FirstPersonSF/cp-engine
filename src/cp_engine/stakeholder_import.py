@@ -44,16 +44,26 @@ from cp_engine import stakeholders as sh
 #: are only safe inside one company's roster; the multi-word ones are
 #: proposed for the tenant ``[names] aliases`` as well.
 CONFIRMED_VARIANTS: dict[str, dict[str, str]] = {
-    "ggl": {"Rena Lanham": "Rina Lanham", "Rena": "Rina Lanham"},
+    "ggl": {
+        "Rena Lanham": "Rina Lanham", "Rena": "Rina Lanham",
+        # Confirmed by Drew 2026-10-01 (the six candidate pairs).
+        "CBins": "Chris Bins",
+        "Nathan Johnson": "Nate Johnson",     # NOT Tyler Johnson
+        "Ealing": "Elin",
+        "Luis": "Louise Dreier",              # freelancer → internal, no card
+        "Louise": "Louise Dreier",
+    },
     "ibx": {
         "Mahul": "Mehul Patel", "Mahool": "Mehul Patel", "Mehul": "Mehul Patel",
         "Jamie": "Jaime Mehra", "Jamie Mehra": "Jaime Mehra", "Jaime": "Jaime Mehra",
         "Hazmat Grover": "Hasmit Grover", "Hazmat": "Hasmit Grover",
+        "Jared": "Jarrod Kelsey", "Jarrod": "Jarrod Kelsey",
     },
     "slt": {
         "Art Kalinski": "Art Kilinski",
         "Ryan Pearson": "Ryan Person",
         "Charlie Herzog": "Charles Herzog",
+        "Adele": "Adelle Bonavire", "Adelle": "Adelle Bonavire",
     },
     "sap": {"Michelle Homes Craig": "Michelle Craig"},
     "*": {
@@ -62,6 +72,7 @@ CONFIRMED_VARIANTS: dict[str, dict[str, str]] = {
         # the confirmed mis-hearings; "Jeff Amon" is the one sprint listing.
         "Jeff Amon": "Geoff Ahmann", "Jeff Almond": "Geoff Ahmann",
         "Geoff Ahman": "Geoff Ahmann",
+        "Stefan Muma": "Stefan Mumaw",
     },
 }
 
@@ -78,14 +89,9 @@ SUSPECT_NAMES = {
 
 #: Possibly-one-person pairs left SEPARATE (a card each) until a human
 #: confirms — some are known different people (Nate vs Tyler Johnson).
-CANDIDATE_PAIRS = [
-    ("ggl", "CBins", "Chris Bins"),
-    ("ggl", "Nate Johnson", "Nathan Johnson"),
-    ("ggl", "Ealing", "Elin"),
-    ("ggl", "Luis", "Louise (internal: Louise Dreier)"),
-    ("ibx", "Jared", "Jarrod Kelsey"),
-    ("slt", "Adele", "Adelle Bonavire (card)"),
-]
+#: All six 2026-10-01 candidates were confirmed same-person by Drew and
+#: moved into CONFIRMED_VARIANTS; none are open.
+CANDIDATE_PAIRS: list[tuple[str, str, str]] = []
 
 CANONICAL_EVIDENCE = {
     "Rina Lanham": (
@@ -110,6 +116,22 @@ CANONICAL_EVIDENCE = {
     "Michelle Craig": (
         "work email michelle.craig@sap.com + 268 tenant hits; LinkedIn "
         "/in/michellehomescraig (card framing) kept as alias 'Michelle Homes Craig'"),
+    "Chris Bins": "no email/LinkedIn/card; majority 11 'Chris Bins' vs 7 'CBins' (a handle)",
+    "Nate Johnson": (
+        "email njohnson@triptych.co does not decide; no LinkedIn or card; majority "
+        "141 'Nate Johnson' vs 7 'Nathan Johnson' — note he signed the Triptych SOW "
+        "as 'Nathan Johnson' (kept as alias)"),
+    "Elin": "no email/LinkedIn/card; majority 311 'Elin' vs 9 'Ealing' (also a London borough)",
+    "Louise Dreier": (
+        "MC-2 freelancer entity 'Louise Dreier' (853 hits) vs 114 'Luis' → internal, "
+        "no card"),
+    "Jarrod Kelsey": (
+        "email jkelsey@infoblox.com + Janet's 6/16 invite roster 'Jarrod Kelsey'; "
+        "'Jared' 178 hits is the mis-spelling"),
+    "Adelle Bonavire": (
+        "email abonavire@ptc.com + LinkedIn /in/adellebonavire + existing card; "
+        "'Adele' 29 hits"),
+    "Stefan Mumaw": "MC-2 freelancer entity 'Stefan Mumaw' → internal",
     "Geoff Ahmann": (
         "MC-2 freelancer entity 'Geoff Ahmann' (2,404 tenant hits); tenant "
         "[names] aliases"),
