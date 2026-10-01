@@ -28,7 +28,8 @@ import yaml
 
 from cp_engine.clock import tenant_now
 from cp_engine.config import TenantConfig
-from cp_engine.ingest import IngestPlanError, _content_hash, _validate_plan
+from cp_engine.asks import ask_hash
+from cp_engine.ingest import IngestPlanError, _validate_plan
 from cp_engine.sprints import current_sprint_week_iso
 
 # Conservative ceilings to keep prompt latency + cost reasonable.
@@ -106,7 +107,7 @@ def _route_action_items(
         )
 
     def rehash(code: str, item: dict) -> None:
-        item["hash"] = _content_hash(code, "record-ask", item.get("text") or "")
+        item["hash"] = ask_hash(code, item.get("text") or "")
 
     try:
         return route_action_items(
@@ -198,7 +199,7 @@ def generate_plan(
     If `action_items` is provided (the Fathom meeting's `action_items`
     JSONB), each item becomes a deterministic `record-ask` appended to
     the plan's `projects[<project_code>]["record-ask"]` list. The hash
-    recipe matches `ingest._content_hash`, so `_write_ask`'s dedupe will
+    recipe is `asks.ask_hash` (the one ask recipe), so `_write_ask`'s dedupe will
     treat re-ingests of the same meeting as no-ops AND the ClickUp ↔ cp
     round-trip (Task 1.7) can match a closed ClickUp task back to its
     source ask.
@@ -1088,7 +1089,7 @@ def _action_items_to_ask_items(
     Each Fathom action item becomes one ask whose hash is stable across
     re-ingests of the same meeting — so the ClickUp ↔ cp round-trip can
     match a closed ClickUp task back to its source ask. The hash uses the
-    same recipe as `_content_hash(code, "record-ask", text)` in ingest.py
+    same recipe as `asks.ask_hash(code, text)`, which `_write_ask` uses,
     so `_write_ask` recognises the item as already-present on re-ingest.
     """
     out: list[dict] = []
@@ -1106,6 +1107,6 @@ def _action_items_to_ask_items(
             "who": who,
             "date": today_iso,
             "status": "open",
-            "hash": _content_hash(code, "record-ask", text),
+            "hash": ask_hash(code, text),
         })
     return out

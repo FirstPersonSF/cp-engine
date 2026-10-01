@@ -42,12 +42,11 @@ _No recent session captured._
 
 <!-- cp-engine:start carry-forward -->
 ## Carried over from 2026-W19
-- [ask · 2026-05-04 · Maria] Volume forecast from ops team
 - [risk · escalated · contract · 2026-05-04] Legal turnaround may slip past May 22
 - [milestone · 2026-05-22] Contract target sign date
 - [decision · by W21] Whether to staff a third on Pebble for Q3
 - [opportunity] Stage discovery for Pebble's sister brand
-<!-- cp-engine:digest ff05f45614c7 -->
+<!-- cp-engine:digest 97c729d0c0c2 -->
 <!-- cp-engine:end carry-forward -->
 
 ## Client communication
@@ -56,7 +55,11 @@ _No recent session captured._
 <!-- <message — `[status · date]` prefix> -->
 
 ### Open asks
-<!-- <what we need from them — `[open · date · who]` prefix; add `· by YYYY-MM-DD` when the ask has a deadline (prep + the attention digest escalate it)> -->
+<!-- cp-engine:start open-asks -->
+- _Not yet rendered from MC-2._
+<!-- cp-engine:digest aa3e6242cff1 -->
+<!-- cp-engine:end open-asks -->
+<!-- <asks live in MC-2 and render above; type a new one here as `[open · date · who]` (add `· by YYYY-MM-DD` for a deadline) and sync moves it into MC-2> -->
 
 ### Inbound
 <!-- <what they told us — `[date · who]` prefix> -->

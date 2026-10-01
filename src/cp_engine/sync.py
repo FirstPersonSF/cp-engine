@@ -818,6 +818,23 @@ def _sync_tenant_inner(
         )
         files_written.extend(sprint_paths)
 
+        # Asks live in MC-2 (step 4a): import hand-typed asks, then render
+        # each current sprint file's `open-asks` region from the workstream's
+        # open commitments. Runs before the current-sprint / strip / agenda
+        # passes below parse the files, so every surface counts MC-2's set.
+        asks_client = (
+            backend.spine_client()
+            if isinstance(backend, SpineClientProvider)
+            else None
+        )
+        for path in _sync_asks_from_mc2(
+            asks_client, config.root / "sprints", projects,
+            week_iso=current_sprint_week_iso(sync_clock),
+            today=local_date(sync_clock),
+        ):
+            if path not in files_written:
+                files_written.append(path)
+
         # New-source announcements (#153) — every asset ingested in the last
         # two weeks gets one `### Inbound` bullet in the project's CURRENT
         # sprint file (cp:hash-idempotent), which the cp.md inbound strip
@@ -1129,6 +1146,72 @@ def _sync_tenant_inner(
         warnings=counter.count if counter is not None else 0,
         warning_messages=tuple(counter.messages) if counter is not None else (),
     )
+
+
+def _sync_asks_from_mc2(
+    client,
+    sprint_root: Path,
+    projects,
+    *,
+    week_iso: str,
+    today: date,
+) -> list[Path]:
+    """Step 4a: each active workstream's current sprint file gets its
+    ``open-asks`` region from MC-2 (``cp_engine.asks.sync_sprint_asks``).
+
+    No client → nothing is rendered or imported, and a warning says so: the
+    region keeps its last rendering rather than being blanked, and any
+    hand-typed ask waits in place for the next sync that reaches MC-2.
+    """
+    from cp_engine.asks import sync_sprint_asks
+    from cp_engine.sprints import (
+        _carry_cutoff,
+        _iso_week_dates,
+        _is_active_for_sprint,
+        _owning_files,
+    )
+
+    targets = [
+        p for p in projects
+        if _is_active_for_sprint(p) and p.mc2_id
+        and (sprint_root / week_iso / f"{p.code}.md").is_file()
+    ]
+    if not targets:
+        return []
+    if client is None:
+        logger.warning(
+            "asks: MC-2 unreachable — %d sprint file(s) keep their last "
+            "rendered open asks; hand-typed asks wait for the next sync",
+            len(targets),
+        )
+        return []
+    written: list[Path] = []
+    for project in targets:
+        path = sprint_root / week_iso / f"{project.code}.md"
+        prior = _owning_files(path)[1:]
+        cutoff = _carry_cutoff(prior[0]) if prior else None
+        earlier = [
+            f for f in prior
+            if cutoff is None or _iso_week_dates(f.parent.name)[0] >= cutoff
+        ]
+        try:
+            res = sync_sprint_asks(
+                client, sprint_path=path, code=project.code,
+                project_id=project.mc2_id, today=today,
+                earlier_files=earlier, company_name=project.company_name,
+            )
+        except Exception as exc:  # noqa: BLE001 — one project never blocks sync
+            logger.warning("asks: %s skipped: %s: %s",
+                           project.code, type(exc).__name__, exc)
+            continue
+        for err in res.errors:
+            logger.warning("asks %s: %s", project.code, err)
+        if res.imported:
+            logger.info("asks %s: imported %d into MC-2",
+                        project.code, len(res.imported))
+        if res.changed:
+            written.append(path)
+    return written
 
 
 def _refresh_all_last_session_lines(root: Path) -> list[Path]:

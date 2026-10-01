@@ -401,8 +401,8 @@ def test_render_sprint_scaffold_round_trips_through_parser(tmp_path: Path) -> No
     assert sf.project_code == "peb"
     assert sf.facts.stage == "Negotiation"
     assert sf.facts.owner == "Drew"
-    assert len(sf.carry_forward.asks) == 1
-    assert sf.carry_forward.asks[0].who == "Maria"
+    # Step 4a: the template renders no carried asks, whatever it is handed.
+    assert sf.carry_forward.asks == ()
 
 
 def test_compute_carry_forward_from_prior_sprint_file(tmp_path) -> None:
@@ -422,8 +422,7 @@ def test_compute_carry_forward_from_prior_sprint_file(tmp_path) -> None:
         "- [by W21] Staff a third on Pebble for Q3\n"
     )
     cf = compute_carry_forward(prior)
-    assert len(cf.asks) == 1  # only `open`
-    assert cf.asks[0].who == "Maria"
+    assert cf.asks == ()  # step 4a: asks live in MC-2, never carried
     assert len(cf.risks) == 1  # only `escalated`/`watching`
     assert len(cf.horizon) == 1
 
@@ -1536,7 +1535,10 @@ def _cf_setup(tmp_path):
     )
     prior.write_text(body)
     cur = ensure_sprint_file(**_cf_kwargs(tmp_path, "2026-W20", "2026-W19"))
-    assert "Approve the Round 3 pop-up copy" in cur.read_text()  # premise
+    # Premise: the risk carries. The ask does NOT (step 4a: asks live in
+    # MC-2 and render in the week's own `open-asks` region, never carried).
+    assert "Fee increase not yet signed off" in cur.read_text()
+    assert "Approve the Round 3 pop-up copy" not in cur.read_text()
     return prior, cur
 
 
@@ -1578,8 +1580,8 @@ def test_render_warns_on_hand_annotation_of_a_carried_row(tmp_path, caplog) -> N
 
     _prior, cur = _cf_setup(tmp_path)
     cur.write_text(cur.read_text().replace(
-        "Approve the Round 3 pop-up copy",
-        "Approve the Round 3 pop-up copy — **now urgent, Rena out Friday**", 1,
+        "Fee increase not yet signed off",
+        "Fee increase not yet signed off — **now urgent, Rena out Friday**", 1,
     ))
     with caplog.at_level(logging.WARNING, logger="cp_engine"):
         ensure_sprint_file(**_cf_kwargs(tmp_path, "2026-W20", "2026-W19"))
@@ -1642,24 +1644,24 @@ def _carried_texts(path) -> list[str]:
     return [a.text for a in parse_sprint_file(path).carry_forward.asks]
 
 
-def test_unanswered_ask_still_carried_two_weeks_later(tmp_path) -> None:
-    """An ask raised in W37 and never answered was carried into W38 and then
-    vanished from W39: carry-forward read only the prior week's OWN asks, and
-    W38 had carried it, not owned it (#326). Nothing resolved it, nothing
-    warned. It must still be carried in W39, dated when it was first raised."""
+def test_asks_never_carry_forward(tmp_path) -> None:
+    """Step 4a: asks live in MC-2. An ask raised in W37 and never answered
+    used to carry into every later week from the FILES (#326) — which is how
+    388 asks read open in a sprint file while MC-2 had them done. Now no week
+    carries an ask; the open set renders in each week's own `open-asks`
+    region from MC-2 (`cp_engine.asks`, covered in tests/test_asks_mc2.py).
+
+    Control: on the pre-4a engine `compute_carry_forward(w38).asks` held the
+    W37 ask and W39's region carried `[ask · 2026-09-08 · Rena]`."""
     from cp_engine.sprints import compute_carry_forward, parse_sprint_file
 
     _week(tmp_path, "2026-W37", None, own_asks=_ASK_326)
     w38 = _week(tmp_path, "2026-W38", "2026-W37")
     w39 = _week(tmp_path, "2026-W39", "2026-W38")
-    assert any("Round 3 pop-up copy" in t for t in _carried_texts(w38))  # premise
-    carried = [a for a in parse_sprint_file(w39).carry_forward.asks
-               if "Round 3 pop-up copy" in a.text]
-    assert len(carried) == 1
-    assert carried[0].asked_date == "2026-09-08"  # age stays legible
-    assert "[ask · 2026-09-08 · Rena]" in w39.read_text()
-    # compute_carry_forward is the one derivation, for ingest's scaffold too.
-    assert [a.text for a in compute_carry_forward(w39).asks] == [carried[0].text]
+    assert compute_carry_forward(w38).asks == ()
+    assert parse_sprint_file(w39).carry_forward.asks == ()
+    assert "[ask ·" not in w39.read_text()
+    assert "Round 3 pop-up copy" not in _region(w39)
 
 
 def test_ask_resolved_in_w38_is_gone_from_w39(tmp_path) -> None:
@@ -1672,47 +1674,10 @@ def test_ask_resolved_in_w38_is_gone_from_w39(tmp_path) -> None:
     assert not any("Round 3 pop-up copy" in t for t in _carried_texts(w39))
 
 
-def test_ask_closed_at_origin_stops_carrying_despite_stale_projection(tmp_path) -> None:
-    """Every close is written at the ask's ORIGIN (`_origin_sprint_path`), and
-    past weeks are never re-rendered, so W38's carry-forward region still says
-    open after W37 closes it. Reading that frozen projection would carry a
-    resolved ask forever; the owning file's word must win."""
-    w37 = _week(tmp_path, "2026-W37", None, own_asks=_ASK_326)
-    w38 = _week(tmp_path, "2026-W38", "2026-W37")
-    w37.write_text(w37.read_text().replace("[open · 2026-09-08", "[closed · 2026-09-08", 1))
-    assert "Round 3 pop-up copy" in w38.read_text()  # premise: stale projection
-    w39 = _week(tmp_path, "2026-W39", "2026-W38")
-    assert not any("Round 3 pop-up copy" in t for t in _carried_texts(w39))
-
-
-def test_restated_ask_keeps_first_raised_date_and_carries_once(tmp_path) -> None:
-    """Restated in a later week, the ask carries ONCE (deduped by cp:hash) with
-    the newest wording but the date it was first raised."""
-    from cp_engine.sprints import parse_sprint_file
-
-    _week(tmp_path, "2026-W37", None, own_asks=_ASK_326)
-    _week(tmp_path, "2026-W38", "2026-W37", own_asks=_ASK_326.replace(
-        "2026-09-08 · Rena] Approve", "2026-09-15 · Rena] Approve (v2)"))
-    w39 = _week(tmp_path, "2026-W39", "2026-W38")
-    carried = parse_sprint_file(w39).carry_forward.asks
-    assert len(carried) == 1
-    assert "(v2)" in carried[0].text and carried[0].asked_date == "2026-09-08"
-
-
-def test_snoozed_ask_still_carries_across_weeks(tmp_path) -> None:
-    """Snooze is about escalation, not state (see `snooze`): a snoozed ask is
-    still open and keeps carrying, marker and all."""
-    _week(tmp_path, "2026-W37", None, own_asks=_ASK_326.replace(
-        "copy <!--", "copy <!-- cp:snoozed-until=2026-10-01 --> <!--"))
-    _week(tmp_path, "2026-W38", "2026-W37")
-    w39 = _week(tmp_path, "2026-W39", "2026-W38")
-    carried = [t for t in _carried_texts(w39) if "Round 3 pop-up copy" in t]
-    assert carried and "cp:snoozed-until=2026-10-01" in carried[0]
-
-
-def test_open_client_asks_honours_a_close_in_this_weeks_own_section(tmp_path) -> None:
-    """The count must agree with next week's carry-forward: an ask carried in
-    but restated `closed` in this week's own section is not open."""
+def test_open_client_asks_counts_this_weeks_own_section_only(tmp_path) -> None:
+    """With nothing carried, `open_client_asks` is the week's own `### Open
+    asks` — the MC-2 region plus any hand bullet not yet imported — and a
+    `closed` restatement there is not open."""
     from cp_engine.aggregators import open_client_asks
     from cp_engine.sprints import parse_sprint_file
 
@@ -1720,27 +1685,8 @@ def test_open_client_asks_honours_a_close_in_this_weeks_own_section(tmp_path) ->
     w38 = _week(tmp_path, "2026-W38", "2026-W37",
                 own_asks=_ASK_326.replace("[open ·", "[closed ·"))
     sf = parse_sprint_file(w38)
-    assert sf.carry_forward.asks  # premise: carried in from W37
+    assert sf.carry_forward.asks == ()
     assert open_client_asks(sf) == []
-
-
-def test_render_quiet_when_multi_week_ask_drops_out(tmp_path, caplog) -> None:
-    """#320's discard warning looks for a dropped row's text in the files the
-    region is derived from. Once asks carry from ANY earlier week, a row whose
-    origin is two weeks back — and absent from last week's file, as it is in
-    every file rendered before #326 — must still count as derived, or closing
-    it would read as a hand edit being lost."""
-    import logging
-
-    w37 = _week(tmp_path, "2026-W37", None, own_asks=_ASK_326)
-    _week(tmp_path, "2026-W38", None)  # rendered without it (pre-#326 shape)
-    w39 = _week(tmp_path, "2026-W39", "2026-W38")
-    assert "Round 3 pop-up copy" in w39.read_text()  # premise
-    w37.write_text(w37.read_text().replace("[open · 2026-09-08", "[closed · 2026-09-08", 1))
-    with caplog.at_level(logging.WARNING, logger="cp_engine"):
-        w39 = _week(tmp_path, "2026-W39", "2026-W38")
-    assert "Round 3 pop-up copy" not in w39.read_text()
-    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1770,80 +1716,19 @@ def _region(path) -> str:
                 body.index("<!-- cp-engine:end carry-forward -->")]
 
 
-def test_ask_past_the_age_cap_rolls_up_instead_of_carrying(tmp_path) -> None:
-    """#326 brought back 724 asks nobody had closed since May. An ask first
-    raised more than CARRY_FORWARD_MAX_AGE_WEEKS before the sprint does NOT
-    carry as a bullet; the region gets one rollup line with the count, the
-    oldest date and a link that opens the week file it lives in. An ask
-    raised ON the cutoff day still carries in full; one day older does not."""
-    import re
-    from datetime import timedelta
-
+def test_old_asks_do_not_roll_up_either(tmp_path) -> None:
+    """The #326 age-cap rollup line existed for asks nobody closed since May.
+    With asks in MC-2 nothing ask-shaped carries, so no stale-ask line renders;
+    an old open ask is imported as `expired` by the reconcile script instead
+    (scripts/reconcile_sprint_asks.py)."""
     from cp_engine.sprints import parse_sprint_file
 
-    cutoff = _cutoff_for("2026-W39")
-    on_cap = cutoff.isoformat()
-    past_cap = (cutoff - timedelta(days=1)).isoformat()
-    _week(tmp_path, "2026-W30", None, own_asks=_ask(past_cap, "Old logo question", "a0000001"))
-    _week(tmp_path, "2026-W32", None, own_asks=_ask(on_cap, "Edge-of-cap question", "a0000002"))
+    _week(tmp_path, "2026-W30", None, own_asks=_ask("2026-07-20", "Old logo question", "a0000001"))
     w38 = _week(tmp_path, "2026-W38", None, own_asks=_ask("2026-09-15", "Fresh question", "a0000003"))
     w39 = _week(tmp_path, "2026-W39", "2026-W38")
-
-    region = _region(w39)
-    carried = _carried_texts(w39)
-    assert any("Fresh question" in t for t in carried)
-    assert any("Edge-of-cap question" in t for t in carried)
-    assert not any("Old logo question" in t for t in carried)
-    assert "Old logo question" not in region
-    line = next(ln for ln in region.splitlines() if "stale" in ln)
-    assert line == (f"- 1 stale ask (oldest {past_cap}) — triage in "
-                    f"[2026-W30](../2026-W30/{w38.name})")
-    # The link resolves, relative to the file it is rendered into.
-    target = re.search(r"\]\(([^)]+)\)", line).group(1)
-    assert (w39.parent / target).resolve().is_file()
-    # And it parses back as a rollup, not as an ask.
-    cf = parse_sprint_file(w39).carry_forward
-    assert cf.stale_count("asks") == 1 and cf.stale_count("risks") == 0
-
-
-def test_stale_rollup_counts_weeks_and_drops_when_closed_where_it_lives(
-    tmp_path, caplog
-) -> None:
-    """Stale asks stay resolvable in their own week: closing one there drops
-    it from the count on the next render. The rollup line changes every time
-    that happens and no sprint file holds it, so #320's hand-edit check must
-    not read the change as a hand edit being discarded."""
-    import logging
-
-    w30 = _week(tmp_path, "2026-W30", None, own_asks=_ask("2026-07-20", "Old A", "b0000001"))
-    _week(tmp_path, "2026-W31", None, own_asks=_ask("2026-07-28", "Old B", "b0000002"))
-    w38 = _week(tmp_path, "2026-W38", None)
-    w39 = _week(tmp_path, "2026-W39", "2026-W38")
-    assert (f"- 2 stale asks (oldest 2026-07-20) — triage in "
-            f"[2026-W30](../2026-W30/{w38.name}) and 1 other week") in _region(w39)
-
-    w30.write_text(w30.read_text().replace("[open · 2026-07-20", "[closed · 2026-07-20", 1))
-    with caplog.at_level(logging.WARNING, logger="cp_engine"):
-        w39 = _week(tmp_path, "2026-W39", "2026-W38")
-    assert (f"- 1 stale ask (oldest 2026-07-28) — triage in "
-            f"[2026-W31](../2026-W31/{w38.name})") in _region(w39)
-    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
-
-
-def test_current_sprint_header_names_stale_asks_separately(tmp_path) -> None:
-    """The list shows live asks; the header counts them and names the stale
-    backlog beside them, as it names snoozed ones: `(1 · 1 stale)`."""
-    from cp_engine.aggregators import open_client_asks
-    from cp_engine.sprints import parse_sprint_file, render_current_sprint_block
-
-    _week(tmp_path, "2026-W30", None, own_asks=_ask("2026-07-20", "Old logo question", "c0000001"))
-    _week(tmp_path, "2026-W38", None, own_asks=_ask("2026-09-15", "Fresh question", "c0000002"))
-    w39 = _week(tmp_path, "2026-W39", "2026-W38")
-    sf = parse_sprint_file(w39)
-    assert [a.text.split(" <!--")[0] for a in open_client_asks(sf)] == ["Fresh question"]
-    block = render_current_sprint_block(sf, "x.md")
-    assert "**Open client asks** (1 · 1 stale):" in block
-    assert "Old logo question" not in block
+    assert "stale ask" not in _region(w39)
+    assert parse_sprint_file(w39).carry_forward.stale_count("asks") == 0
+    assert w38.exists()
 
 
 # ──────────────────────────────────────────────────────────────────────

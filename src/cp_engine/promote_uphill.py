@@ -298,7 +298,11 @@ def promote_commitment(
             )
         }
 
-    new_hash = promoted_hash(row.get("cp_hash") or row["id"], parent_code)
+    # Keyed on the ROW id, not its cp_hash (step 4a): the re-key script
+    # rewrites cp_hash to the one ask recipe, and an id never changes, so
+    # promoting the same row twice still collides. (No promoted rows
+    # existed when this changed, 2026-10-01 — nothing to migrate.)
+    new_hash = promoted_hash(row["id"], parent_code)
     base = {
         "ok": True,
         "item_kind": "commitment",

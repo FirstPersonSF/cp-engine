@@ -49,7 +49,10 @@ _Pebble Foods Activation · Maria Mraz & Sam Ito_
 <!-- <message — `[status · date]` prefix> -->
 
 ### Open asks
-<!-- <what we need from them — `[open · date · who]` prefix; add `· by YYYY-MM-DD` when the ask has a deadline (prep + the attention digest escalate it)> -->
+<!-- cp-engine:start open-asks -->
+- _Not yet rendered from MC-2._
+<!-- cp-engine:end open-asks -->
+<!-- <asks live in MC-2 and render above; type a new one here as `[open · date · who]` (add `· by YYYY-MM-DD` for a deadline) and sync moves it into MC-2> -->
 
 ### Inbound
 <!-- <what they told us — `[date · who]` prefix> -->

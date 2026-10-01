@@ -464,7 +464,9 @@ CARRY_FORWARD_MAX_AGE_WEEKS = 6
 def compute_carry_forward(prior_path: Path) -> CarryForward:
     """Derive the carry-forward block for a new sprint from the prior file.
 
-    Asks carry while still `open`, risks while `escalated` or `watching`,
+    Asks never carry: they live in MC-2 and render in the week's own
+    ``open-asks`` region (``cp_engine.asks``, step 4a). Risks carry while
+    `escalated` or `watching`,
     horizon items and open questions (#340) while not marked settled — each
     however many weeks ago it
     was raised, up to the age cap. Missing prior file → empty carry-forward.
@@ -488,7 +490,11 @@ def compute_carry_forward(prior_path: Path) -> CarryForward:
         return CarryForward(asks=(), risks=(), horizon=())
     files = _owning_files(prior_path)
     cutoff = _carry_cutoff(prior_path)
-    asks, stale_asks = _split_stale(_open_through(files, _ASKS), cutoff, "asks")
+    # Asks do NOT carry (architecture step 4a): they live in MC-2 and every
+    # open one renders in the current week's `open-asks` region
+    # (`cp_engine.asks`). Carrying them from the files as well would show an
+    # ask closed in MC-2 as still open — the 388-ask drift step 4a removed.
+    asks, stale_asks = (), None
     risks, stale_risks = _split_stale(_open_through(files, _RISKS), cutoff, "risks")
     horizon, stale_horizon = _split_stale(
         _open_through(files, _HORIZON), cutoff, "horizon"

@@ -91,9 +91,6 @@ PriorSprint: {{ prior_sprint }}
 {%- endif %}
 {%- else %}
 ## Carried over from {{ prior_sprint or "prior sprint" }}
-{%- for a in carry_forward.asks %}
-- [ask · {{ a.asked_date }}{% if a.who %} · {{ a.who }}{% endif %}{% if a.by %} · by {{ a.by }}{% endif %}] {{ a.text }}
-{%- endfor %}
 {%- for r in carry_forward.risks %}
 - [risk · {{ r.severity }} · {{ r.category }} · {{ r.raised_date }}] {{ r.text }}
 {%- endfor %}
@@ -112,7 +109,7 @@ PriorSprint: {{ prior_sprint }}
 {%- for line in stale_lines %}
 {{ line }}
 {%- endfor %}
-{%- if not carry_forward.asks and not carry_forward.risks and not carry_forward.horizon and not carry_forward.open_questions and not stale_lines %}
+{%- if not carry_forward.risks and not carry_forward.horizon and not carry_forward.open_questions and not stale_lines %}
 - _Nothing carried over._
 {%- endif %}
 {%- endif %}
@@ -127,7 +124,10 @@ _{{ project.name }} · {{ project.contacts | join(" & ", attribute="name") }}_
 <!-- <message — `[status · date]` prefix> -->
 
 ### Open asks
-<!-- <what we need from them — `[open · date · who]` prefix; add `· by YYYY-MM-DD` when the ask has a deadline (prep + the attention digest escalate it)> -->
+<!-- cp-engine:start open-asks -->
+- _Not yet rendered from MC-2._
+<!-- cp-engine:end open-asks -->
+<!-- <asks live in MC-2 and render above; type a new one here as `[open · date · who]` (add `· by YYYY-MM-DD` for a deadline) and sync moves it into MC-2> -->
 
 ### Inbound
 <!-- <what they told us — `[date · who]` prefix> -->

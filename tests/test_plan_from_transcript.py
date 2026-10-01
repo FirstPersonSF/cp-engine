@@ -167,7 +167,7 @@ def test_extract_yaml_strips_yaml_language_tag_variants() -> None:
 
 
 def test_action_items_to_ask_items_emits_one_record_ask_per_item():
-    from cp_engine.ingest import _content_hash
+    from cp_engine.asks import ask_hash as _ask_hash
     from cp_engine.plan_from_transcript import _action_items_to_ask_items
 
     action_items = [
@@ -188,11 +188,11 @@ def test_action_items_to_ask_items_emits_one_record_ask_per_item():
     # Hash matches the ingest recipe exactly — guards against recipe drift
     # that would break the ClickUp ↔ cp round-trip (_write_ask, clickup_propose,
     # ClickUp-close webhook all rely on this exact hash).
-    expected_hash_0 = _content_hash("ggl-5168", "record-ask", "Confirm ISCI code with Jennifer")
+    expected_hash_0 = _ask_hash("ggl-5168", "Confirm ISCI code with Jennifer")
     assert items[0]["hash"] == expected_hash_0
     # Second item uses a different text under the same code/verb — confirms
     # the recipe is deterministic on text, not just on code/verb.
-    expected_hash_1 = _content_hash("ggl-5168", "record-ask", "Send Q3 invoice")
+    expected_hash_1 = _ask_hash("ggl-5168", "Send Q3 invoice")
     assert items[1]["hash"] == expected_hash_1
 
 
@@ -244,7 +244,7 @@ def _stub_claude_response(monkeypatch, yaml_body: str) -> None:
 def test_generate_plan_merges_action_items_as_record_ask_items(tmp_path, monkeypatch):
     """When action_items are passed, generate_plan emits a record-ask per item
     with the hash recipe from _content_hash so re-ingests dedupe."""
-    from cp_engine.ingest import _content_hash
+    from cp_engine.asks import ask_hash as _ask_hash
     from cp_engine.plan_from_transcript import generate_plan
 
     # LLM returns a plan with one inbound and no record-ask of its own —
@@ -286,7 +286,7 @@ def test_generate_plan_merges_action_items_as_record_ask_items(tmp_path, monkeyp
     texts = [a["text"] for a in record_asks]
     assert "Confirm ISCI code" in texts
     assert "Send Q3 invoice" in texts
-    expected_hash = _content_hash("ggl-5168", "record-ask", "Confirm ISCI code")
+    expected_hash = _ask_hash("ggl-5168", "Confirm ISCI code")
     assert any(a.get("hash") == expected_hash for a in record_asks)
     # The LLM's inbound is still there — merge didn't clobber other verbs.
     assert len(result.plan["projects"]["ggl-5168"]["inbound"]) == 1

@@ -60,7 +60,16 @@ def _sprint(tmp_path: Path, week: str = "2026-W20") -> Path:
     escalated risk."""
     p = tmp_path / "sprints" / week / f"{CODE}.md"
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(GOLDEN.read_text())
+    # Step 4a: the engine no longer renders carried asks, but files written
+    # before it still hold `[ask · …]` rows in `carry-forward`, and every
+    # surface still reads them until that week is re-rendered. Seed that
+    # legacy shape so these reader tests keep covering it.
+    body = re.sub(
+        r"(## Carried over from [^\n]*\n)",
+        r"\1- [ask · 2026-05-04 · Maria] Volume forecast from ops team\n",
+        GOLDEN.read_text(), count=1,
+    )
+    p.write_text(body)
     return p
 
 
@@ -121,9 +130,10 @@ def test_closed_ask_leaves_the_count(tmp_path: Path) -> None:
 
 
 def test_resolution_in_the_owning_week_flows_to_the_next_weeks_count(tmp_path: Path) -> None:
-    """End to end through the real renderer: an ask written in W19 is carried
-    into W20; closing it in W19 (where `_origin_sprint_path` sends the write)
-    drops it from W20's current-sprint count on the next render."""
+    """End to end through the real renderer. Before step 4a an ask written in
+    W19 was carried into W20 and only a close in W19 dropped it. Asks now live
+    in MC-2: W19's bullet never carries, so W20 counts nothing from it (the
+    MC-2 import + render path is tests/test_asks_mc2.py)."""
     root = tmp_path / "sprints"
 
     def render(week: str, prior: str | None, start: str, end: str) -> Path:
@@ -140,8 +150,8 @@ def test_resolution_in_the_owning_week_flows_to_the_next_weeks_count(tmp_path: P
     _write_ask(CODE, {"text": "Signed SOW", "who": "Sam", "date": "2026-05-06"}, w19)
     w20 = render("2026-W20", "2026-W19", "2026-05-11", "2026-05-17")
     block = render_current_sprint_block(parse_sprint_file(w20), link_path=LINK, today=TODAY)
-    assert _header_count(block, "Open client asks") == "1"
-    assert "Signed SOW" in block
+    assert _header_count(block, "Open client asks") == "0"
+    assert "Signed SOW" not in block
 
     _write_close_ask(CODE, {"hash": _hash_of(w19, "Signed SOW")}, w19)
     render("2026-W20", "2026-W19", "2026-05-11", "2026-05-17")
@@ -441,14 +451,17 @@ def test_record_keeps_the_marker_and_the_carried_copy_stays_marked(tmp_path: Pat
     """The sprint file is the record: carry-forward reproduces the bullet with
     its marker, so next week's summary still knows the item is snoozed."""
     w19 = _snoozed_file(tmp_path, until="2026-06-01")
-    cf = compute_carry_forward(w19)
-    carried = [a for a in cf.asks if "Snoozed ask" in a.text]
-    assert carried and "cp:snoozed-until=2026-06-01" in carried[0].text
+    # Step 4a: asks no longer carry; a snooze survives the MC-2 re-render by
+    # hash instead (tests/test_asks_mc2.py). A carried-shape line that is
+    # still on disk keeps rendering marked.
+    assert compute_carry_forward(w19).asks == ()
+    snoozed = next(ln for ln in w19.read_text().splitlines() if "Snoozed ask" in ln)
+    text = snoozed.split("] ", 1)[1]
 
     w20 = _sprint(tmp_path, week="2026-W21")
     body = w20.read_text().replace(
         "- [ask · 2026-05-04 · Maria] Volume forecast from ops team",
-        f"- [ask · 2026-05-01 · Maria] {carried[0].text}",
+        f"- [ask · 2026-05-01 · Maria] {text}",
     )
     w20.write_text(body)
     block = render_current_sprint_block(parse_sprint_file(w20), link_path=LINK, today=TODAY)

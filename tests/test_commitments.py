@@ -34,7 +34,10 @@ def _last_insert(client) -> dict:
 def test_resolve_owner_project() -> None:
     client = _client(rows=[{"id": "p1", "number": 5168}])
     owner = resolve_commitment_owner(client, "ggl-5168")
-    assert owner == {"id": "p1", "code": "ggl-5168", "kind": "project"}
+    # `canonical_code` keys the one ask hash (step 4a); with no
+    # full_job_name on the row it is the code as given.
+    assert owner == {"id": "p1", "code": "ggl-5168", "kind": "project",
+                     "canonical_code": "ggl-5168"}
 
 
 def test_resolve_owner_internal_workstream_resolves_by_number() -> None:
@@ -42,7 +45,8 @@ def test_resolve_owner_internal_workstream_resolves_by_number() -> None:
     `1pi-9005-mission-control` resolves exactly like a client job."""
     client = _client(rows=[{"id": "i1", "number": 9005}])
     owner = resolve_commitment_owner(client, "1pi-9005-mission-control")
-    assert owner == {"id": "i1", "code": "1pi-9005-mission-control", "kind": "project"}
+    assert owner == {"id": "i1", "code": "1pi-9005-mission-control", "kind": "project",
+                     "canonical_code": "1pi-9005-mission-control"}
 
 
 def test_resolve_owner_bare_slug_is_not_a_code() -> None:

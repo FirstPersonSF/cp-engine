@@ -357,7 +357,8 @@ def test_commitment_owner_numbered_internal_code_resolves_as_project():
     are stamped `kind="project"` — the only kind."""
     c = _Client({"projects": [_internal()]})
     owner = commitments.resolve_commitment_owner(c, "1pi-9005-mission-control")
-    assert owner == {"id": "i-mc", "code": "1pi-9005-mission-control", "kind": "project"}
+    assert owner == {"id": "i-mc", "code": "1pi-9005-mission-control", "kind": "project",
+                     "canonical_code": "1pi-9005-mission-control"}
     assert [t for t, _ in c.calls] == ["projects"]
 
 
