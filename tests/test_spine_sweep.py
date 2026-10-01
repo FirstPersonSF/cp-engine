@@ -3,6 +3,7 @@ from pathlib import Path
 
 from cp_engine.spine import SpineElement
 from cp_engine.spine_sweep import build_sweep_prompt
+from cp_engine.clock import tenant_today
 
 
 def _el(eid, layer, **o):
@@ -347,7 +348,7 @@ def test_run_sweep_hydrates_retrospective_body_from_disk(tmp_path):
     def _fake_llm(prompt):
         captured["prompt"] = prompt
         return "synthesis prose"
-    run_sweep("ibx-5153", (retro, hot), today=date.today(),
+    run_sweep("ibx-5153", (retro, hot), today=tenant_today(),
               llm=_fake_llm, tenant_root=tmp_path)
     assert "DISTINCTIVE_SUMMARY_TEXT" in captured["prompt"]
 

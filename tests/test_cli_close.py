@@ -8,8 +8,9 @@ from types import SimpleNamespace
 from click.testing import CliRunner
 
 from cp_engine.cli import main
+from cp_engine.clock import tenant_today
 
-_TODAY = date.today().isoformat()
+_TODAY = tenant_today().isoformat()
 
 
 # ── fakes ─────────────────────────────────────────────────────────────

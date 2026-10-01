@@ -32,6 +32,7 @@ from cp_engine.sync import (
     _read_mc_id,
     _rename_sprint_files,
 )
+from cp_engine.clock import tenant_today
 
 
 class FakeBackend(Backend):
@@ -338,7 +339,7 @@ def test_resync_refreshes_stale_provenance_header(tmp_path: Path) -> None:
     # stale stamp. (The date tracks the render's `today`, currently date.today().)
     from datetime import date as _date
 
-    assert f"Provenance: Version {ENGINE_VERSION} | {_date.today().isoformat()}" in final
+    assert f"Provenance: Version {ENGINE_VERSION} | {tenant_today().isoformat()}" in final
     assert "0.8.16.4" not in final
     assert "2026-05-18" not in final
 

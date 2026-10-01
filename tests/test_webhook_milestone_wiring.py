@@ -28,6 +28,7 @@ if str(_WEBHOOK) not in sys.path:
 
 import main as webhook_main
 import pipeline  # the module is `main.py`
+from cp_engine.clock import tenant_today
 
 
 def _scaffold_sprint_file(tenant: Path, *, week: str, code: str) -> Path:
@@ -110,7 +111,7 @@ def test_ingest_one_project_passes_supabase_and_meeting_id_to_execute_plan(
     # (#156), so execute_plan falls back to today's calendar week.
     from cp_engine.ingest import _calendar_week_iso
     from datetime import datetime
-    week = _calendar_week_iso(datetime.now().date())
+    week = _calendar_week_iso(tenant_today())
     _scaffold_sprint_file(tenant, week=week, code="ggl-5168")
 
     config = TenantConfig(

@@ -22,6 +22,7 @@ if str(_WEBHOOK) not in sys.path:
 
 import git_ops
 from routers import slack as slack_router
+from cp_engine.clock import tenant_today
 
 
 @pytest.fixture
@@ -279,7 +280,7 @@ def test_slack_action_snooze_7d_passes_until_date(monkeypatch, client):
         time.sleep(0.01)
 
     from datetime import date as _date, timedelta as _td
-    expected_until = (_date.today() + _td(days=7)).isoformat()
+    expected_until = (tenant_today() + _td(days=7)).isoformat()
     assert called["verb"] == "snooze-risk"  # the -7d suffix was stripped
     assert called["extras"]["until"] == expected_until
 

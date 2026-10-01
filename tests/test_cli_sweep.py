@@ -4,6 +4,7 @@ import frontmatter
 from click.testing import CliRunner
 
 from cp_engine.cli import main
+from cp_engine.clock import tenant_today
 
 FAKE_SYNTHESIS = "## Synthesis\n\nThe whole project, swept into one readout."
 
@@ -83,7 +84,7 @@ def test_sweep_writes_synthesis_element(tmp_path, monkeypatch) -> None:
     result = CliRunner().invoke(main, ["sweep", "ibx-5153"])
     assert result.exit_code == 0, result.output
 
-    today = date.today().isoformat()
+    today = tenant_today().isoformat()
     fname = f"{today}-sweep.md"
     matches = list(_syn_dir(tmp_path).glob("*-sweep.md"))
     assert len(matches) == 1, list(_syn_dir(tmp_path).iterdir())
@@ -181,7 +182,7 @@ def test_sweep_mc2_path_reresolves_and_writes(tmp_path, monkeypatch) -> None:
     result = CliRunner().invoke(main, ["sweep", "ibx-5153"])
     assert result.exit_code == 0, result.output
 
-    today = date.today().isoformat()
+    today = tenant_today().isoformat()
     matches = list(_syn_dir(tmp_path).glob("*-sweep.md"))
     assert len(matches) == 1, list(_syn_dir(tmp_path).iterdir())
     assert matches[0].name == f"{today}-sweep.md"

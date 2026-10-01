@@ -18,6 +18,7 @@ import pytest
 from click.testing import CliRunner
 
 from cp_engine.render import EXEC_SUMMARY_END, EXEC_SUMMARY_START
+from cp_engine.clock import tenant_today
 
 pytestmark = pytest.mark.skipif(
     subprocess.run(["git", "--version"], capture_output=True).returncode != 0,
@@ -159,7 +160,7 @@ def test_uncommitted_edit_counts_as_today(tmp_path):
     cp_md = _tenant(tmp_path)
     _commit(tmp_path, cp_md, _region("2026-07-14", **_JULY),
             "2026-07-14T12:00:00-07:00")
-    today = date.today().isoformat()
+    today = tenant_today().isoformat()
     cp_md.write_text(_region(
         today, status="Refreshed.", where="Fresh state.",
         next_up="Fresh move.", blockers="None."), encoding="utf-8")

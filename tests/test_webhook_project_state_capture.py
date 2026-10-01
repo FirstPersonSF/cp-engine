@@ -37,6 +37,7 @@ from fastapi.testclient import TestClient
 
 import git_ops
 import main as webhook_main
+from cp_engine.clock import tenant_today
 
 
 def _signed(body: bytes, *, secret: bytes = b"test-secret") -> str:
@@ -263,7 +264,7 @@ class TestTheRollOffIsReported:
         assert "Updates" in body["changed"]
         assert body["roll_off"]["count"] == 2
         assert body["roll_off"]["dates"] == ["2026-01-05", "2026-01-02"]
-        assert body["roll_off"]["older_than"] == (date.today() - timedelta(days=28)).isoformat()
+        assert body["roll_off"]["older_than"] == (tenant_today() - timedelta(days=28)).isoformat()
         text = _cp_text(tenant)
         assert "2026-01-02 — Another one" in text, "roll-off must be reported, never performed"
 
