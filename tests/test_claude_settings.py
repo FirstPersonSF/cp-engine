@@ -96,10 +96,45 @@ def test_merge_replaces_stale_engine_entry_no_duplicates():
 # ── .mcp.json merge ────────────────────────────────────────────────────
 
 
-def test_merge_mcp_into_none_adds_cp_sources():
+HOSTED = {"type": "http", "url": "https://cp.mc-2.1p.is/mcp"}
+
+
+def test_merge_mcp_into_none_adds_cp_hosted():
     merged, changed = merge_mcp_config(None)
     assert changed is True
-    assert merged["mcpServers"][_MCP_SERVER_NAME] == {"command": "cxp", "args": ["mcp"]}
+    assert _MCP_SERVER_NAME == "cp-hosted"
+    assert merged["mcpServers"] == {"cp-hosted": HOSTED}
+
+
+def test_merge_mcp_drops_the_retired_stdio_entry():
+    """Step 5b: the `cp-sources` stdio server (`cxp mcp`, or `cp mcp` from
+    before the rename) no longer exists; a sync removes its entry and leaves
+    the tenant on cp-hosted. This is the shape the 1p tenant carries today."""
+    for retired in ({"command": "cxp", "args": ["mcp"]}, {"command": "cp", "args": ["mcp"]}):
+        tenant = {"mcpServers": {"cp-hosted": dict(HOSTED), "cp-sources": retired,
+                                 "miro": {"type": "http", "url": "https://mcp.miro.com/"}}}
+        merged, changed = merge_mcp_config(tenant)
+        assert changed is True
+        assert set(merged["mcpServers"]) == {"cp-hosted", "miro"}
+
+
+def test_merge_mcp_keeps_a_hand_registered_server_named_cp_sources():
+    """Only the ENGINE's shape is removed; a person's own server is theirs."""
+    own = {"command": "node", "args": ["my-sources.js"]}
+    merged, _ = merge_mcp_config({"mcpServers": {"cp-sources": own}})
+    assert merged["mcpServers"]["cp-sources"] == own
+
+
+def test_merge_mcp_keeps_extra_keys_on_a_current_cp_hosted_entry():
+    entry = {**HOSTED, "headers": {"X-Trace": "1"}}
+    merged, changed = merge_mcp_config({"mcpServers": {"cp-hosted": entry}})
+    assert changed is False and merged["mcpServers"]["cp-hosted"] == entry
+
+
+def test_merge_mcp_repoints_a_cp_hosted_entry_at_the_wrong_url():
+    stale = {"type": "http", "url": "https://hosted-cp.up.railway.app/mcp"}
+    merged, changed = merge_mcp_config({"mcpServers": {"cp-hosted": stale}})
+    assert changed is True and merged["mcpServers"]["cp-hosted"] == HOSTED
 
 
 def test_merge_mcp_is_idempotent():
@@ -120,8 +155,8 @@ def test_merge_mcp_preserves_other_servers():
     assert changed is True
     # tenant's own server survived untouched
     assert merged["mcpServers"]["tenant-own"] == {"command": "node", "args": ["server.js"]}
-    # cp-sources added
-    assert merged["mcpServers"][_MCP_SERVER_NAME] == {"command": "cxp", "args": ["mcp"]}
+    # cp-hosted added
+    assert merged["mcpServers"][_MCP_SERVER_NAME] == HOSTED
     # unrelated keys untouched
     assert merged["someOtherKey"] == {"keep": "me"}
 
@@ -137,11 +172,11 @@ def test_install_writes_script_and_settings(tmp_path: Path):
     # settings has our entry
     data = json.loads(settings.read_text())
     assert len(_engine_entries(data)) == 1
-    # .mcp.json written at tenant root with the cp-sources server
+    # .mcp.json written at tenant root with the cp-hosted server
     mcp = tmp_path / ".mcp.json"
     assert mcp in written and mcp.exists()
     mcp_data = json.loads(mcp.read_text())
-    assert mcp_data["mcpServers"][_MCP_SERVER_NAME] == {"command": "cxp", "args": ["mcp"]}
+    assert mcp_data["mcpServers"][_MCP_SERVER_NAME] == HOSTED
 
 
 def test_install_preserves_tenant_mcp_servers(tmp_path: Path):
@@ -151,7 +186,7 @@ def test_install_preserves_tenant_mcp_servers(tmp_path: Path):
     install_into_tenant(tmp_path)
     data = json.loads((tmp_path / ".mcp.json").read_text())
     assert data["mcpServers"]["tenant-own"] == {"command": "node"}
-    assert data["mcpServers"][_MCP_SERVER_NAME] == {"command": "cxp", "args": ["mcp"]}
+    assert data["mcpServers"][_MCP_SERVER_NAME] == HOSTED
 
 
 def test_install_does_not_clobber_malformed_mcp(tmp_path: Path):

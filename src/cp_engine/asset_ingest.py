@@ -731,7 +731,7 @@ def _dropbox_connector():
     """Construct a `DropboxConnector` with DROPBOX_* creds ensured first (#154).
 
     The connector self-configures from `os.getenv`, which works on Railway/cron
-    (env preset) and under `cp mcp` (#111 loads creds per-verb) but NOT from a
+    (env preset) but NOT from a
     bare-terminal CLI run — the .env auto-load exports only SUPABASE_*, so the
     same ingest that succeeds everywhere else fails locally with "No Dropbox
     credentials found". Best-effort fill DROPBOX_* from the mc-2 clone's .env

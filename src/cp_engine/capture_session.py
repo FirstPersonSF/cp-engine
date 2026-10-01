@@ -438,9 +438,8 @@ def find_tenant_root(start: Path) -> Path | None:
     that exists and contains `.cp-engine.toml`. Returns None if nothing
     found before the filesystem root.
 
-    Public because `cp_engine.mcp_server` also relies on this walk-up to
-    resolve the tenant root from whatever subdir the MCP server was launched
-    in — keep it stable.
+    Public: CLI commands resolve the tenant root from whatever subdir they run
+    in through this walk-up — keep it stable.
     """
     current: Path | None = start
     while current is not None and str(current) not in ("/", current.anchor):

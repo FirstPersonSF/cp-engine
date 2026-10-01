@@ -1,4 +1,4 @@
-"""Project-scoped reads on the stdio server say when the work is finished (#279).
+"""Project-scoped reads say when the work is finished (#279).
 
 WHAT BROKE. `projects.mc_status = 'Archived'` is a project lifecycle state,
 independent of `spine_substance.archived`, and no MCP verb read it:
@@ -7,12 +7,12 @@ its live elements exactly as a project opened last week would. Measured
 2026-09-16: 22 archived projects, 6 live elements on them, and nothing in any
 response to tell a session it was reading finished work.
 
-WHAT THESE PIN. The same four stdio verbs, called once against an Archived
-project and once against an Open one, through a fake PostgREST whose
-`projects` table is the only source of the status: the archived answer carries
-the signal, the live answer is unchanged in shape, and archived DATA is still
-returned (annotate, never filter — the issue's point about reversible,
-still-useful finished work).
+WHAT THESE PIN. `project_status.annotate_project` — the one implementation the
+hosted verbs call (the stdio verbs that also called it were retired in step
+5b) — once against an Archived project and once against an Open one, through
+a fake PostgREST whose `projects` table is the only source of the status: the
+archived answer carries the signal, the live answer is unchanged in shape, and
+archived DATA is still returned (annotate, never filter).
 """
 from __future__ import annotations
 
@@ -20,7 +20,6 @@ from types import SimpleNamespace
 
 import pytest
 
-import cp_engine.mcp_server as srv
 from cp_engine import project_status as ps
 
 ARCHIVED, LIVE = "p-archived", "p-live"
@@ -63,36 +62,30 @@ class _DB:
 
 
 @pytest.fixture
-def db(monkeypatch):
-    db = _DB()
-    monkeypatch.setattr(srv, "_resolve", lambda code: (db, code, "cid"))
-    monkeypatch.setattr(
-        srv, "_resolve_commitments",
-        lambda code: (db, {"id": code, "code": code, "kind": "project"}),
-    )
-    rows = [{"est_item_id": "_authored/brief", "framing": "Brief"}]
-    monkeypatch.setattr("cp_engine.project_sources.list_spine",
-                        lambda *a, **k: [dict(r) for r in rows])
-    monkeypatch.setattr("cp_engine.project_sources.list_sources",
-                        lambda *a, **k: [{"id": "a1", "title": "SOW"}])
-    monkeypatch.setattr("cp_engine.project_sources.pull_spine",
-                        lambda *a, **k: {"est_item_id": "_authored/brief", "body": "b",
-                                         "layer": "Brief", "note": "own note"})
-    monkeypatch.setattr("cp_engine.commitments.list_commitments",
-                        lambda *a, **k: [{"id": "c1", "description": "Send deck"}])
-    return db
+def db():
+    return _DB()
 
 
-_LIST_VERBS = {
-    "list_spine_elements": lambda code: srv.list_spine_elements(code),
-    "list_project_sources": lambda code: srv.list_project_sources(code),
-    "list_commitments": lambda code: srv.list_commitments(code),
+_ROWS = {
+    "list_spine_elements": [{"est_item_id": "_authored/brief", "framing": "Brief"}],
+    "list_project_sources": [{"id": "a1", "title": "SOW"}],
+    "list_commitments": [{"id": "c1", "description": "Send deck"}],
 }
 
 
-@pytest.mark.parametrize("verb", sorted(_LIST_VERBS))
+def _list(db, verb, code):
+    return ps.annotate_project([dict(r) for r in _ROWS[verb]], db, code, code)
+
+
+def _pull(db, code):
+    return ps.annotate_project(
+        {"est_item_id": "_authored/brief", "body": "b", "layer": "Brief",
+         "note": "own note"}, db, code, code)
+
+
+@pytest.mark.parametrize("verb", sorted(_ROWS))
 def test_an_archived_projects_list_leads_with_the_signal_and_keeps_its_data(db, verb):
-    out = _LIST_VERBS[verb](ARCHIVED)
+    out = _list(db, verb, ARCHIVED)
     assert out[0]["project_status"] == "Archived"
     assert out[0]["archived"] is True
     assert "ARCHIVED" in out[0]["note"]
@@ -100,29 +93,29 @@ def test_an_archived_projects_list_leads_with_the_signal_and_keeps_its_data(db, 
     assert len(out) == 2 and "note" not in out[1]
 
 
-@pytest.mark.parametrize("verb", sorted(_LIST_VERBS))
+@pytest.mark.parametrize("verb", sorted(_ROWS))
 def test_a_live_projects_list_is_unchanged(db, verb):
     """No new row for current work — a caller iterating rows sees the shape
     it always did."""
-    out = _LIST_VERBS[verb](LIVE)
+    out = _list(db, verb, LIVE)
     assert len(out) == 1 and "note" not in out[0] and "project_status" not in out[0]
 
 
-def test_pull_spine_element_carries_status_without_clobbering_the_elements_note(db):
-    archived = srv.pull_spine_element(ARCHIVED, "brief")
+def test_pull_carries_status_without_clobbering_the_elements_note(db):
+    archived = _pull(db, ARCHIVED)
     assert archived["project_status"] == "Archived" and archived["archived"] is True
     assert "ARCHIVED" in archived["project_note"]
     assert archived["note"] == "own note"      # the element's importance note survives
     assert archived["body"] == "b"             # and the data is returned
 
-    live = srv.pull_spine_element(LIVE, "brief")
+    live = _pull(db, LIVE)
     assert live["project_status"] == "Open"
     assert "archived" not in live and "project_note" not in live
 
 
 def test_one_status_read_per_call(db):
     """The ask was one lookup, not a query per step of the verb."""
-    srv.pull_spine_element(ARCHIVED, "brief")
+    _pull(db, ARCHIVED)
     assert len(db.reads) == 1
 
 

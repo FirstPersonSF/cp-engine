@@ -1,9 +1,14 @@
 {
   "_why": "Architecture plan step 0 (2026-09-30): the surface may shrink but not grow without a deliberate edit here. 64 hosted tools, 68 cxp commands and 36 tables carried the usage in which ~a quarter to a third did 90% of the work. Raising a number is a decision: say why in the commit.",
-  "hosted_tools": 64,
-  "cxp_commands": 69,
-  "mc2_tables": 37,
+  "hosted_tools": 55,
+  "cxp_commands": 53,
+  "mc2_tables": 34,
   "_raised": [
-    "2026-09-30: cxp_commands 68\u219269 for `cxp health` (step 3, daily health line); mc2_tables 36\u219237 for `webhook_runs` (step 3, a run record on every webhook path)."
+    "2026-09-30: cxp_commands 68→69 for `cxp health` (step 3, daily health line); mc2_tables 36→37 for `webhook_runs` (step 3, a run record on every webhook path).",
+    "2026-10-01: hosted_tools 64→71 for step 5b — the stdio server (17 tools) was retired and the seven verbs only it carried (fetch_project_source, compare_project_sources, pull_document_comments, push_to_dropbox, preflight, list_vendors, list_rfp_respondents) moved to hosted. Net MCP surface across both servers fell 81→71; cxp_commands fell 69→68 (`cxp mcp`) without a ceiling change."
+  ],
+  "_frozen_until": "2026-11-01",
+  "_lowered": [
+    "2026-10-01: step 5 retire list — hosted_tools 71→55 (16 zero-use/dormant tools retired: worksets, notes, step editors, etc.), cxp_commands 69→53 (11 dead commands, dates-loop, weekly-sort, snapshots, mcp), mc2_tables 37→34 (notes, worksets, spine_snapshots out of the registry). Frozen at these counts until 2026-11-01 (Drew): no raise without a reason in the commit."
   ]
 }

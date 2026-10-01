@@ -13,9 +13,10 @@ WHY THESE TESTS. A command file is prose the model EXECUTES — a stale
 parameter name does not raise, it produces a plausible, wrong call. So:
 
 1. Every signature in the catalog is parsed and checked against the tools
-   the servers actually REGISTER (the hosted `mcp_server` and the stdio
-   `cp_engine.mcp_server.mcp`, read through the SDK's own registry — the
-   schema a client sees, not a hand-kept list).
+   the server actually REGISTERS (the hosted `mcp_server`, read through the
+   SDK's own registry — the schema a client sees, not a hand-kept list). The
+   stdio `cp-sources` server it was also checked against was retired in
+   architecture plan step 5b.
 2. Every hosted tool refuses an undeclared argument, through the same
    `call_tool` path a client's request takes.
 3. The element-identifier aliases (`key` / `element_id`) work on the two
@@ -66,9 +67,7 @@ def _registry(mcp) -> dict[str, tuple[set[str], set[str]]]:
 
 @pytest.fixture(scope="module")
 def registries(server) -> dict[str, dict[str, tuple[set[str], set[str]]]]:
-    from cp_engine import mcp_server as stdio
-
-    return {"cp-hosted": _registry(server.mcp_server), "cp-sources": _registry(stdio.mcp)}
+    return {"cp-hosted": _registry(server.mcp_server)}
 
 
 def _signatures() -> list[tuple[str, list[str]]]:
@@ -125,11 +124,10 @@ def test_every_signature_matches_a_server_that_registers_it(registries):
     assert not bad, "catalog signatures that match no server:\n  " + "\n  ".join(bad)
 
 
-@pytest.mark.parametrize("srv", ["cp-hosted", "cp-sources"])
+@pytest.mark.parametrize("srv", ["cp-hosted"])
 def test_each_server_gets_a_correct_signature_for_its_verbs(registries, srv):
-    """Where the servers differ (`pull_project_source` is title-addressed on
-    stdio, id-addressed on hosted), a session on EITHER must find a
-    signature that works there — not only the other server's form."""
+    """Every documented verb has at least one signature that works on the
+    server — not only a retired server's form."""
     sigs = _signatures()
     documented = {n for n, _ in sigs}
     reg = registries[srv]
@@ -234,50 +232,6 @@ def test_set_spine_element_takes_element_id(server, monkeypatch):
     monkeypatch.setattr(server, "resolve_element_versions", fake_resolve)
     server.set_spine_element("slt-5196", element_id="_authored/brief", important=True)
     assert seen == ["_authored/brief"]
-
-
-# ── stdio parity: `cxp mcp` refuses unknown arguments too ─────────────
-
-
-def test_every_stdio_tool_advertises_that_it_takes_no_extra_arguments():
-    """Derived from the stdio server's own registry, so a tool added later
-    is covered without anyone remembering to list it."""
-    from cp_engine import mcp_server as stdio
-
-    tools = stdio.mcp._tool_manager.list_tools()
-    assert tools, "the stdio registry is empty — this test would pass vacuously"
-    loose = [t.name for t in tools if t.parameters.get("additionalProperties") is not False]
-    assert not loose, f"stdio tools whose schema allows undeclared arguments: {loose}"
-
-
-def test_a_stray_argument_to_a_stdio_tool_fails_naming_it(monkeypatch):
-    """`max_chars` is a HOSTED `pull_project_source` argument. Passed to the
-    stdio verb it used to vanish and the default applied; now it fails the
-    call, naming the argument, and the body never runs. (This case used
-    `include_absorbed` on `list_spine_elements` until #330 gave stdio that
-    flag too.)"""
-    from cp_engine import mcp_server as stdio
-
-    ran = []
-    monkeypatch.setattr(stdio, "_resolve", lambda code: ran.append(code))
-    with pytest.raises(Exception) as exc:
-        asyncio.run(stdio.mcp.call_tool("pull_project_source", {
-            "project_code": "ibx-5153", "doc_title": "brief", "max_chars": 500,
-        }))
-    assert "max_chars" in str(exc.value)
-    assert "Extra inputs are not permitted" in str(exc.value)
-    assert not ran
-
-
-def test_a_declared_stdio_argument_still_passes(monkeypatch):
-    """The control on the control: strictness must not refuse real names."""
-    from cp_engine import mcp_server as stdio
-
-    monkeypatch.setattr(stdio, "_resolve", lambda code: None)
-    asyncio.run(stdio.mcp.call_tool("list_spine_elements", {
-        "project_code": "ibx-5153", "tier": "working", "compact": True,
-        "include_absorbed": True,
-    }))
 
 
 # ── add_spine_version takes `key` too ─────────────────────────────────

@@ -52,14 +52,15 @@ RUN sh -c 'if [ -n "$gh_token" ]; then \
            pip install --no-cache-dir ./cp-engine -r requirements.txt' \
     && rm -rf ./cp-engine
 
-# server.py loads observability.py by path at module scope — both must ship.
+# server.py loads observability.py and ported_tools.py by path at module
+# scope — all three must ship.
 # Listed explicitly so tests and __pycache__ stay out of the image.
 # BUILD_COMMIT is written by deploy.sh: the commit this image was staged
 # from, which /health reports as `commit` (Railway injects no SHA
 # for a CLI upload). The glob keeps a plain local `docker build` working
 # without it.
 COPY prototypes/hosted-mcp/server.py prototypes/hosted-mcp/observability.py \
-     prototypes/hosted-mcp/BUILD_COMMI[T] ./
+     prototypes/hosted-mcp/ported_tools.py prototypes/hosted-mcp/BUILD_COMMI[T] ./
 
 # Railway injects PORT; bind all interfaces behind its proxy.
 ENV HOST=0.0.0.0 \

@@ -178,25 +178,27 @@ def test_parse_ps_reads_lstart_rows():
     assert procs[1].started == _epoch("Thu Sep 17 12:49:12 2026")
 
 
-def test_stale_mcp_names_the_processes_older_than_the_install():
-    """Install written Sep 17 23:39 → two of three servers predate it. The
-    `cxp sync` process is not a server and must not be counted."""
+def test_stale_mcp_names_every_retired_server_still_running():
+    """Step 5b retired `cxp mcp`: every running server is a leftover, whatever
+    its start time. The `cxp sync` process is not a server and is not counted."""
     install = _epoch("Thu Sep 17 23:39:59 2026")
     f = health.stale_mcp(health.parse_ps(_PS), install)
     assert f is not None
     assert f.code == "stale_mcp"
-    assert f.extra["pids"] == [4573, 13691]
-    assert "2 cp tool servers" in f.summary
-    assert "/mcp" in f.remedy
+    assert sorted(f.extra["pids"]) == [4573, 13691, 79265]
+    assert f.detail == "pid 4573, 13691, 79265"  # oldest first
+    assert "3 retired local cp tool servers" in f.summary
+    assert "/mcp" in f.remedy and "cp-hosted" in f.remedy
 
 
-def test_stale_mcp_is_silent_when_all_servers_postdate_the_install():
-    install = _epoch("Thu Sep 17 12:00:00 2026")
-    assert health.stale_mcp(health.parse_ps(_PS), install) is None
+def test_stale_mcp_needs_no_receipt():
+    assert health.stale_mcp(health.parse_ps(_PS), None) is not None
+    assert health.stale_mcp(health.parse_ps(_PS)) is not None
 
 
-def test_stale_mcp_no_receipt_means_no_opinion():
-    assert health.stale_mcp(health.parse_ps(_PS), None) is None
+def test_stale_mcp_is_silent_with_no_server_running():
+    procs = [p for p in health.parse_ps(_PS) if not health.is_cxp_mcp(p.command)]
+    assert health.stale_mcp(procs, None) is None
 
 
 def test_is_cxp_mcp_matches_the_server_and_not_other_cxp_verbs():
@@ -225,7 +227,7 @@ def test_collect_is_silent_when_healthy(tmp_path: Path):
 
 def test_collect_sorts_most_severe_first_and_brief_counts_the_rest(tmp_path: Path):
     env = _fake_env(tmp_path, "0.108.1", _PS)
-    # Make every server stale relative to the receipt we just wrote.
+    # Every running `cxp mcp` is a retired server (step 5b).
     import os
     os.utime(env["receipt_path"], (time.time(), time.time()))
     findings = health.collect(cli_version="0.119.0", **env)
@@ -236,7 +238,7 @@ def test_collect_sorts_most_severe_first_and_brief_counts_the_rest(tmp_path: Pat
     assert "(plugin v0.108.1 (user), engine v0.119.0)" in line
     rep = health.report(findings)
     assert "→ claude plugin update cp-engine@cp-engine" in rep
-    assert "pid 4573, 13691, 79265" in rep  # all three predate a receipt written just now
+    assert "pid 4573, 13691, 79265" in rep  # every running cxp mcp is retired
 
 
 # ── the CLI face ─────────────────────────────────────────────────────────
@@ -412,17 +414,6 @@ def test_D4_prereleases_are_no_opinion_on_both_sides(a: str, b: str):
         assert (r.returncode == 0) is ok, (v, ok)
 
 
-def test_stale_mcp_fires_whenever_mcp_server_would_warn():
-    """The relation that holds between the two staleness checks: mcp_server
-    warns when the on-disk version differs from the server's frozen one — a
-    version change means a reinstall, which rewrote the receipt AFTER the
-    server started. So that state is a subset of what stale_mcp flags."""
-    server_started = _epoch("Thu Sep 17 12:49:12 2026")
-    reinstall_that_changed_version = _epoch("Thu Sep 17 23:39:59 2026")
-    procs = [Proc(pid=1, started=server_started, command="/x/python /y/cxp mcp")]
-    assert health.stale_mcp(procs, reinstall_that_changed_version) is not None
-
-
 def test_D12_clean_report_names_the_checks_that_ran():
     rep = health.report([])
     assert "healthy" not in rep
@@ -512,7 +503,7 @@ def test_hosted_health_url_and_version_parsing():
 def test_hosted_vs_local_fires_in_both_directions_and_names_the_deploy():
     behind = health.hosted_vs_local("0.120.2", "0.120.5", "dcc61c3a449c")
     assert behind is not None and behind.code == "hosted_vs_local"
-    assert "behind" in behind.summary and "railway up" in behind.remedy
+    assert "behind" in behind.summary and "deploy.sh" in behind.remedy
     assert "hosted v0.120.2 build dcc61c3a449c, engine v0.120.5" == behind.detail
     ahead = health.hosted_vs_local("0.121.0", "0.120.5")
     assert ahead is not None and "ahead" in ahead.summary and "update cp-engine" in ahead.remedy

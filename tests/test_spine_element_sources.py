@@ -1,6 +1,5 @@
 # tests/test_spine_element_sources.py — #66 add/remove_element_source
 import cp_engine.project_sources as ps
-import cp_engine.mcp_server as srv
 
 
 def _asset(aid, title):
@@ -121,19 +120,6 @@ def test_unresolvable_element_returns_note(monkeypatch):
         lambda client, pid, key, *, columns, company_id=None: (None, []))
     out = ps.modify_element_sources(_Client(), "pid", "ghost", "SOW", add=True)
     assert "no single live element" in out["note"]
-
-
-# --- MCP tool boundary -------------------------------------------------------
-# The add/remove_element_source TOOLS moved to the hosted MCP server (#143), so
-# the stdio-wrapper delegation tests are gone with them. This module keeps its
-# own tests above — `modify_element_sources` is still called in-process by
-# `add_spine_document`'s source_title attach (see test_mcp_server.py).
-
-
-def test_stdio_no_longer_registers_the_source_tools():
-    names = {t.name for t in srv.mcp._tool_manager.list_tools()}
-    assert "add_element_source" not in names
-    assert "remove_element_source" not in names
 
 
 # --- #344: the attach resolver ladder ----------------------------------------

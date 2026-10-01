@@ -808,7 +808,7 @@ def print_summary(opts: Options, results: list[Result], out=print) -> None:
     if cmd:
         out(f"[post] resume: {cmd}")
     if any(r.step == "local-install" and r.status == "ok" and "already" not in r.detail for r in results):
-        out("[post] note: running `cxp mcp` servers keep the old code until /mcp restarts them.")
+        out("[post] note: sessions started before this install keep the old CLI view; restart them (and /mcp for cp-hosted).")
 
 
 def ok(results: list[Result]) -> bool:

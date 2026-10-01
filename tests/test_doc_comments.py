@@ -2,7 +2,6 @@
 import zipfile
 
 import cp_engine.doc_comments as dc
-import cp_engine.mcp_server as srv
 
 
 def _zip(tmp_path, name, parts: dict) -> str:
@@ -150,31 +149,3 @@ def test_format_comments_empty_is_blank():
     assert dc.format_comments([]) == ""
 
 
-# ── MCP verb boundary ────────────────────────────────────────────────────────
-
-def test_pull_document_comments_delegates(monkeypatch):
-    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
-    captured = {}
-
-    def _fake(client, pid, title, dest):
-        captured["args"] = (pid, title)
-        return {"title": title, "provider": "drive", "comment_count": 2,
-                "comments": [{"author": "Scott"}, {"author": "Cricket"}]}
-    monkeypatch.setattr("cp_engine.project_sources.pull_document_comments", _fake)
-
-    out = srv.pull_document_comments("ibx-5153", "Our AI Story")
-    assert out["comment_count"] == 2
-    assert captured["args"][0] == "pid"
-
-
-def test_pull_document_comments_unknown_project(monkeypatch):
-    monkeypatch.setattr(srv, "_resolve", lambda code: None)
-    out = srv.pull_document_comments("ghost", "x")
-    assert "not found" in out["error"]
-
-
-def test_pull_document_comments_never_raises(monkeypatch):
-    def _boom(code):
-        raise RuntimeError("resolver down")
-    monkeypatch.setattr(srv, "_resolve", _boom)
-    assert "error" in srv.pull_document_comments("x", "y")

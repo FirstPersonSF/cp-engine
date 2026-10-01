@@ -120,14 +120,19 @@ That writes the **facts half**. Then extend it with your authored sections
 using `cp_engine.wrap_docx` (`WrapSection(heading, body=..., table=...,
 blanks=[...])`), preserving section order from the contract.
 
-Then push it where humans look:
+Then push it where humans look. The hosted server cannot read your disk, so
+ask it for an upload link and POST the file to it:
 
 ```
-push_to_dropbox(project_code, local_path)
+push_to_dropbox(project_code, filename="wrap-report-<code>-<date>-v01.docx")
+# → returns upload_url + the curl line; run it:
+curl -X POST '<upload_url>' --header 'Content-Type: application/octet-stream' \
+  --data-binary @"<workdir>/wrap-report-<code>-<date>-v01.docx"
 ```
 
-The default destination is `03 Assets/06 Spine/` — do not pass a bare
-`dest_name`, which would drop it at the project root.
+(A small file can go inline as `content_base64` instead.) The default
+destination is `03 Assets/06 Spine/` — do not pass a bare `dest_name`, which
+would drop it at the project root.
 
 ### 6. Record it in the spine
 
@@ -195,8 +200,8 @@ in a filename.
   `cxp commitments-sweep <code>`. (That verb was blind for every engagement
   until 2026-08-14 — a wrong empty is a known failure shape here.)
 - **The `.docx` lands at the Dropbox project root.** `push_to_dropbox` was
-  called with a bare `dest_name`, or `cxp mcp` is serving stale bytecode —
-  check its version warning and restart `/mcp`.
+  called with a bare `dest_name`. Its result names the `dropbox_path` — check
+  it before reporting the push done.
 
 ## What this command doesn't do
 

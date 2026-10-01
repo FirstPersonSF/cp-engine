@@ -359,15 +359,14 @@ def test_claude_md_includes_status_vocabulary() -> None:
     assert "`Complete`" not in out
 
 
-def test_claude_md_summarizes_five_stores_and_points_to_cp_tools() -> None:
+def test_claude_md_summarizes_the_stores_and_points_to_cp_tools() -> None:
     """The MCP verb catalog lives in the /cp-tools plugin command; CLAUDE.md
-    keeps only a five-store summary plus the pointer."""
+    keeps only a store summary plus the pointer."""
     out = render_claude_md(make_tenant(name="1p"))
     assert "/cp-tools" in out
     for store in (
         "RAG source store",
         "Spine",
-        "Inbound frameworks",
         "Commitments",
         "Notes",
     ):
@@ -408,29 +407,38 @@ def test_claude_md_restart_note_covers_credentials() -> None:
     """2026-09-01: the Railway MCP kept 401ing after Drew re-ran `railway
     login` — the process held the token it captured at startup, and `/mcp`
     cleared it. The restart note said "after a release" only, so a stale
-    CREDENTIAL read as a broken login. The note must name both causes."""
+    CREDENTIAL read as a broken login. The note must name both causes —
+    now for `cp-hosted`, the only cp server since step 5b."""
     out = render_claude_md(make_tenant(name="1p"))
-    section = out.split("## Restart `cxp mcp`", 1)[1].split("\n## ", 1)[0]
-    assert "credential" in section and "bytecode" in section
+    section = out.split("## Reconnect `cp-hosted`", 1)[1].split("\n## ", 1)[0]
+    assert "credential" in section and "deploy" in section and "401" in section
     assert "`/mcp`" in section
+
+
+def test_claude_md_names_cp_hosted_as_the_only_server() -> None:
+    out = render_claude_md(make_tenant(name="1p"))
+    assert "cp-sources" not in out
+    assert "the `cp-hosted` MCP server" in out
+    assert "Inbound frameworks" not in out
 
 
 def test_cp_tools_command_carries_the_verb_catalog() -> None:
     """The catalog moved (not vanished): the /cp-tools plugin command holds
-    all four numbered stores and their verbs (Notes, store 5, was retired in
-    step 5a)."""
+    the numbered stores and their verbs. (Notes was retired in step 5a;
+    inbound frameworks with the stdio server in step 5b.)"""
     cmd = (
         Path(__file__).parents[1] / "plugin" / "commands" / "cp-tools.md"
     ).read_text(encoding="utf-8")
     assert "1 — RAG source store" in cmd
     assert "2 — Spine" in cmd
-    assert "3 — Inbound frameworks" in cmd
-    assert "4 — Commitments" in cmd
+    assert "3 — Commitments" in cmd
+    assert "4 — Notes" not in cmd
+    assert "framework_" not in cmd
     for verb in (
         "list_project_sources",
         "pull_document_comments",
+        "push_to_dropbox",
         "create_spine_element",
-        "framework_decompose",
         "create_commitment",
     ):
         assert verb in cmd

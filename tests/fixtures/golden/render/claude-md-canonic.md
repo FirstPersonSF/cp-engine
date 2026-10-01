@@ -117,19 +117,19 @@ working dir, look for `.cp-link` at the repo root. It contains the absolute path
 of the corresponding cp working dir — `cd` there to read the project's `cp.md`,
 session history, and decisions.
 
-## MC-2 storage: sources + spine (the `cp-sources` MCP server)
+## MC-2 storage: sources + spine (the `cp-hosted` MCP server)
 
 **MC-2 (Supabase) is the source of truth; reach it LIVE through the
-`cp-sources` MCP server** (`cxp mcp` per `.mcp.json`). The on-disk mirrors
-(`_sources.md`, `spine/`) lag — prefer the MCP tools; never screenshots.
-Every tool takes a `<code>` first (any workstream code). Four stores: **1 — RAG source store** (ingested Drive/Dropbox
+`cp-hosted` MCP server** (per `.mcp.json`; the only cp server). It cannot
+see your disk: files travel in results, out via `push_to_dropbox`. The
+on-disk mirrors (`_sources.md`, `spine/`) lag — prefer the MCP tools; never screenshots.
+Every tool takes a `<code>` first (any workstream code). Three stores: **1 — RAG source store** (ingested Drive/Dropbox
 docs); **2 — Spine** (the distilled-memory index: elements, versions,
-relations, provenance); **3 — Inbound frameworks** (INTERNAL-only);
-**4 — Commitments** (dated obligations).
+relations, provenance); **3 — Commitments** (dated obligations).
 
 **Full verb catalog: run `/cp-tools`** before any spine-authoring, source,
-framework, or commitment work — per-verb signatures and usage
-discipline live there, not here.
+or commitment work — per-verb signatures and usage discipline live
+there, not here.
 
 ## Authority precedence (enforced)
 
@@ -346,12 +346,12 @@ than minted by the server. Steps 1 and 5 go through that path and commit
 for you; the rest is read-only.
 
 
-## Restart `cxp mcp` after a release or credential change
+## Reconnect `cp-hosted` after a deploy or credential change
 
-MCP servers keep what they loaded at startup: old bytecode after `cxp sync`
-upgrades the CLI, old credentials after a rotation or `.env`/1Password
-change. If a tool ignores a shipped fix or 401s after re-authenticating,
-restart the connection (`/mcp`) before assuming it's broken.
+A connection keeps what it loaded at startup: the tool list from before a
+hosted deploy, an old credential. If a tool ignores a shipped fix, a verb
+is missing, or calls 401 after re-authenticating, reconnect (`/mcp`)
+before assuming it's broken.
 
 ## Spec
 

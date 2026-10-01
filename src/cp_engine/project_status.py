@@ -27,9 +27,9 @@ ONE READ PER CALL. The status is one primary-key read of `projects` (or one
 is an annotation on a read that already succeeded, and it must never turn that
 read into an error.
 
-This module is shared by the stdio server (`cp_engine.mcp_server`) and the
-hosted one (vendored verbatim under `prototypes/hosted-mcp/vendor/`), so the
-two cannot word the signal differently.
+The hosted server imports this module (the stdio server that shared it was
+retired in step 5b), so there is one wording of the signal. The list-result
+branch of `annotate` served that stdio server; the hosted verbs return dicts.
 """
 
 from __future__ import annotations

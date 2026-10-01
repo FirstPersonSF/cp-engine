@@ -43,6 +43,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 SERVER_PY = Path(__file__).resolve().parent / "server.py"
+# Verbs ported from the retired stdio server (step 5b) live beside it and are
+# registered from it; they are derived exactly like server.py's own.
+PORTED_PY = Path(__file__).resolve().parent / "ported_tools.py"
 
 # RPCs that only read. Every other `client.rpc(name)` is a writer.
 READ_RPCS = {
@@ -51,6 +54,10 @@ READ_RPCS = {
 }
 TABLE_MUTATIONS = {"insert", "update", "upsert", "delete"}
 HTTP_WRITES = {"post", "put", "patch", "delete"}
+# Writes that leave through a storage SDK rather than PostgREST or httpx: the
+# engine's Dropbox upload, the connector's, and a minted upload link (whose
+# holder can write without asking again).
+EXTERNAL_WRITES = {"push_to_dropbox", "upload_file", "files_get_temporary_upload_link"}
 
 
 @pytest.fixture(scope="module")
@@ -80,17 +87,23 @@ def _derive_writers() -> dict[str, set[str]]:
     function a body names, except `audit` — whose one INSERT, into
     `mcp_audit_log`, is the thing every tool must do.
     """
-    tree = ast.parse(SERVER_PY.read_text(encoding="utf-8"))
     funcs: dict[str, ast.AST] = {}
     tools: list[str] = []
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            funcs[node.name] = node
-            for dec in node.decorator_list:
-                target = dec.func if isinstance(dec, ast.Call) else dec
-                if (isinstance(target, ast.Attribute) and target.attr == "tool"
-                        and getattr(target.value, "id", None) == "mcp_server"):
-                    tools.append(node.name)
+    for path in (SERVER_PY, PORTED_PY):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                assert node.name not in funcs or path is SERVER_PY, (
+                    f"{path.name} redefines {node.name}; the derivation keys by name"
+                )
+                funcs[node.name] = node
+                for dec in node.decorator_list:
+                    target = dec.func if isinstance(dec, ast.Call) else dec
+                    if (isinstance(target, ast.Attribute) and target.attr == "tool"
+                            and getattr(target.value, "id", None) == "mcp_server"):
+                        tools.append(node.name)
+                    if isinstance(target, ast.Name) and target.id == "hosted_tool":
+                        tools.append(node.name)
 
     direct: dict[str, tuple[set[str], set[str]]] = {}
     for name, fn in funcs.items():
@@ -99,6 +112,10 @@ def _derive_writers() -> dict[str, set[str]]:
         for n in ast.walk(fn):
             if isinstance(n, ast.Name) and n.id in funcs and n.id != name:
                 refs.add(n.id)
+            # ported_tools.py reaches server helpers as `_srv.<name>`.
+            if (isinstance(n, ast.Attribute) and getattr(n.value, "id", None) == "_srv"
+                    and n.attr in funcs and n.attr != name):
+                refs.add(n.attr)
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute):
                 attr, recv = n.func.attr, n.func.value
                 if (attr in TABLE_MUTATIONS and isinstance(recv, ast.Call)
@@ -114,6 +131,8 @@ def _derive_writers() -> dict[str, set[str]]:
                         prims.add(f"rpc:{rpc}")
                 if attr in HTTP_WRITES and getattr(recv, "id", None) == "httpx":
                     prims.add(f"http_{attr}")
+                if attr in EXTERNAL_WRITES:
+                    prims.add(f"external:{attr}")
         direct[name] = (prims, refs)
 
     def closure(start: str) -> set[str]:
@@ -141,6 +160,13 @@ def test_detector_sees_known_writers_and_known_readers():
     assert "http_patch" in derived["set_commitment_date"]
     assert derived["list_spine_elements"] == set()
     assert derived["semantic_search"] == set()
+    # The ported module is derived too (step 5b): its writer is seen, and its
+    # reads — which reach server helpers through `_srv.` — are not mistaken
+    # for writers.
+    assert "external:push_to_dropbox" in derived["push_to_dropbox"]
+    assert "external:files_get_temporary_upload_link" in derived["push_to_dropbox"]
+    assert derived["fetch_project_source"] == set()
+    assert derived["preflight"] == set()
 
 
 def test_no_read_endpoint_tool_can_reach_a_write(server):

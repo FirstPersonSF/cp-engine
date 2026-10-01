@@ -8,6 +8,7 @@
 !prototypes/hosted-mcp/requirements.txt
 !prototypes/hosted-mcp/server.py
 !prototypes/hosted-mcp/observability.py
+!prototypes/hosted-mcp/ported_tools.py
 !prototypes/hosted-mcp/BUILD_COMMIT
 **/__pycache__
 **/*.pyc

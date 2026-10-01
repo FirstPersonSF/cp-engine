@@ -1,7 +1,6 @@
 # tests/test_spine_element_provenance.py — #104 add/remove_element_provenance
 # (attach ANOTHER spine element as provenance; survives the source's retirement).
 import cp_engine.project_sources as ps
-import cp_engine.mcp_server as srv
 
 
 def _version(vid, status="live", sources=None, eid="_authored/synthesis"):
@@ -129,14 +128,3 @@ def test_remove_strips_element_link(monkeypatch):
     assert out["sources"] == [other]
 
 
-# --- MCP tool boundary -------------------------------------------------------
-# The add/remove_element_provenance TOOLS moved to the hosted MCP server (#143),
-# so the stdio-wrapper delegation tests are gone with them. The implementation
-# (`modify_element_provenance` + `_resolve_source_element`) stays in
-# project_sources and keeps its own tests above.
-
-
-def test_stdio_no_longer_registers_the_provenance_tools():
-    names = {t.name for t in srv.mcp._tool_manager.list_tools()}
-    assert "add_element_provenance" not in names
-    assert "remove_element_provenance" not in names

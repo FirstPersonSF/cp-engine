@@ -200,8 +200,8 @@ class MC2Backend:
 #  Supabase credential loading — MOVED to cp_engine.mc2_db (arch-phase-3)
 # ──────────────────────────────────────────────────────────────────────
 #
-# Back-compat re-exports for names with live importers (cli.py, mcp_server,
-# slack, prep_planning + their tests). New code should import from mc2_db.
+# Back-compat re-exports for names with live importers (cli.py, slack,
+# prep_planning + their tests). New code should import from mc2_db.
 # CAUTION: these are import-time value bindings — monkeypatching them here
 # does NOT affect mc2_db internals or any module that calls mc2_db directly;
 # patch `cp_engine.mc2_db.<name>` instead.

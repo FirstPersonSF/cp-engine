@@ -137,12 +137,14 @@ def test_server_never_builds_the_service_role_client():
     service-role client; nothing in this file may reach it."""
     import ast
 
-    tree = ast.parse((_HERE / "server.py").read_text(encoding="utf-8"))
-    names = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
-    names |= {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
-    names |= {a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) for a in n.names}
-    assert "get_client" not in names
-    assert "SUPABASE_SERVICE_KEY" not in (_HERE / "server.py").read_text(encoding="utf-8")
+    for fname in ("server.py", "ported_tools.py"):
+        text = (_HERE / fname).read_text(encoding="utf-8")
+        tree = ast.parse(text)
+        names = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+        names |= {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+        names |= {a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) for a in n.names}
+        assert "get_client" not in names, fname
+        assert "SUPABASE_SERVICE_KEY" not in text, fname
 
 
 def test_a_bytecode_only_vendor_dir_is_not_a_vendored_engine(tmp_path):
