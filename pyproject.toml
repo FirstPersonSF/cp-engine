@@ -120,3 +120,10 @@ pythonpath = ["src"]
 # and at `-qq` pytest drops the `N passed` summary line — a run killed at 50%
 # by a shell timeout then ended on the warnings block and read as complete.
 # Pass `-q` on the command line; the summary is how you know the run finished.
+# `e2e` (architecture plan step 6): the one test that crosses all four
+# deployables — Fathom row → webhook → tenant git → sync → hosted read. It is
+# NOT opt-in: unmarked runs (CI's `pytest -q`) include it; `-m e2e` selects it
+# alone when you want the round trip and nothing else.
+markers = [
+    "e2e: end-to-end across webhook, tenant git, sync and the hosted server (runs by default)",
+]

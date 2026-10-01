@@ -22,7 +22,7 @@ class FakeTable:
         self._limit = None
 
     # ── ops ──
-    def select(self, cols):
+    def select(self, cols, **_kw):
         assert "*" not in cols, "never select('*')"
         self._op = ("select", cols)
         return self
@@ -52,6 +52,55 @@ class FakeTable:
         self._filters.append((col, ("__in__", tuple(vals))))
         return self
 
+    # Comparison filters (added for the step-6 end-to-end test, which drives
+    # sync, the webhook and the hosted server through this one store). Each
+    # FILTERS like PostgREST, so a query that asks the wrong question gets
+    # the wrong answer here too.
+    def _cmp(self, op, col, val):
+        self._filters.append((col, ("__op__", op, val)))
+        return self
+
+    def neq(self, col, val):
+        return self._cmp("neq", col, val)
+
+    def gt(self, col, val):
+        return self._cmp("gt", col, val)
+
+    def gte(self, col, val):
+        return self._cmp("gte", col, val)
+
+    def lt(self, col, val):
+        return self._cmp("lt", col, val)
+
+    def lte(self, col, val):
+        return self._cmp("lte", col, val)
+
+    def ilike(self, col, pattern):
+        return self._cmp("ilike", col, pattern)
+
+    def like(self, col, pattern):
+        return self._cmp("like", col, pattern)
+
+    def is_(self, col, val):
+        return self._cmp("is", col, val)
+
+    def or_(self, *_a, **_k):
+        # PostgREST's `or=(...)` grammar is not modelled: the filter is a
+        # no-op (rows are over-returned, never under-returned).
+        return self
+
+    @property
+    def not_(self):
+        return _Not(self)
+
+    def single(self):
+        self._single = True
+        return self
+
+    def maybe_single(self):
+        self._single = True
+        return self
+
     def range(self, lo, hi):
         self._range = (lo, hi)
         return self
@@ -68,6 +117,12 @@ class FakeTable:
             if isinstance(v, tuple) and v[:1] == ("__in__",):
                 if row.get(c) not in v[1]:
                     return False
+            elif isinstance(v, tuple) and v[:1] == ("__op__",):
+                if not _compare(v[1], row.get(c), v[2]):
+                    return False
+            elif isinstance(v, tuple) and v[:1] == ("__not__",):
+                if _compare(v[1], row.get(c), v[2]):
+                    return False
             elif row.get(c) != v:
                 return False
         return True
@@ -82,13 +137,21 @@ class FakeTable:
             hits = [dict(r) for r in rows if self._matches(r)]
             lo, hi = getattr(self, "_range", (0, None))
             hits = hits[lo: None if hi is None else hi + 1]
-            return _R(hits[: self._limit] if self._limit is not None else hits)
+            hits = hits[: self._limit] if self._limit is not None else hits
+            if getattr(self, "_single", False):
+                return _R(hits[0] if hits else None)
+            return _R(hits)
         if op == "insert":
+            default = self.client.defaults.get(self.name)
+            out = []
             for r in payload:
+                if default is not None:
+                    r = {**default(), **r}
                 if "id" in r and any(x.get("id") == r["id"] for x in rows):
                     raise RuntimeError(f"duplicate key {r['id']}")
                 rows.append(dict(r))
-            return _R(payload)
+                out.append(dict(r))
+            return _R(out)
         if op == "upsert":
             for r in payload:
                 hit = next((x for x in rows if x.get("id") == r.get("id")), None)
@@ -98,14 +161,73 @@ class FakeTable:
                     hit.update(r)
             return _R(payload)
         if op == "update":
+            hit = []
             for r in rows:
                 if self._matches(r):
                     r.update(payload)
-            return _R([])
+                    hit.append(dict(r))
+            return _R(hit)
         if op == "delete":
             rows[:] = [r for r in rows if not self._matches(r)]
             return _R([])
         raise AssertionError(op)
+
+
+def _compare(op, have, want):
+    if op == "is":
+        want = None if want in (None, "null") else want
+        return have is want or have == want
+    if op == "neq":
+        return have != want
+    if op == "notin":
+        return have not in want
+    if op in ("ilike", "like"):
+        import fnmatch
+
+        pat = str(want).replace("%", "*")
+        h = "" if have is None else str(have)
+        return (fnmatch.fnmatchcase(h.lower(), pat.lower()) if op == "ilike"
+                else fnmatch.fnmatchcase(h, pat))
+    if have is None:
+        return False
+    return {"gt": have > want, "gte": have >= want,
+            "lt": have < want, "lte": have <= want}[op]
+
+
+class _Not:
+    """``.not_.is_(col, "null")`` / ``.not_.in_(...)`` — negates one filter."""
+
+    def __init__(self, table):
+        self._t = table
+
+    def _neg(self, op, col, val):
+        self._t._filters.append((col, ("__not__", op, val)))
+        return self._t
+
+    def is_(self, col, val):
+        return self._neg("is", col, val)
+
+    def eq(self, col, val):
+        return self._neg("is", col, val)
+
+    def ilike(self, col, val):
+        return self._neg("ilike", col, val)
+
+    def in_(self, col, vals):
+        self._t._filters.append((col, ("__op__", "notin", tuple(vals))))
+        return self._t
+
+
+class _Schema:
+    def __init__(self, client, schema):
+        self.client, self.schema_name = client, schema
+
+    def table(self, name):
+        key = name if self.schema_name == "public" else f"{self.schema_name}.{name}"
+        return FakeTable(self.client, key)
+
+    def rpc(self, name, params=None):
+        return self.client.rpc(name, params)
 
 
 class FakeClient:
@@ -113,9 +235,24 @@ class FakeClient:
         self.store: dict[str, list[dict]] = {k: [dict(r) for r in v] for k, v in tables.items()}
         self.fail: dict[str, set[str]] = {}
         self.calls: list[tuple] = []
+        #: ``rpc(name, params)`` → ``rpcs[name](params)``; unknown → no rows.
+        self.rpcs: dict = {}
+        #: Column defaults Postgres would fill on INSERT (``id``,
+        #: ``created_at``), per table: ``defaults[table]() -> dict``. Opt-in,
+        #: so a test that asserts the exact inserted row is unaffected.
+        self.defaults: dict = {}
 
     def table(self, name):
         return FakeTable(self, name)
+
+    def schema(self, name):
+        return _Schema(self, name)
+
+    def rpc(self, name, params=None):
+        self.calls.append(("rpc", name, params))
+        fn = self.rpcs.get(name)
+        data = fn(params or {}) if fn is not None else []
+        return type("RpcQ", (), {"execute": lambda _s: _R(data)})()
 
     def writes(self, table: str | None = None):
         return [c for c in self.calls
