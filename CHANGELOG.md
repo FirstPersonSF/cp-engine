@@ -4,6 +4,20 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.128.2 — 2026-10-01
+
+**The daily sync and the Monday drafts run on a Railway cron.** GitHub ran the
+tenant's scheduled jobs 4–8 hours late. The webhook's `/api/cron/{job}` route
+now also runs `sync` (14:00 and 22:00 UTC) and `draft-summaries` (Monday 5:17
+Pacific): signed, answered 202 with the work in the background, a completion
+row in `webhook_runs`, one run per slot, the same commit author and message as
+the GitHub workflows. `webhook/cron/provision.py <job> --apply` creates a cron
+service in one command. The health line's Sync check reads the cron run.
+
+*Health line labels are 1–3 words.* Error text moved out of the Slack line into
+the check's detail (`--json`, logs, the run row): `✅ Sync · 22:08 · via git`,
+`⚠️ CI main · unreadable`.
+
 ## v0.128.1 — 2026-10-01
 
 *`cxp health` reads the tenant's own Actions with the job's token.* In CI the
