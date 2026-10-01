@@ -99,7 +99,7 @@ def test_the_catalog_has_signatures_to_check():
     would pass on an empty loop."""
     names = {n for n, _ in _signatures()}
     assert {"create_spine_element", "set_spine_element", "pull_spine_element",
-            "create_commitment", "create_note"} <= names
+            "create_commitment"} <= names
 
 
 def test_every_documented_verb_is_registered_somewhere(registries):

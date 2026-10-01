@@ -613,7 +613,7 @@ mcp_server = MCPServer(
         "sequence for a session like this one, which has no `cxp` and no file "
         "editing. Read `master-cp.md` for the project index; get each "
         "project's path from there rather than constructing it.\n\n"
-        "MOST TOOLS READ; 40 OF THEM WRITE. The writers are the `create_*`, `set_*`, "
+        "MOST TOOLS READ; 39 OF THEM WRITE. The writers are the `create_*`, `set_*`, "
         "`add_*`, `remove_*`, `reorder_*`, `promote_*`, `retire_*`, `resolve_*`, "
         "`route_*`, `rotate_*`, `seal_to_*` and `capture_*` verbs, plus "
         "`log_improvement` — a name that sounds like a mutation is one (a "
@@ -7255,100 +7255,6 @@ def set_element_account_scope(
     return _set_account_scope(client, project_code, key, account=account, tool=tool)
 
 
-@mcp_server.tool()
-@_names_its_level
-def create_note(
-    project_code: str,
-    body: str,
-    title: str | None = None,
-    recipient_email: str | None = None,
-) -> dict[str, Any]:
-    """Create a partner Note against a project, under the caller's identity.
-
-    INSERT-only into `public.notes`. The Notes feature's identity model is the
-    `entities` registry (author_id and recipient_id are FK->entities), and the
-    caller is bridged to their own entity row BY EMAIL — the same bridge the
-    mc-2 backend's `_acting_entity` uses. The INSERT policy enforces
-    `author_id = caller_entity_id()` (a definer helper doing that email
-    lookup), so self-attribution is Postgres-enforced without repointing the
-    feature's FKs. Decided with Drew 2026-08-02.
-
-    `recipient_email` addresses the note to another entity (partner ping);
-    omitted, the note is a self-note (recipient = the author's own entity).
-    Slack delivery is NOT triggered from here (`slack_delivery='skipped'`) —
-    the hosted path records; the mc-2 backend owns DM side effects.
-
-    There is NO `title` column on `notes`; `title`, when given, is prepended
-    to the body as a markdown H3 — the body is markdown and renders in-app.
-    """
-    text = (body or "").strip()
-    if not text:
-        return {"error": "body is required"}
-    if title and title.strip():
-        text = f"### {title.strip()}\n\n{text}"
-
-    client = user_client()
-    subject = caller_subject()
-    if not subject:
-        return {"error": "no authenticated caller in context"}
-
-    scope = resolve_write_scope(client, project_code)
-    if scope is None:
-        return {"error": f"no project or initiative resolves for code {project_code!r}"}
-
-    try:
-        entity_id = (client.rpc("caller_entity_id").execute().data) or None
-    except Exception as exc:  # noqa: BLE001
-        return {"error": f"entity lookup failed: {type(exc).__name__}: {str(exc)[:200]}"}
-    if not entity_id:
-        return {
-            "error": "no entities row matches your login email — the Notes "
-            "feature identifies people via the entities registry. Ask a "
-            "partner to add you (mc-2 → entities) and retry."
-        }
-
-    recipient_id = entity_id
-    if recipient_email and recipient_email.strip():
-        found = (
-            client.table("entities")
-            .select("id, name")
-            .ilike("email", recipient_email.strip())
-            .limit(1)
-            .execute()
-        )
-        if not found.data:
-            return {"error": f"no entities row with email {recipient_email!r}"}
-        recipient_id = found.data[0]["id"]
-
-    row = {
-        "id": str(uuid.uuid4()),
-        "project_code": project_code,
-        "author_id": entity_id,
-        "recipient_id": recipient_id,
-        "body": text,
-        "status": "unread",
-        "slack_delivery": "skipped",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    try:
-        result = client.table("notes").insert(row).execute()
-    except Exception as exc:  # noqa: BLE001
-        message = str(exc)
-        audit(client, "create_note", {"project_code": project_code, "body": text}, 0)
-        return {"error": f"insert failed: {type(exc).__name__}: {message[:400]}"}
-
-    created = (result.data or [{}])[0]
-    audit(client, "create_note", {"project_code": project_code, "body": text}, 1)
-    return {
-        "note_id": created.get("id", row["id"]),
-        "project_code": project_code,
-        "caller": subject,
-        "status": created.get("status", "unread"),
-        "body_chars": len(text),
-        "created_at": created.get("created_at"),
-    }
-
-
 def _commitment_hash_for(
     client, scope: dict[str, Any], project_code: str, text: str
 ) -> tuple[str, dict[str, Any] | None]:
@@ -11766,7 +11672,6 @@ MAIN_ONLY_TOOLS: dict[str, str] = {
     "promote_stakeholder": "rpc spine_set_element_scope",
     "demote_stakeholder": "rpc spine_set_element_scope",
     "set_element_account_scope": "rpc spine_set_element_scope",
-    "create_note": "INSERT notes",
     "create_commitment": "INSERT commitments",
     "create_spine_element": "INSERT spine_substance",
     "add_spine_version": "INSERT spine_substance + rpc spine_supersede_prior_versions",

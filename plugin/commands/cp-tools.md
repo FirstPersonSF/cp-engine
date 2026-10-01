@@ -1,12 +1,12 @@
 ---
-description: Load the full cp-sources MCP verb catalog (sources, spine, frameworks, commitments, notes).
+description: Load the full cp-sources MCP verb catalog (sources, spine, frameworks, commitments).
 ---
 
 # /cp-tools
 
 The full verb catalog for the `cp-sources` MCP server. `CLAUDE.md`
-carries only a one-paragraph summary of the five stores; run this
-command before spine-authoring, source, framework, commitment, or notes
+carries only a one-paragraph summary of the four stores; run this
+command before spine-authoring, source, framework, or commitment
 work to load the per-verb signatures and usage discipline. This is a
 reference — reading it performs no action.
 
@@ -364,15 +364,6 @@ hash recipe everywhere: `cp_engine.asks.ask_hash(<co>-<number>,
   a human (or agent at wrap-up) invokes it per row.
 
 Engagements and initiatives can own commitments; standalone repos cannot.
-
-**5 — Notes** (MC-2's partner-ping surface — an in-app unread note + a Slack DM):
-- `create_note(project_code, body, title?, recipient_email?)` — **hosted-server verb** (`cp-hosted` connector; cp-engine #138 ratcheted it off stdio) — leave a partner a note against
-  a project (progress update, session handoff). `recipient_email` addresses it
-  to another partner (by email); omitted, it is a self-note. The author is
-  always you (the caller). `title`, when given, becomes an H3 atop the markdown
-  `body`. The hosted server records the note in-app only — it does NOT send the
-  Slack DM (`slack_delivery: skipped`); mc-2 owns that side effect. Author it
-  only when the human asks to notify a partner — never unprompted.
 
 To find an email or note you authored into a project's (or initiative's) spine,
 `list_spine_elements(project_code)` then `pull_spine_element(project_code, <key>)` — don't grep

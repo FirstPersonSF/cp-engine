@@ -135,7 +135,7 @@ def test_detector_sees_known_writers_and_known_readers():
     """The detector's own control: if it could not see a write, every test
     below would pass vacuously."""
     derived = _derive_writers()
-    assert "insert:notes" in derived["create_note"]
+    assert "insert:commitments" in derived["create_commitment"]
     assert "rpc:spine_retire_element" in derived["retire_spine_element"]
     assert "http_post" in derived["capture_project_state"]
     assert "http_patch" in derived["set_commitment_date"]
@@ -207,8 +207,8 @@ def test_read_endpoint_tools_reject_unknown_arguments(server):
 def test_a_write_verb_is_unknown_on_the_read_endpoint(server):
     with pytest.raises(Exception) as err:
         asyncio.run(server.read_server.call_tool(
-            "create_note", {"project_code": "x", "body": "y"}))
-    assert "create_note" in str(err.value)
+            "create_commitment", {"project_code": "x", "description": "y"}))
+    assert "create_commitment" in str(err.value)
 
 
 def test_main_endpoint_surface_is_unchanged(server):
@@ -532,7 +532,7 @@ def test_read_path_serves_only_read_tools_over_http(server, http):
     assert {t["name"] for t in read} == set(server.READ_ONLY_TOOLS)
     assert {t["name"] for t in main} == set(server.READ_ONLY_TOOLS) | set(server.MAIN_ONLY_TOOLS)
     resp = _rpc(client, "/mcp/read", "tools/call",
-                {"name": "create_note", "arguments": {"project_code": "x", "body": "y"}})
+                {"name": "create_commitment", "arguments": {"project_code": "x", "description": "y"}})
     body = resp.json()
     assert "error" in body or body["result"].get("isError"), body
 

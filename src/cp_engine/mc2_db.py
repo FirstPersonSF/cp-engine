@@ -56,7 +56,6 @@ class Tables:
     ENTITIES = "entities"  # people (partners/recipients); note author + recipient
     GITHUB_ORGS = "github_orgs"  # embedded-join only today (see *_COLUMNS)
     SPRINT_ALLOCATIONS = "sprint_allocations"
-    NOTES = "notes"  # partner pings (in-app unread + Slack DM, mig 116)
 
     # public — meetings + ingest
     FATHOM_MEETINGS = "fathom_meetings"

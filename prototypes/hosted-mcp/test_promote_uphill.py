@@ -337,9 +337,7 @@ def test_an_error_result_carries_no_level(server, wired):
     assert "error" in out and "level" not in out
 
 
-def test_the_echo_covers_a_note_and_a_step(server, wired, monkeypatch):
-    note = server.create_note(CHILD, "ping")
-    assert note["note_id"] and note["level"]["parent"] == PROGRAM
+def test_the_echo_covers_a_step(server, wired, monkeypatch):
     monkeypatch.setattr(server, "resolve_live_element_id",
                         lambda c, pid, key: ("_authored/x", None))
     step = server.propose_spine_step(CHILD, "_authored/x", "Ratified the pillars")

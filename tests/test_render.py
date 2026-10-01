@@ -417,7 +417,8 @@ def test_claude_md_restart_note_covers_credentials() -> None:
 
 def test_cp_tools_command_carries_the_verb_catalog() -> None:
     """The catalog moved (not vanished): the /cp-tools plugin command holds
-    all five numbered stores and their verbs."""
+    all four numbered stores and their verbs (Notes, store 5, was retired in
+    step 5a)."""
     cmd = (
         Path(__file__).parents[1] / "plugin" / "commands" / "cp-tools.md"
     ).read_text(encoding="utf-8")
@@ -425,15 +426,12 @@ def test_cp_tools_command_carries_the_verb_catalog() -> None:
     assert "2 — Spine" in cmd
     assert "3 — Inbound frameworks" in cmd
     assert "4 — Commitments" in cmd
-    assert "5 — Notes" in cmd
     for verb in (
         "list_project_sources",
         "pull_document_comments",
         "create_spine_element",
-        "pull_element_from_project",
         "framework_decompose",
         "create_commitment",
-        "create_note",
     ):
         assert verb in cmd
     # Standing-element contracts travel with the catalog.

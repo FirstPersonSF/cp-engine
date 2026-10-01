@@ -122,13 +122,13 @@ session history, and decisions.
 **MC-2 (Supabase) is the source of truth; reach it LIVE through the
 `cp-sources` MCP server** (`cxp mcp` per `.mcp.json`). The on-disk mirrors
 (`_sources.md`, `spine/`) lag — prefer the MCP tools; never screenshots.
-Every tool takes a `<code>` first (any workstream code). Five stores: **1 — RAG source store** (ingested Drive/Dropbox
+Every tool takes a `<code>` first (any workstream code). Four stores: **1 — RAG source store** (ingested Drive/Dropbox
 docs); **2 — Spine** (the distilled-memory index: elements, versions,
 relations, provenance); **3 — Inbound frameworks** (INTERNAL-only);
-**4 — Commitments** (dated obligations); **5 — Notes** (partner pings).
+**4 — Commitments** (dated obligations).
 
 **Full verb catalog: run `/cp-tools`** before any spine-authoring, source,
-framework, commitment, or notes work — per-verb signatures and usage
+framework, or commitment work — per-verb signatures and usage
 discipline live there, not here.
 
 ## Authority precedence (enforced)

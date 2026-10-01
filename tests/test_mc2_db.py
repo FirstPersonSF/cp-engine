@@ -286,7 +286,7 @@ def test_registry_covers_known_tables() -> None:
         "rfp_respondents",
         "asset_ingest_runs", "rag_assets", "asset_chunks",
         "clickup_task_proposals",
-        "commitments", "app_config", "notes",
+        "commitments", "app_config",
         "spine_substance", "spine_context", "spine_elements",
         "spine_snapshots", "spine_inbox", "spine_promote_runs",
         "spine_relations", "spine_steps",
