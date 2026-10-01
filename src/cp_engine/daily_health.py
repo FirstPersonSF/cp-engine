@@ -182,19 +182,62 @@ def last_sync_commit(tenant_root: Path | None) -> tuple[datetime | None, str | N
     return _local(ts), sha or None
 
 
-def check_sync(github: GitHubGet, tenant_repo: str, now: datetime,
-               tenant_root: Path | None = None) -> Check:
-    """Last tenant sync workflow run: time and conclusion.
+CRON_SYNC_ROUTE = "/api/cron/sync#background"
 
-    Source order: the Actions API (run conclusion — the strong claim), then,
-    when that is unreadable and a checkout is given, the newest `[cp-sync]`
-    commit in it (`via git`, with the Actions reason). Neither readable → ⚠️.
+
+def _cron_sync_run(client, now: datetime) -> tuple[dict | None, str | None]:
+    """The newest finished run of the Railway cron sync (webhook_runs rows on
+    `/api/cron/sync#background`, last 3 days, dry runs excluded):
+    (row, None) · (None, None) when there is none · (None, why) unreadable."""
+    if client is None:
+        return None, None
+    try:
+        rows = (client.table(WEBHOOK_RUNS)
+                .select("status, error, detail, created_at")
+                .eq("route", CRON_SYNC_ROUTE)
+                .gte("created_at", _since(now, 72))
+                .order("created_at", desc=True).limit(20).execute().data) or []
+    except Exception as exc:  # noqa: BLE001 — falls through to the next source, named
+        return None, f"ledger: {_why(exc)}"
+    for r in rows:
+        if (r.get("detail") or {}).get("outcome") != "dry_run":
+            return r, None
+    return None, None
+
+
+def check_sync(github: GitHubGet, tenant_repo: str, now: datetime,
+               tenant_root: Path | None = None, client=None) -> Check:
+    """Last tenant sync run: time and outcome.
+
+    Source order:
+    1. the Railway cron sync's own run row (`/api/cron/sync#background`) —
+       since 2026-10 the scheduled sync runs there, and its row says pushed /
+       no changes / failed outright (`via cron`);
+    2. the Actions API (`sync.yml` run conclusion — manual runs, and the
+       schedule before the move);
+    3. when Actions is unreadable and a checkout is given, the newest
+       `[cp-sync]` commit (`via git` — the weakest claim).
+    None readable → ⚠️.
     """
     label = "Sync"
+    row, ledger_err = _cron_sync_run(client, now)
+    if row is not None:
+        when = _local(row.get("created_at"))
+        status = row.get("status") or "?"
+        age_h = (now - when).total_seconds() / 3600 if when else None
+        word = {"ok": "ok", "partial": "partial", "failed": "failed"}.get(status, status)
+        text = f"{_hhmm(when, now)} {word} · via cron"
+        if status == "ok" and age_h is not None and age_h > 26:
+            text += f" · {int(age_h)}h old"
+        detail = {"source": "cron", "outcome": (row.get("detail") or {}).get("outcome")}
+        if row.get("error"):
+            detail["error"] = _clip(row["error"])
+        return Check(label, status == "ok" and age_h is not None and age_h <= 26,
+                     text, detail)
     try:
         run = _latest_run(github, tenant_repo, TENANT_SYNC_WORKFLOW)
     except Exception as exc:  # noqa: BLE001 — rendered as ⚠️, never hidden
-        actions_err = f"Actions: {_why(exc)}"
+        actions_err = f"Actions: {_why(exc)}" + (f"; {ledger_err}" if ledger_err else "")
         when, sha = last_sync_commit(tenant_root)
         if tenant_root is None:
             return _unreadable(label, actions_err, source="none")
@@ -545,7 +588,7 @@ def gather(
     except Exception as exc:  # noqa: BLE001 — rendered by check_hosted
         hosted_err = f"{type(exc).__name__}: {exc}"
     checks = [
-        check_sync(github, _tenant_repo(tenant_root), now, tenant_root),
+        check_sync(github, _tenant_repo(tenant_root), now, tenant_root, client),
         check_ingest(client, now),
         check_webhook(client, now),
         check_hosted(hosted, hosted_err),

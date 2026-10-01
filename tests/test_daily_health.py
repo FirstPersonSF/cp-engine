@@ -400,3 +400,48 @@ def test_cli_prints_the_errors_the_line_leaves_out_to_stderr(monkeypatch, tmp_pa
     res = CliRunner().invoke(main, ["health"])
     assert "✅ Sync · 05:08 · via git" in res.stdout and "404" not in res.stdout
     assert "Sync: Actions: HTTPError: 404" in res.stderr
+
+
+# ── Sync line once the schedule runs on the Railway cron (2026-10) ────────
+
+
+def _cron_row(status, outcome, hours_ago, error=None):
+    return {"status": status, "error": error, "created_at": _iso(NOW - timedelta(hours=hours_ago)),
+            "detail": {"job": "sync", "outcome": outcome}}
+
+
+def _actions_never(path):
+    raise AssertionError(f"Actions read although the cron row answers: {path}")
+
+
+@pytest.mark.parametrize("row,ok,text", [
+    (_cron_row("ok", "pushed", 1.5), True, "05:00 ok · via cron"),
+    (_cron_row("ok", "no_changes", 1.5), True, "05:00 ok · via cron"),
+    (_cron_row("failed", "failed", 1.5, "CalledProcessError: push"), False, "05:00 failed · via cron"),
+    (_cron_row("partial", "pushed", 1.5, "1 managed-region edit"), False, "05:00 partial · via cron"),
+    (_cron_row("ok", "pushed", 40), False, "09-28 14:30 ok · via cron · 40h old"),
+])
+def test_sync_reads_the_cron_run_row_first(row, ok, text):
+    """FAILS on the Actions-only check: after `schedule:` leaves sync.yml its
+    newest run is days old, and the git fallback cannot tell failed from
+    no-changes."""
+    c = dh.check_sync(_actions_never, "o/r", NOW, None, _Client({"webhook_runs": [row]}))
+    assert (c.ok, c.text) == (ok, text)
+    assert c.detail["source"] == "cron"
+    if row["error"]:
+        assert row["error"] in c.detail["error"] and row["error"] not in c.text
+
+
+def test_sync_skips_cron_dry_runs_and_falls_back_without_a_row():
+    dry = {"webhook_runs": [_cron_row("ok", "dry_run", 1)]}
+    c = dh.check_sync(_gh({"sync.yml": {"conclusion": "success",
+                                        "updated_at": _iso(NOW - timedelta(hours=2))}}),
+                      "o/r", NOW, None, _Client(dry))
+    assert c.detail["source"] == "actions" and c.ok
+
+
+def test_sync_unreadable_ledger_is_named_in_the_fallback_error(tmp_path: Path):
+    _git_repo_with_commits(tmp_path, [("[cp-sync] x", NOW - timedelta(hours=1))])
+    c = dh.check_sync(_gh({"sync.yml": RuntimeError("404")}), "o/r", NOW, tmp_path,
+                      _Client({"webhook_runs": RuntimeError("JWT expired")}))
+    assert c.detail["source"] == "git" and "JWT expired" in c.detail["error"]
