@@ -8,9 +8,11 @@ change order edited in the estimate is instantly true in every SOW read and
 nothing hand-retyped can rot.
 
 Design: cp tenant `docs/plans/2026-07-11-sow-as-projection-design.md`.
-Consumed by `mcp_server.pull_spine_element` (Agreement-layer elements of
-engagements; initiatives have no estimate → no block). Pure functions: plain
-data in, markdown out. Fail-soft at the call site, never here.
+`drift_warnings` is consumed by `prep_planning`. The engagement block
+(`render_engagement_block`, `sow_attach_nudge`) was composed into the stdio
+`pull_spine_element`, retired in step 5b; the hosted verb does not compose it
+yet, so it has no MCP caller today. Pure functions: plain data in, markdown
+out. Fail-soft at the call site, never here.
 """
 
 from __future__ import annotations

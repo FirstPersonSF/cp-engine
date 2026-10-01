@@ -199,14 +199,14 @@ def _load_hook():
 def test_hook_notes_unreadable_mcp_json(tmp_path, capsys):
     hook = _load_hook()
     (tmp_path / ".mcp.json").write_text("{not json", encoding="utf-8")
-    hook._repair_mcp_command(tmp_path)
+    hook._repair_mcp_config(tmp_path)
     assert ".mcp.json" in capsys.readouterr().err
 
 
 def test_hook_notes_failed_repair_write(tmp_path, capsys, monkeypatch):
     hook = _load_hook()
     p = tmp_path / ".mcp.json"
-    p.write_text(json.dumps({"mcpServers": {"cp-sources": {"command": "cp"}}}))
+    p.write_text(json.dumps({"mcpServers": {"cp-sources": {"command": "cxp", "args": ["mcp"]}}}))
     real_write = Path.write_text
 
     def ro(self, *a, **k):
@@ -215,9 +215,35 @@ def test_hook_notes_failed_repair_write(tmp_path, capsys, monkeypatch):
         return real_write(self, *a, **k)
 
     monkeypatch.setattr(Path, "write_text", ro)
-    hook._repair_mcp_command(tmp_path)
+    hook._repair_mcp_config(tmp_path)
     err = capsys.readouterr().err
     assert "FAILED to repair" in err and "read-only" in err
+
+
+def test_hook_moves_a_pre_retirement_tenant_onto_cp_hosted(tmp_path, capsys):
+    """Step 5b: a tenant last synced with the stdio server registered gets
+    cp-hosted instead, at session start, without a sync."""
+    hook = _load_hook()
+    p = tmp_path / ".mcp.json"
+    p.write_text(json.dumps({"mcpServers": {
+        "cp-sources": {"command": "cxp", "args": ["mcp"]},
+        "miro": {"type": "http", "url": "https://mcp.miro.com/"}}}))
+    hook._repair_mcp_config(tmp_path)
+    data = json.loads(p.read_text())
+    assert data["mcpServers"] == {
+        "miro": {"type": "http", "url": "https://mcp.miro.com/"},
+        "cp-hosted": {"type": "http", "url": "https://cp.mc-2.1p.is/mcp"}}
+    assert "/mcp" in capsys.readouterr().err
+
+
+def test_hook_leaves_a_hand_registered_cp_sources_and_an_existing_cp_hosted(tmp_path):
+    hook = _load_hook()
+    p = tmp_path / ".mcp.json"
+    before = {"mcpServers": {"cp-sources": {"command": "node", "args": ["x.js"]},
+                             "cp-hosted": {"type": "http", "url": "http://localhost:8788/mcp"}}}
+    p.write_text(json.dumps(before))
+    hook._repair_mcp_config(tmp_path)
+    assert json.loads(p.read_text()) == before
 
 
 # ── migrate_flat.py ─────────────────────────────────────────────────────

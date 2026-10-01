@@ -129,7 +129,7 @@ the first time.
 | | |
 |---|---|
 | Slash commands | `/cp-summarize`, `/cp-wrap`, `/cp-prep`, `/cp-context`, `/cp-ingest`, `/cp-tools`, `/cp-wrapup` |
-| MCP server name | `cp-sources` (and `cp-hosted`) |
+| MCP server name | `cp-sources` (and `cp-hosted`) — since retired: `cp-hosted` is the only cp server (step 5b) |
 | Plugin + repo | `cp-engine` |
 | Python package | `cp_engine` |
 | The tenant, its layout, your files | all identical |

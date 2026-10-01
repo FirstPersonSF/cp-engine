@@ -104,8 +104,8 @@ worked — not as current direction. `Holding` carries its status and no note.
 
 The `_sources.md` manifest in each working dir names what exists; these tools
 fetch content. Both project-scoped and shared account-scoped docs are surfaced.
-Use during strategy/deliverable work — e.g.
-`pull_project_source("<code>", "<doc title from _sources.md>")`.
+Use during strategy/deliverable work — e.g. `list_project_sources("<code>")`,
+then pull the doc by the `asset_id` it returns.
 
 **2 — Spine** (the distilled-memory index: emails, notes, decisions, syntheses —
 MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it live:

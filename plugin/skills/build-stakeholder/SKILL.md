@@ -134,7 +134,7 @@ Read what comes back and pull out:
 - **Watch items** — where this relationship could go wrong, constraints they
   are under, sensitivities. This is the section people actually reread.
 
-If the tenant has a `cp-sources`/`cp-hosted` MCP connection, `semantic_search`
+If the tenant has a `cp-hosted` MCP connection, `semantic_search`
 on the person's name catches material the greps miss.
 
 ---

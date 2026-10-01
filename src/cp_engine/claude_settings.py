@@ -177,37 +177,64 @@ def merge_permissions(existing: dict | None) -> tuple[dict, bool]:
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  .mcp.json — registers the `cp-sources` stdio MCP server (`cxp mcp`)
+#  .mcp.json — registers the hosted `cp-hosted` MCP server
 # ──────────────────────────────────────────────────────────────────────
 
 # Name of the engine's MCP server entry in a tenant's `.mcp.json`. Stable so
 # re-syncs recognize + update our entry rather than appending duplicates.
-_MCP_SERVER_NAME = "cp-sources"
+_MCP_SERVER_NAME = "cp-hosted"
+HOSTED_MCP_URL = "https://cp.mc-2.1p.is/mcp"
+
+# The RETIRED local stdio server (architecture plan step 5b). A tenant synced
+# before the retirement carries it; the entry points at a `cxp mcp` command
+# that no longer exists, so Claude Code would show a failed server on every
+# session. Removed only when it is the engine's own shape — a hand-registered
+# server that happens to use the name is left alone.
+_RETIRED_SERVER_NAME = "cp-sources"
+_RETIRED_COMMANDS = ("cxp", "cp")  # `cp` was the CLI's name before 2026-08-22
 
 
 def _mcp_server_entry() -> dict:
-    """The engine's `cp-sources` server entry, in Claude Code's `.mcp.json` schema.
+    """The engine's `cp-hosted` entry, in Claude Code's `.mcp.json` schema.
 
-    The command was `cp` before 2026-08-22. Tenants synced under the old name
-    carry a stale entry pointing at a binary that no longer exists, which takes
-    the whole `cp-sources` server (and every tool on it) down. `merge_mcp_config`
-    rewrites on difference, so any sync repairs it.
+    Streamable HTTP; Claude Code runs the OAuth sign-in on first use (`/mcp`
+    → `cp-hosted`). The same entry Drew's tenant carried by hand before the
+    engine wrote it.
     """
-    return {"command": "cxp", "args": ["mcp"]}
+    return {"type": "http", "url": HOSTED_MCP_URL}
+
+
+def is_retired_engine_entry(entry) -> bool:
+    """Is this `.mcp.json` entry the engine's retired stdio server?"""
+    return (
+        isinstance(entry, dict)
+        and entry.get("command") in _RETIRED_COMMANDS
+        and list(entry.get("args") or []) == ["mcp"]
+    )
 
 
 def merge_mcp_config(existing: dict | None) -> tuple[dict, bool]:
-    """Return (merged `.mcp.json`, changed) ensuring the `cp-sources` server.
+    """Return (merged `.mcp.json`, changed) ensuring the `cp-hosted` server.
 
     Preserves every other server the tenant registered and any other keys.
-    `changed` is False iff the `cp-sources` entry was already present and current.
+    An existing `cp-hosted` entry already pointing at the hosted URL is left
+    as it is (extra keys a person added, e.g. headers, survive); one pointing
+    elsewhere is rewritten. The retired `cp-sources` stdio entry is removed
+    when it is the engine's shape. `changed` is False iff nothing moved.
     """
     config: dict = dict(existing) if isinstance(existing, dict) else {}
 
     servers = dict(config.get("mcpServers") or {})
+    changed = False
+    current = servers.get(_MCP_SERVER_NAME)
     desired = _mcp_server_entry()
-    changed = servers.get(_MCP_SERVER_NAME) != desired
-    servers[_MCP_SERVER_NAME] = desired
+    if not (isinstance(current, dict) and current.get("url") == desired["url"]
+            and current.get("type", "http") == desired["type"]):
+        servers[_MCP_SERVER_NAME] = desired
+        changed = True
+    if is_retired_engine_entry(servers.get(_RETIRED_SERVER_NAME)):
+        del servers[_RETIRED_SERVER_NAME]
+        changed = True
     config["mcpServers"] = servers
     return config, changed
 
@@ -262,7 +289,8 @@ def install_into_tenant(tenant_root: Path) -> list[Path]:
         written.append(settings_path)
 
     # 3. .mcp.json — at the TENANT ROOT (not under .claude/), registering the
-    #    `cp-sources` stdio MCP server. Same best-effort discipline as
+    #    hosted `cp-hosted` MCP server (and dropping the retired stdio
+    #    `cp-sources` entry). Same best-effort discipline as
     #    settings.json: a malformed existing file is left in place, not
     #    clobbered (a tenant may have hand-registered other servers).
     mcp_path = tenant_root / ".mcp.json"
@@ -272,7 +300,7 @@ def install_into_tenant(tenant_root: Path) -> list[Path]:
             existing_mcp = json.loads(mcp_path.read_text())
         except (json.JSONDecodeError, OSError) as exc:
             logger.warning(
-                "%s unreadable (%s); cp-sources MCP server NOT registered "
+                "%s unreadable (%s); cp-hosted MCP server NOT registered "
                 "this sync — fix or remove the file", mcp_path, exc,
             )
             return written

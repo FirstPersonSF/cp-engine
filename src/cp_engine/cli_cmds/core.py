@@ -814,7 +814,8 @@ def doctor_cmd(brief: bool) -> None:
     """Is this cp install consistent with itself? (#296)
 
     Reads every registered plugin install, the installed engine version, the
-    uv receipt, and running `cxp mcp` processes, and reports what disagrees.
+    uv receipt, and any retired `cxp mcp` server still running, and reports
+    what disagrees.
     Read-only; never installs, never kills. All check logic lives in
     `cp_engine.health` — this is its CLI face.
 

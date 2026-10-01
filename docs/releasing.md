@@ -115,5 +115,6 @@ it is printed: credentials in URLs, `gh*_`/`github_pat_` tokens, and
 
 ## After a release
 
-Running `cxp mcp` servers keep the code they loaded at startup. Restart them
-with `/mcp` to pick up the new CLI.
+There is no local MCP server to restart (the `cxp mcp` server was retired in
+step 5b). A hosted change reaches sessions only after `deploy.sh`; a session
+connected before the deploy keeps its old tool list until `/mcp` reconnects.

@@ -6,7 +6,7 @@ the auto-ingest webhook (Fathom action items), the ``set-milestone`` /
 ``set-client-ask-task`` ingest verbs (which historically wrote
 ``clickup_task_proposals`` rows; design:
 cp/docs/plans/2026-07-07-commitments-consolidation-design.md), and the
-session-facing cp-sources MCP verbs (create/list/resolve, cp-engine #76).
+session-facing hosted MCP verbs (create/list/resolve, cp-engine #76).
 
 The review-gate concept survives as state: every row lands with
 ``date_status='proposed'``; the weekly Slack dates loop ratifies dates

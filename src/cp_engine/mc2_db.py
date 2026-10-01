@@ -1160,7 +1160,7 @@ def upsert_spine_snapshot(client: "Client", row: dict) -> None:
 # meeting-link and spine-promote paths included) had to import an MCP
 # server just to resolve an id, so a missing/renamed ``mcp.server.fastmcp``
 # broke Supabase-only code that never used MCP. See the v0.80.1 webhook
-# ModuleNotFoundError. ``mcp_server`` now re-exports both for its own use.
+# ModuleNotFoundError. (The stdio ``mcp_server`` was retired in step 5b.)
 
 def canonical_spine_code(
     client,

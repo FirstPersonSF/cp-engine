@@ -379,6 +379,6 @@ session record worth reading.
   rather than working around it.
 - **Weekly review.** `wrap up` also closes a `run weekly review` block; the
   prior mode persists if the session continues.
-- **After a cp-engine release**, `cxp mcp` keeps serving old bytecode.
-  Restart the MCP connection (`/mcp`) before assuming a spine tool is
-  broken.
+- **After a hosted deploy**, the session's `cp-hosted` connection keeps the
+  tool list it loaded at startup. Reconnect (`/mcp`) before assuming a spine
+  tool is broken or missing.

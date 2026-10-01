@@ -169,17 +169,33 @@ def _reinstall(repo: Path) -> bool:
 
 
 
-def _repair_mcp_command(root: Path) -> None:
-    """Rewrite a stale `"command": "cp"` in the tenant's .mcp.json to `cxp`.
+_HOSTED_MCP = {"type": "http", "url": "https://cp.mc-2.1p.is/mcp"}
 
-    Rename cleanup (2026-08-22). A tenant last synced under the old name has
-    an entry pointing at a binary that no longer exists, which takes the whole
-    cp-sources server — and every tool on it — offline. `cxp sync` fixes this
-    via merge_mcp_config, but a user who never syncs would stay broken, and
-    syncing needs a working CLI. So repair it here, on session start.
 
-    Deliberately narrow: only the cp-sources entry, only when its command is
-    exactly "cp". Never blocks; any failure is silent beyond a note.
+def _is_retired_stdio_entry(entry) -> bool:
+    """The engine's own `cp-sources` stdio entry (`cxp mcp`, or `cp mcp`
+    from before the 2026-08-22 rename) — never a hand-registered server."""
+    return (
+        isinstance(entry, dict)
+        and entry.get("command") in ("cxp", "cp")
+        and list(entry.get("args") or ["mcp"]) == ["mcp"]
+    )
+
+
+def _repair_mcp_config(root: Path) -> None:
+    """Move the tenant's .mcp.json onto the hosted server (step 5b).
+
+    The local stdio server (`cp-sources`, `cxp mcp`) was retired: its command
+    no longer exists, so a tenant last synced before the retirement shows a
+    failed MCP server every session — and, if it never had `cp-hosted`
+    registered, has no cp tools at all. `cxp sync` fixes this via
+    merge_mcp_config, but a user who never syncs would stay broken, so repair
+    it here, on session start: drop the engine-shaped `cp-sources` entry and
+    add `cp-hosted` when it is absent.
+
+    Deliberately narrow: a `cp-sources` entry that is not the engine's shape
+    is left alone, and an existing `cp-hosted` entry is never rewritten.
+    Never blocks; any failure is a note, nothing more.
     """
     path = root / ".mcp.json"
     if not path.is_file():
@@ -188,21 +204,32 @@ def _repair_mcp_command(root: Path) -> None:
         data = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
         # Leave it for `cxp sync` to rewrite — but say so: an unparseable
-        # .mcp.json means cp-sources (every MCP tool) is offline.
-        _note(f"could not read {path} ({exc}); cp-sources MCP may be offline.")
+        # .mcp.json means cp-hosted (every cp MCP tool) is offline.
+        _note(f"could not read {path} ({exc}); cp-hosted MCP may be offline.")
+        return
+    if not isinstance(data, dict):
         return
 
-    entry = (data.get("mcpServers") or {}).get("cp-sources")
-    if not isinstance(entry, dict) or entry.get("command") != "cp":
+    servers = data.get("mcpServers")
+    if not isinstance(servers, dict):
+        servers = {}
+    changes = []
+    if _is_retired_stdio_entry(servers.get("cp-sources")):
+        del servers["cp-sources"]
+        changes.append("removed the retired cp-sources (cxp mcp) server")
+    if "cp-hosted" not in servers and changes:
+        servers["cp-hosted"] = dict(_HOSTED_MCP)
+        changes.append("added cp-hosted")
+    if not changes:
         return
 
-    entry["command"] = "cxp"
+    data["mcpServers"] = servers
     try:
         path.write_text(json.dumps(data, indent=2) + "\n")
     except OSError as exc:
-        _note(f"FAILED to repair stale 'cp' command in {path}: {exc}")
+        _note(f"FAILED to repair {path} ({'; '.join(changes)}): {exc}")
         return
-    _note(f"repaired stale 'cp' command in {path} -> 'cxp'.")
+    _note(f"repaired {path}: {'; '.join(changes)}. Run /mcp to reconnect.")
 
 
 def _doctor_brief() -> None:
@@ -240,7 +267,7 @@ def main() -> int:
     # Before any version logic: the repair must run even on the healthy
     # early-return paths below, or a tenant whose CLI is already current
     # keeps a dead MCP server forever.
-    _repair_mcp_command(root)
+    _repair_mcp_config(root)
 
     pin = _read_pin(root)
     if pin is None:

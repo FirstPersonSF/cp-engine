@@ -70,7 +70,7 @@ PROMOTIONS_BODY = (
 TITLE_EXCERPT_CHARS = 80
 
 # The rule every capture verb states in its description (hosted server,
-# stdio server, CLI). One spelling, so the three surfaces cannot drift.
+# CLI). One spelling, so the surfaces cannot drift.
 LEVEL_RULE = (
     "LEVEL: writes land on the named workstream (`project_code`), and the "
     "response echoes `level: {code, label, parent}` so you can see where it "
