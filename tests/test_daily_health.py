@@ -257,3 +257,53 @@ def test_github_get_uses_the_repos_own_token_for_its_own_repo(monkeypatch):
     dh.github_get("/repos/FirstPersonSF/cp-engine/actions/workflows/tests.yml/runs")
     assert seen[0][1] == "Bearer own"
     assert seen[1][1] == "Bearer pat"
+
+
+# ── Sync line from Railway: git fallback when Actions is unreadable ────────
+
+
+def _git_repo_with_commits(root: Path, messages_and_times: list[tuple[str, datetime]]):
+    import os
+    import subprocess
+
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    for i, (msg, when) in enumerate(messages_and_times):
+        (root / f"f{i}").write_text(str(i))
+        env = {**os.environ, "GIT_AUTHOR_DATE": when.isoformat(),
+               "GIT_COMMITTER_DATE": when.isoformat(),
+               "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        subprocess.run(["git", "-C", str(root), "add", "-A"], check=True, env=env)
+        subprocess.run(["git", "-C", str(root), "commit", "-q", "-m", msg], check=True, env=env)
+
+
+def test_sync_falls_back_to_the_newest_cp_sync_commit_and_says_so(tmp_path: Path):
+    _git_repo_with_commits(tmp_path, [
+        ("[cp-sync] 2026-09-30T05:08Z — auto-sync from MC-2",
+         NOW - timedelta(hours=1, minutes=22)),
+        ("[auto-ingest] ggl-5168: meeting 1", NOW - timedelta(minutes=10)),
+    ])
+    c = dh.check_sync(_gh({"sync.yml": RuntimeError("HTTP Error 404: Not Found")}),
+                      "FirstPersonSF/cp", NOW, tmp_path)
+    assert c.ok, c.text
+    assert c.text.startswith("05:08 commit via git") and "404" in c.text
+    assert c.detail["source"] == "git"
+
+
+def test_sync_git_fallback_with_an_old_commit_is_not_ok(tmp_path: Path):
+    _git_repo_with_commits(tmp_path, [("[cp-sync] old", NOW - timedelta(hours=40))])
+    c = dh.check_sync(_gh({"sync.yml": RuntimeError("404")}), "o/r", NOW, tmp_path)
+    assert not c.ok and "40h old" in c.text and "via git" in c.text
+
+
+def test_sync_with_neither_source_readable_is_a_warning(tmp_path: Path):
+    _git_repo_with_commits(tmp_path, [("[auto-ingest] x", NOW)])
+    c = dh.check_sync(_gh({"sync.yml": RuntimeError("404")}), "o/r", NOW, tmp_path)
+    assert not c.ok and "unreadable" in c.text and "no [cp-sync] commit" in c.text
+
+
+def test_sync_prefers_actions_when_readable(tmp_path: Path):
+    _git_repo_with_commits(tmp_path, [("[cp-sync] x", NOW)])
+    c = dh.check_sync(_gh({"sync.yml": {"conclusion": "failure", "updated_at": _iso(NOW)}}),
+                      "o/r", NOW, tmp_path)
+    assert not c.ok and c.detail["source"] == "actions"  # a git commit never masks a red run

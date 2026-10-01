@@ -137,15 +137,64 @@ def _latest_run(github: GitHubGet, repo: str, workflow: str, branch: str | None 
     return runs[0] if runs else None
 
 
-def check_sync(github: GitHubGet, tenant_repo: str, now: datetime) -> Check:
-    """Last tenant sync workflow run: time and conclusion."""
+SYNC_COMMIT_PREFIX = "[cp-sync]"
+
+
+def last_sync_commit(tenant_root: Path | None) -> tuple[datetime | None, str | None]:
+    """(committer time, short sha) of the newest `[cp-sync]` commit in the
+    tenant checkout's history — (None, None) when there is none to see.
+
+    The fallback source for the Sync line when the Actions API is unreadable
+    (Railway has no job token; the webhook's GH_PAT 404s on the tenant). It is
+    a WEAKER claim than a run conclusion: sync commits only when the render
+    changed something, and a failed run leaves no commit. The line says which
+    source it used.
+    """
+    if tenant_root is None:
+        return None, None
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(tenant_root), "log", "-1", "--fixed-strings",
+             f"--grep={SYNC_COMMIT_PREFIX}", "--format=%cI %h"],
+            capture_output=True, text=True, timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None, None
+    line = out.stdout.strip() if out.returncode == 0 else ""
+    if not line:
+        return None, None
+    ts, _, sha = line.partition(" ")
+    return _local(ts), sha or None
+
+
+def check_sync(github: GitHubGet, tenant_repo: str, now: datetime,
+               tenant_root: Path | None = None) -> Check:
+    """Last tenant sync workflow run: time and conclusion.
+
+    Source order: the Actions API (run conclusion — the strong claim), then,
+    when that is unreadable and a checkout is given, the newest `[cp-sync]`
+    commit in it (`via git`, with the Actions reason). Neither readable → ⚠️.
+    """
     label = "Sync"
     try:
         run = _latest_run(github, tenant_repo, TENANT_SYNC_WORKFLOW)
     except Exception as exc:  # noqa: BLE001 — rendered as ⚠️, never hidden
-        return _unreadable(label, exc)
+        why = _clip(f"{type(exc).__name__}: {exc}", 40)
+        when, sha = last_sync_commit(tenant_root)
+        if tenant_root is None:
+            return _unreadable(label, exc)
+        if when is None:
+            return Check(label, False,
+                         f"unreadable — Actions: {why}; "
+                         f"no {SYNC_COMMIT_PREFIX} commit in checkout",
+                         {"source": "none"})
+        age_h = (now - when).total_seconds() / 3600
+        text = f"{_hhmm(when, now)} commit via git (Actions: {why})"
+        if age_h > 26:
+            text += f" · {int(age_h)}h old"
+        return Check(label, age_h <= 26, text, {"source": "git", "sha": sha})
     if run is None:
-        return Check(label, False, "no runs found")
+        return Check(label, False, "no runs found", {"source": "actions"})
     when = _local(run.get("updated_at") or run.get("created_at"))
     concl = run.get("conclusion") or run.get("status") or "?"
     age_h = (now - when).total_seconds() / 3600 if when else None
@@ -153,7 +202,8 @@ def check_sync(github: GitHubGet, tenant_repo: str, now: datetime) -> Check:
     text = f"{_hhmm(when, now)} {'ok' if concl == 'success' else concl}"
     if concl == "success" and age_h is not None and age_h > 26:
         text += f" · {int(age_h)}h old"
-    return Check(label, ok, text, {"conclusion": concl, "url": run.get("html_url")})
+    return Check(label, ok, text, {"source": "actions", "conclusion": concl,
+                                   "url": run.get("html_url")})
 
 
 def check_ci(github: GitHubGet, now: datetime) -> Check:
@@ -464,7 +514,7 @@ def gather(
     except Exception as exc:  # noqa: BLE001 — rendered by check_hosted
         hosted_err = f"{type(exc).__name__}: {exc}"
     checks = [
-        check_sync(github, _tenant_repo(tenant_root), now),
+        check_sync(github, _tenant_repo(tenant_root), now, tenant_root),
         check_ingest(client, now),
         check_webhook(client, now),
         check_hosted(hosted, hosted_err),

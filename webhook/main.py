@@ -24,6 +24,7 @@ Layout (arch-phase-4, cp-engine #32 — split from a single 4k-LOC file):
   routers/promote_uphill.py— POST /api/promote-uphill
   routers/rotation.py— POST /api/word-count/rotate
   routers/slack.py   — POST /slack-action
+  routers/cron.py    — POST /api/cron/{job} (Railway cron trigger; webhook/cron/)
 
 Endpoints:
   POST /api/auto-ingest   — main entry; HMAC-signed by caller
@@ -182,6 +183,7 @@ def health() -> dict:
 # Routers are imported AFTER logging/Sentry setup so their import-time
 # side effects (there should be none) can't race the log configuration.
 from routers import assets as _assets_router  # noqa: E402
+from routers import cron as _cron_router  # noqa: E402
 from routers import dates_loop as _dates_loop_router  # noqa: E402
 from routers import email as _email_router  # noqa: E402
 from routers import ingest as _ingest_router  # noqa: E402
@@ -208,6 +210,7 @@ app.include_router(_project_state_router.router)
 app.include_router(_promote_uphill_router.router)
 app.include_router(_improvements_router.router)
 app.include_router(_rotation_router.router)
+app.include_router(_cron_router.router)
 
 
 # ── Back-compat re-exports (arch-phase-4 split) ───────────────────────

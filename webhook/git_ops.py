@@ -173,6 +173,52 @@ def _clone_into_tmp(repo_url: str, sparse_paths: list[str] | None):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+@contextmanager
+def _read_only_clone(*, since_days: int = 3):
+    """Lock-free, blob-less, sparse clone for READ-ONLY jobs (the cron health
+    line). Yields the checkout path; always cleans up.
+
+    Differs from `_cloned_tenant` on purpose:
+
+    - no writer lock — nothing here commits, so it must not queue behind (or
+      hold up) an auto-ingest push;
+    - history reaches back ``since_days`` (`--shallow-since`), not 10 commits:
+      the tenant takes ~35 auto-ingest commits a day, so the newest
+      ``[cp-sync]`` commit (the Sync line's git fallback) is routinely deeper
+      than ``--depth=10``. ``--filter=blob:none`` keeps that cheap — commits
+      and trees only;
+    - ``--sparse`` with no cone set materializes root files only, which is all
+      the readers need (`.cp-engine.toml`, `master-cp.md`).
+
+    A window with no commits at all makes ``--shallow-since`` fail; that falls
+    back to ``--depth=1`` so the config still loads (and the Sync line then
+    says it found no sync commit, rather than the job failing).
+    """
+    repo_url = os.environ.get("CP_TENANT_REPO_URL")
+    if not repo_url:
+        raise HTTPException(status_code=500, detail="CP_TENANT_REPO_URL not configured")
+    tmp = Path(tempfile.mkdtemp(prefix="cp-webhook-ro-"))
+    dest = tmp / "cp"
+    try:
+        env = _ssh_env()
+        base = ["git", "clone", "--filter=blob:none", "--sparse", "--no-tags"]
+        since = time.strftime("%Y-%m-%d", time.gmtime(time.time() - since_days * 86400))
+        try:
+            subprocess.run([*base, f"--shallow-since={since}", repo_url, str(dest)],
+                           check=True, env=env, capture_output=True)
+        except subprocess.CalledProcessError as first:
+            shutil.rmtree(dest, ignore_errors=True)
+            out = subprocess.run([*base, "--depth=1", repo_url, str(dest)],
+                                 env=env, capture_output=True, text=True)
+            if out.returncode != 0:
+                # git's own message (auth, network) — never the key itself.
+                raise RuntimeError(
+                    f"tenant clone failed: {out.stderr.strip()[-300:]}") from first
+        yield dest
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def _ssh_env() -> dict:
     """Build a subprocess env that uses GIT_SSH_KEY for the clone/push."""
     env = os.environ.copy()

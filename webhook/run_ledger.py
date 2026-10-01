@@ -215,11 +215,16 @@ class RunLedgerMiddleware(BaseHTTPMiddleware):
             body = _json_or_none(raw)
             status, error = derive_status(response.status_code, body)
             code = _project_code(body, None)
+            # A route may hand the ledger a structured `run_detail` (the cron
+            # route stores its slot, day and posted ts — its idempotency key).
+            detail = body.get("run_detail") if isinstance(body, dict) else None
+            if not isinstance(detail, dict):
+                detail = None
         except Exception as exc:  # noqa: BLE001 — the ledger never breaks a response
             log.error("webhook_runs: could not classify %s response: %s", route, exc)
             observability.capture(exc, area="webhook_runs_classify", route=route)
             status = "failed" if response.status_code >= 500 else "partial"
-            error, code = f"ledger could not classify response: {exc}", None
+            error, code, detail = f"ledger could not classify response: {exc}", None, None
         await asyncio.to_thread(
             record_run,
             route=route,
@@ -227,6 +232,7 @@ class RunLedgerMiddleware(BaseHTTPMiddleware):
             http_status=response.status_code,
             project_code=code,
             error=error,
+            detail=detail,
             duration_ms=int((time.monotonic() - started) * 1000),
         )
         return Response(
