@@ -117,6 +117,7 @@ from cp_engine.promote_uphill import level_for as _engine_level_for  # noqa: E40
 from cp_engine.state import slug_full_job_name as _engine_slug_full_job_name  # noqa: E402
 # Exec Summary region, markers, stamp and stale threshold (step 1c).
 from cp_engine import project_sources as _engine_project_sources  # noqa: E402
+from cp_engine import authored_element as _engine_authored_element  # noqa: E402
 from cp_engine import mc2_db as _engine_mc2_db  # noqa: E402
 from cp_engine import spine_steps as _engine_spine_steps  # noqa: E402
 from cp_engine.commitments import _valid_due_date as _engine_valid_due_date  # noqa: E402
@@ -2929,38 +2930,11 @@ def semantic_search(
 # live version" then picks arbitrarily. It stays on the `cp mcp` service-key
 # path until a reviewed UPDATE policy exists.
 
-# Canonical `layer` vocabulary, copied (not imported) from
-# `spine_authoring.authored_element.LAYER_ALIASES` — this prototype stays off
-# the cp_engine/spine_authoring import path by design. Keep in sync with that
-# package; it is the single source of truth for stored `layer` strings, and a
-# divergence here means the spine UI's by-layer filters miss what we wrote.
-_LAYER_ALIASES = {
-    "email": "Email",
-    "note": "Note",
-    "decision": "Decisions",
-    "decisions": "Decisions",
-    "source": "Source material",
-    "sourcematerial": "Source material",
-    "brief": "Brief",
-    "stakeholder": "Stakeholders",
-    "stakeholders": "Stakeholders",
-    "agreement": "Agreement",
-    "synthesis": "Synthesis",
-    # `output` folds into Deliverables (#172). It was mapped to a layer of its
-    # own here, but "Output" is NOT in cp_engine.spine.LAYERS — so every write
-    # through this alias minted a layer the engine does not recognise, and
-    # readers that compare `layer == "Deliverables"` silently skipped them
-    # (spine_stats counts zero of the 9; spine_recover never flags them for
-    # rebind). One concept, one name.
-    "output": "Deliverables",
-    "activity": "Activity",
-    "retrospective": "Retrospective",
-    "research": "Research",
-    "deliverable": "Deliverables",
-    "deliverables": "Deliverables",
-    "clientfeedback": "Client feedback",
-    "timeline": "Timeline",
-}
+# Canonical `layer` vocabulary: `spine_authoring.authored_element.LAYER_ALIASES`
+# via the engine's re-export (architecture plan step 1c, H16 part) — the single
+# source of truth for stored `layer` strings, so the spine UI's by-layer
+# filters see what this server writes.
+_LAYER_ALIASES = _engine_authored_element.LAYER_ALIASES
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
@@ -3000,16 +2974,9 @@ BRIEF_ITEM_ID = "_authored/inputs-briefing"
 CANON_TARGET_MAX = 7
 
 
-def canon_layer(type_: str) -> str:
-    """Map an element `type` onto its canonical `layer` string.
-
-    Case/space-insensitive; an unmapped value passes through unchanged so
-    already-canonical TitleCase forms are idempotent and a future kind is never
-    invented or dropped. Verbatim behaviour of `spine_authoring.canon_layer`.
-    """
-    if not type_:
-        return type_
-    return _LAYER_ALIASES.get(type_.lower().replace(" ", ""), type_)
+# Element `type` → canonical `layer`; case/space-insensitive, an unmapped
+# value passes through unchanged. The shared package's own function.
+canon_layer = _engine_authored_element.canon_layer
 
 
 # Layers where `serves` means RELEVANCE, not a work binding (#179 step 4).
