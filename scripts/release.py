@@ -8,7 +8,11 @@
 Bumps the version in `pyproject.toml`, `plugin/plugin.json`,
 `.claude-plugin/marketplace.json`, `webhook/pyproject.toml`'s pin and
 `prototypes/hosted-mcp/server.py`'s `SERVER_VERSION`, runs the test
-suite, builds the package, commits, tags, and pushes.
+suite, builds the package, commits, tags, and pushes — then runs every
+post-release step (`scripts/post_release.py`): local CLI + plugin installs,
+hosted deploy, webhook check, tenant pin, mc-2 pin. Nothing after this
+command is manual except promoting mc-2 to PROD, which is deliberately never
+automated. See `docs/releasing.md`.
 
 The hosted server's constant is bumped here because it was not: it read
 `hosted-cp-spike/0.0.6` at engine 0.120.1, and once `whoami` began
@@ -28,6 +32,10 @@ Usage
     scripts/release.py 0.6.0
     scripts/release.py 0.6.0 --dry-run
     scripts/release.py 0.6.0 --skip-tests       # not recommended
+    scripts/release.py 0.6.0 --skip mc2-pin     # any post step; repeatable
+    scripts/release.py 0.6.0 --only plugins     # just these post steps
+    scripts/release.py 0.6.0 --no-post          # stop after the push
+    scripts/release.py --resume-post 0.6.0      # post steps only, after a partial failure
 
 Pre-flight checks (all must pass before any file is touched):
 - Working tree is clean.
@@ -39,7 +47,11 @@ Pre-flight checks (all must pass before any file is touched):
 - CI gate: the newest green `tests` run on main is an ancestor of HEAD, and
   nothing but CHANGELOG.md changed since (`--skip-ci-gate REASON` to override).
 
-On any failure the script exits non-zero and leaves the tree untouched.
+On any failure before the commit the script exits non-zero and leaves the
+tree untouched: a failure AFTER the bump (red tests, failed build, Ctrl-C)
+restores every version file byte-for-byte (#346). A post-release failure
+happens after the tag is pushed — the release stands, the summary names the
+manual command, and `--resume-post` re-runs the unfinished steps.
 """
 
 from __future__ import annotations
@@ -54,6 +66,9 @@ from pathlib import Path
 
 import tomlkit
 from packaging.version import InvalidVersion, Version
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import post_release  # noqa: E402 — sibling script; the steps after the push
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PYPROJECT = REPO_ROOT / "pyproject.toml"
@@ -140,10 +155,11 @@ def read_current_version() -> str:
     return str(doc["project"]["version"])
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Release a new cp-engine version.")
-    p.add_argument("version", help="New version, e.g. 0.6.0")
-    p.add_argument("--dry-run", action="store_true", help="Run pre-flight checks only.")
+    p.add_argument("version", nargs="?", help="New version, e.g. 0.6.0")
+    p.add_argument("--dry-run", action="store_true",
+                   help="Run pre-flight checks and list the post-release steps only.")
     p.add_argument(
         "--skip-tests",
         action="store_true",
@@ -160,7 +176,21 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip `python -m build`. Use only if `build` is unavailable.",
     )
-    return p.parse_args()
+    p.add_argument(
+        "--resume-post",
+        metavar="VERSION",
+        help="Run only the post-release steps for an already-pushed VERSION "
+        "(after a partial failure). Combine with --only/--skip.",
+    )
+    p.add_argument("--no-post", action="store_true",
+                   help="Stop after the push; run no post-release steps.")
+    post_release.add_post_args(p)
+    args = p.parse_args(argv)
+    if bool(args.version) == bool(args.resume_post):
+        p.error("give a VERSION to release, or --resume-post VERSION — exactly one")
+    if args.skip and args.only:
+        p.error("--skip and --only together are ambiguous; use one")
+    return args
 
 
 # CI gate (architecture plan step 0). CI was red from 2026-09-24 to 09-30 across
@@ -324,46 +354,6 @@ def bump_webhook_pin(new: str) -> None:
     WEBHOOK_PYPROJECT.write_text(pattern.sub(f'"cp-engine=={new}"', text, count=1))
 
 
-def _print_tenant_pin_reminder(new: str, previous: str) -> None:
-    """Name the tenant-pin edit this release needs, if it needs one.
-
-    WHY THIS IS A REMINDER AND NOT A BUMP (2026-09-18). Every other version
-    mirror is bumped in-place above, because they all live in THIS repo. The
-    tenant pin does not: `.cp-engine.toml` lives in a separate repository, on a
-    clone this script cannot assume exists, and changing it means a commit in
-    someone else's working tree. So this cannot be automated from here without
-    reaching across a repo boundary, which is why it never was.
-
-    But "manual" turned out to mean "forgotten." The spec calls the pin bump
-    "Edit + commit (manual, deliberate)" and it was done faithfully for ~20
-    consecutive releases — `~= 0.23` through `~= 0.42` — then stopped on
-    2026-06-30 and has not moved through 80 releases. A pin of `~= 0.42` is
-    satisfied by every version from 0.42.0 to 0.120.x, so it answers "is this
-    allowed?" and has not answered "is this current?" since June. That gap is
-    exactly where a CLI twelve releases stale ran a render and rewrote 54
-    provenance stamps backwards.
-
-    Only MINOR bumps print. The spec's model is that tenants opt into a new
-    minor series and take patches automatically, so a patch release genuinely
-    needs no tenant edit — printing on every release would train the reader to
-    skip the line, which is how the practice lapsed the first time.
-    """
-    minor = ".".join(new.split(".")[:2])
-    # `previous` is captured by preflight BEFORE bump_pyproject rewrites the
-    # file; calling read_current_version() here would read the new version
-    # back and the comparison would never fire.
-    if ".".join(previous.split(".")[:2]) == minor:
-        return  # patch release — the existing pin already covers it
-
-    print()
-    print(f"[release] ⚠ MINOR bump: tenants are still pinned below {minor}.")
-    print("[release]   In EACH tenant, edit .cp-engine.toml:")
-    print(f'[release]       [engine]  version = "~= {minor}"')
-    print("[release]   then commit + push. Until then `cxp sync` on an older")
-    print("[release]   CLI is allowed by the pin, which is how 0.42 sat")
-    print("[release]   unchanged through 80 releases.")
-
-
 def bump_hosted_server_version(new: str) -> None:
     """Update `SERVER_VERSION = "hosted-cp/X"` in the hosted MCP server.
 
@@ -446,8 +436,162 @@ def changelog_oneline(new: str) -> str:
     return f"v{new} release"
 
 
-def main() -> int:
-    args = parse_args()
+def _version_files() -> list[Path]:
+    """Every file the bump rewrites, plus uv.lock (rewritten by `uv run`)."""
+    return [PYPROJECT, INIT_PY, PLUGIN_JSON, MARKETPLACE_JSON, WEBHOOK_PYPROJECT,
+            HOSTED_SERVER, UV_LOCK]
+
+
+def _snapshot(paths: list[Path]) -> dict[Path, bytes | None]:
+    return {p: (p.read_bytes() if p.exists() else None) for p in paths}
+
+
+def _restore(snap: dict[Path, bytes | None]) -> list[Path]:
+    """Put every snapshotted file back byte-for-byte; return the ones that moved."""
+    moved = []
+    for p, data in snap.items():
+        now = p.read_bytes() if p.exists() else None
+        if now == data:
+            continue
+        if data is None:
+            p.unlink()
+        else:
+            p.write_bytes(data)
+        moved.append(p)
+    return moved
+
+
+def run_tests() -> None:
+    print("[release] running pytest...")
+    # Use uv to materialize pytest in an ephemeral env that also
+    # rebuilds the editable cp-engine install — same invocation
+    # that works in development. Avoids "pytest not found" when the
+    # release script's own env doesn't have pytest.
+    # PYTHONPATH=src: Python 3.14's site.py skips .pth files carrying
+    # the macOS hidden flag (which a sync agent keeps re-applying), so
+    # the editable install's .pth can silently not load (#122).
+    pytest_env = os.environ.copy()
+    src = str(REPO_ROOT / "src")
+    prior = pytest_env.get("PYTHONPATH")
+    pytest_env["PYTHONPATH"] = f"{src}{os.pathsep}{prior}" if prior else src
+    code, summary = run_pytest_counted(
+        ["uv", "run", "--with", "pytest", "python", "-m", "pytest", "-q"],
+        env=pytest_env,
+    )
+    if code != 0:
+        raise ReleaseError(
+            f"tests failed ({summary or 'no summary line'}); aborting before commit."
+        )
+    if summary is None:
+        raise ReleaseError(
+            "pytest exited 0 but printed no summary line — cannot "
+            "tell a finished run from a truncated one; aborting (#316)."
+        )
+    print(f"[release] pytest: {summary}")
+
+
+def run_build() -> None:
+    print("[release] building distribution...")
+    try:
+        run(["uv", "run", "--with", "build", "python", "-m", "build"])
+    except subprocess.CalledProcessError as e:
+        raise ReleaseError("build failed; aborting before commit.") from e
+
+
+def bump_test_commit(args: argparse.Namespace) -> None:
+    """Bump every version file, test, build, commit — or leave the tree as found.
+
+    #346 (v0.128.0): the bump ran BEFORE pytest, and a red run left six files
+    modified with no commit and no tag, so the next attempt's clean-tree
+    preflight refused for a reason unrelated to the failure. The bump stays
+    first — the suite and the build must see the tree that ships — but every
+    file it (or `uv run`) rewrites is snapshotted and restored byte-for-byte on
+    ANY failure before the commit, Ctrl-C included.
+    """
+    snap = _snapshot(_version_files())
+    committed = False
+    try:
+        print("[release] bumping version files...")
+        bump_pyproject(args.version)
+        bump_init_py(args.version)
+        bump_json(PLUGIN_JSON, args.version)
+        bump_json(MARKETPLACE_JSON, args.version)
+        bump_webhook_pin(args.version)
+        bump_hosted_server_version(args.version)
+
+        if not args.skip_tests:
+            run_tests()
+        if not args.skip_build:
+            run_build()
+
+        summary = changelog_oneline(args.version)
+        commit_msg = f"v{args.version}: {summary}"
+        print(f"[release] committing: {commit_msg}")
+        add_paths = [PYPROJECT, INIT_PY, PLUGIN_JSON, MARKETPLACE_JSON, WEBHOOK_PYPROJECT,
+                     HOSTED_SERVER]
+        # uv.lock only exists / only moves when the test+build steps actually ran;
+        # `--skip-tests --skip-build` leaves it untouched, and `git add` on an
+        # unchanged path is a harmless no-op either way.
+        if UV_LOCK.exists():
+            add_paths.append(UV_LOCK)
+        run(["git", "add", *(str(p) for p in add_paths)])
+        run(["git", "commit", "-m", commit_msg])
+        committed = True
+    finally:
+        if not committed:
+            # Unstage first: a failed `git commit` after `git add` leaves the
+            # bump in the index, which a clean-tree check counts as dirty.
+            run(["git", "reset", "-q", "--", *(str(p) for p in _version_files())],
+                check=False)
+            moved = _restore(snap)
+            print(f"[release] restored {len(moved)} version file(s); tree is as it was "
+                  "before the bump (#346).", file=sys.stderr)
+
+
+def tag_and_push(version: str) -> None:
+    tag = f"v{version}"
+    print(f"[release] tagging {tag}...")
+    run(["git", "tag", tag])
+
+    print("[release] pushing main + tag...")
+    run(["git", "push", "origin", "main"])
+    run(["git", "push", "origin", tag])
+    print(f"[release] done. v{version} released.")
+
+
+def post(args: argparse.Namespace, version: str, previous: str | None) -> int:
+    if args.no_post:
+        print("[release] --no-post: post-release steps not run. Finish with:")
+        print(f"[release]   scripts/release.py --resume-post {version}")
+        return 0
+    opts = post_release.options_from_args(args, version, previous)
+    results = post_release.run_pipeline(opts)
+    if post_release.ok(results):
+        return 0
+    print(f"[release] v{version} IS released (tag pushed); some post-release steps "
+          "did not finish — see above.", file=sys.stderr)
+    return 1
+
+
+def resume_post(args: argparse.Namespace) -> int:
+    """`--resume-post VERSION`: the post steps alone, for a tag already on origin."""
+    version = args.resume_post
+    try:
+        Version(version)
+    except InvalidVersion:
+        print(f"[release] not a valid version: {version!r}", file=sys.stderr)
+        return 1
+    if not run(["git", "tag", "--list", f"v{version}"], capture=True).stdout.strip():
+        print(f"[release] tag v{version} not found locally — `git fetch --tags` first.",
+              file=sys.stderr)
+        return 1
+    return post(args, version, None)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    if args.resume_post:
+        return resume_post(args)
 
     try:
         cur_v, new_v = preflight(args.version)
@@ -463,81 +607,19 @@ def main() -> int:
     print(f"[release] {cur_v} -> {new_v}")
 
     if args.dry_run:
-        print("[release] dry run; no changes made.")
+        opts = post_release.options_from_args(args, args.version, str(cur_v))
+        print("[release] dry run; no changes made. Post-release steps that would run: "
+              + ", ".join(post_release.selected(opts)) + ("" if not args.no_post else " (--no-post)"))
         return 0
 
-    print("[release] bumping version files...")
-    bump_pyproject(args.version)
-    bump_init_py(args.version)
-    bump_json(PLUGIN_JSON, args.version)
-    bump_json(MARKETPLACE_JSON, args.version)
-    bump_webhook_pin(args.version)
-    bump_hosted_server_version(args.version)
+    try:
+        bump_test_commit(args)
+    except ReleaseError as e:
+        print(f"[release] {e}", file=sys.stderr)
+        return 1
 
-    if not args.skip_tests:
-        print("[release] running pytest...")
-        # Use uv to materialize pytest in an ephemeral env that also
-        # rebuilds the editable cp-engine install — same invocation
-        # that works in development. Avoids "pytest not found" when the
-        # release script's own env doesn't have pytest.
-        # PYTHONPATH=src: Python 3.14's site.py skips .pth files carrying
-        # the macOS hidden flag (which a sync agent keeps re-applying), so
-        # the editable install's .pth can silently not load (#122).
-        pytest_env = os.environ.copy()
-        src = str(REPO_ROOT / "src")
-        prior = pytest_env.get("PYTHONPATH")
-        pytest_env["PYTHONPATH"] = f"{src}{os.pathsep}{prior}" if prior else src
-        code, summary = run_pytest_counted(
-            ["uv", "run", "--with", "pytest", "python", "-m", "pytest", "-q"],
-            env=pytest_env,
-        )
-        if code != 0:
-            raise SystemExit(
-                f"[release] tests failed ({summary or 'no summary line'}); "
-                "aborting before commit."
-            )
-        if summary is None:
-            raise SystemExit(
-                "[release] pytest exited 0 but printed no summary line — cannot "
-                "tell a finished run from a truncated one; aborting (#316)."
-            )
-        print(f"[release] pytest: {summary}")
-
-    if not args.skip_build:
-        print("[release] building distribution...")
-        try:
-            run(["uv", "run", "--with", "build", "python", "-m", "build"])
-        except subprocess.CalledProcessError:
-            raise SystemExit("[release] build failed; aborting before commit.")
-
-    summary = changelog_oneline(args.version)
-    commit_msg = f"v{args.version}: {summary}"
-    print(f"[release] committing: {commit_msg}")
-    add_paths = [PYPROJECT, INIT_PY, PLUGIN_JSON, MARKETPLACE_JSON, WEBHOOK_PYPROJECT,
-                 HOSTED_SERVER]
-    # uv.lock only exists / only moves when the test+build steps actually ran;
-    # `--skip-tests --skip-build` leaves it untouched, and `git add` on an
-    # unchanged path is a harmless no-op either way.
-    if UV_LOCK.exists():
-        add_paths.append(UV_LOCK)
-    run(["git", "add", *(str(p) for p in add_paths)])
-    run(["git", "commit", "-m", commit_msg])
-
-    tag = f"v{args.version}"
-    print(f"[release] tagging {tag}...")
-    run(["git", "tag", tag])
-
-    print("[release] pushing main + tag...")
-    run(["git", "push", "origin", "main"])
-    run(["git", "push", "origin", tag])
-
-    print(f"[release] done. v{args.version} released.")
-    print(
-        f"[release] update local CLI: "
-        f"uv tool install --force --reinstall --from {REPO_ROOT} cp-engine"
-    )
-    _print_tenant_pin_reminder(args.version, str(cur_v))
-    return 0
+    tag_and_push(args.version)
+    return post(args, args.version, str(cur_v))
 
 
 if __name__ == "__main__":

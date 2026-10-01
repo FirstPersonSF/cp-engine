@@ -31,7 +31,11 @@ rest of this repo.
   [`self-describing-repo.md`](docs/conventions/self-describing-repo.md), which
   includes the reader test every user-facing string must pass.
 - Spec: [`docs/specs/cp-engine-spec-v02.md`](docs/specs/cp-engine-spec-v02.md).
-- Releases: always `scripts/release.py` (it bumps every version file).
+- Releases: always `scripts/release.py <version>` — it bumps every version
+  file, tags, pushes, then runs every post-release step (CLI + plugins, hosted
+  deploy, webhook check, tenant pin, mc-2 pin) and verifies each.
+  `--resume-post <version>` finishes a partial run. mc-2 PROD promotion is
+  never automated. See [`docs/releasing.md`](docs/releasing.md).
 - Tenant `CLAUDE.md` files are generated from
   `src/cp_engine/templates/CLAUDE.md.j2`; change the template, never a tenant copy.
 - Tests: `pytest` from the repo root, with this checkout's `src` first on the

@@ -42,8 +42,29 @@ def _staged_paths() -> set[str]:
     return set(block.group(1).split())
 
 
+def vendored_engine_files(here: Path) -> list[str]:
+    """Source that would make `vendor/` a vendored engine again: any TRACKED file
+    under it, or any `.py` on disk.
+
+    Not "the directory exists" (#346): a checkout from before step 1 keeps an
+    untracked `vendor/cp_engine/__pycache__/` after the sources are deleted,
+    and that bytecode is neither shipped (deploy.sh stages from `git archive`)
+    nor importable as source. Failing on it sent a release red for nothing.
+    """
+    vendor = here / "vendor"
+    if not vendor.exists():
+        return []
+    found = {str(p.relative_to(here)) for p in vendor.rglob("*.py")}
+    tracked = subprocess.run(
+        ["git", "-C", str(here), "ls-files", "--", "vendor"],
+        capture_output=True, text=True, check=False,
+    ).stdout.split()
+    return sorted(found | set(tracked))
+
+
 def test_there_is_no_vendored_engine():
-    assert not (_HERE / "vendor").exists(), "vendor/ is back — import the engine instead"
+    files = vendored_engine_files(_HERE)
+    assert not files, f"vendor/ is back — import the engine instead: {files[:5]}"
     src = (_HERE / "server.py").read_text(encoding="utf-8")
     assert "sys.path.append" not in src and "sys.path.insert" not in src
 
@@ -122,3 +143,18 @@ def test_server_never_builds_the_service_role_client():
     names |= {a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) for a in n.names}
     assert "get_client" not in names
     assert "SUPABASE_SERVICE_KEY" not in (_HERE / "server.py").read_text(encoding="utf-8")
+
+
+def test_a_bytecode_only_vendor_dir_is_not_a_vendored_engine(tmp_path):
+    """#346 control: the leftover `__pycache__` that tripped the v0.128.0 release."""
+    cache = tmp_path / "vendor" / "cp_engine" / "__pycache__"
+    cache.mkdir(parents=True)
+    (cache / "health.cpython-313.pyc").write_bytes(b"\x00")
+    assert vendored_engine_files(tmp_path) == []
+
+
+def test_vendored_source_is_still_caught(tmp_path):
+    pkg = tmp_path / "vendor" / "cp_engine"
+    pkg.mkdir(parents=True)
+    (pkg / "health.py").write_text("x = 1\n")
+    assert vendored_engine_files(tmp_path) == ["vendor/cp_engine/health.py"]
