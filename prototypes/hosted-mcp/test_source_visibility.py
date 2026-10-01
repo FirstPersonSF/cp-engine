@@ -1,7 +1,7 @@
 """Hosted source reads see what the store holds (cp-engine #324).
 
-The hosted server keeps its own copies of the source verbs (the vendored
-`cp_engine` is constants-and-lints only), so the #324 fixes are pinned here
+The hosted source verbs are still hosted code (their helpers are the
+engine's since architecture plan step 1), so the #324 fixes are pinned here
 separately from the stdio ones in tests/test_source_visibility_324.py:
 
   - `list_project_sources` carries `status_note` / `description` (the stdio

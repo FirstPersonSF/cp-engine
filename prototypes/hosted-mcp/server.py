@@ -524,8 +524,8 @@ def _with_project_status(
     archived work is legitimately readable, and reversible.
 
     One primary-key read; fail-soft (a failed lookup adds nothing). The
-    wording is `cp_engine.project_status`, vendored and shared with the stdio
-    server so the two cannot say it differently.
+    wording is `cp_engine.project_status`, shared with the stdio server so
+    the two cannot say it differently.
     """
     from cp_engine.project_status import annotate_project
 
@@ -1406,7 +1406,7 @@ def embed_query(text: str) -> list[float]:
     """Embed a query with the SAME model the corpus was ingested with.
 
     Uses the `voyageai` client directly rather than importing cp_engine's
-    ingest wiring — this prototype stays off the `cp` import path by design.
+    ingest wiring, which builds service-side clients this server must not hold.
     """
     if not _embedder_cache:
         import voyageai
@@ -3249,8 +3249,8 @@ def _resolve_active_asset(
     first arm was read, so an account doc a sibling could list and pull could
     not be attached to that sibling's elements.
 
-    Resolution is `cp_engine.project_sources.pick_source` (vendored verbatim,
-    so the stdio engine and this server share one ladder): a rag_asset uuid,
+    Resolution is `cp_engine.project_sources.pick_source` (imported, so the
+    stdio engine and this server share one ladder): a rag_asset uuid,
     else a CASE-EXACT title, else a case-insensitive exact title, else a
     case-insensitive substring (query ⊆ stored). Several matches on one rung is
     genuine ambiguity: the candidates (id + title) come back and nothing is
@@ -7516,8 +7516,9 @@ def create_spine_element(
     """Create a new AUTHORED spine element (live v1), under the caller's identity.
 
     INSERT-only into `spine_substance`, building the row shape
-    `spine_authoring.authored_element.build_create_rows` produces — copied, not
-    imported (this prototype stays off the cp_engine import path). The
+    `spine_authoring.authored_element.build_create_rows` produces — re-coded
+    here, not yet called (architecture plan step 1: the row shape needs a
+    field-by-field decision before it can be the engine's). The
     engine-owned values are taken verbatim from that builder and confirmed
     against live `_authored/%` rows rather than invented:
 
@@ -12006,7 +12007,7 @@ def rotate_word_count(project_code: str) -> dict[str, Any]:
 # test suite exercises exactly what the server serves.
 
 
-# The mechanism lives in `cp_engine.mcp_strict` (vendored verbatim) so the
+# The mechanism lives in `cp_engine.mcp_strict` (imported) so the
 # stdio `cxp mcp` server refuses the same way — one implementation, not two
 # that drift. Imported here, at the end, because the swap must see every tool.
 from cp_engine.mcp_strict import forbid_unknown_arguments  # noqa: E402

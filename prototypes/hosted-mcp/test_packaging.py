@@ -108,3 +108,17 @@ def test_deploy_sh_stages_a_buildable_context():
             assert (stage / src).exists(), f"staged context lacks {src}"
     finally:
         shutil.rmtree(stage, ignore_errors=True)
+
+
+def test_server_never_builds_the_service_role_client():
+    """Importing the whole engine must not change the security model: every
+    read and write runs on the CALLER's RLS client. `mc2_db.get_client` is the
+    service-role client; nothing in this file may reach it."""
+    import ast
+
+    tree = ast.parse((_HERE / "server.py").read_text(encoding="utf-8"))
+    names = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+    names |= {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+    names |= {a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) for a in n.names}
+    assert "get_client" not in names
+    assert "SUPABASE_SERVICE_KEY" not in (_HERE / "server.py").read_text(encoding="utf-8")
