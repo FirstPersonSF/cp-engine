@@ -1,4 +1,4 @@
--- 03_auto_ingest_runs_warnings.sql — 2026-09-30. Replayable. NOT YET APPLIED.
+-- 03_auto_ingest_runs_warnings.sql — 2026-09-30. Replayable. APPLIED 2026-10-01 (ledger: auto_ingest_runs_warnings).
 --
 -- Architecture plan step 3 (fail loudly). Owner: cp-engine-webhook per mc-2
 -- backend/migrations/SCHEMA_OWNERSHIP.md. Apply via MCP apply_migration

@@ -1,4 +1,4 @@
--- 04_webhook_runs.sql — 2026-09-30. Replayable. NOT YET APPLIED.
+-- 04_webhook_runs.sql — 2026-09-30. Replayable. APPLIED 2026-10-01 (ledger: webhook_runs).
 --
 -- Architecture plan step 3 (fail loudly). Owner: cp-engine-webhook per mc-2
 -- backend/migrations/SCHEMA_OWNERSHIP.md. Apply via MCP apply_migration
