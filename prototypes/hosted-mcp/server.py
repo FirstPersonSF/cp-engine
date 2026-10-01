@@ -116,6 +116,7 @@ from cp_engine import promote_uphill as _engine_promote_uphill  # noqa: E402
 from cp_engine.promote_uphill import level_for as _engine_level_for  # noqa: E402
 from cp_engine.state import slug_full_job_name as _engine_slug_full_job_name  # noqa: E402
 # Exec Summary region, markers, stamp and stale threshold (step 1c).
+from cp_engine import project_sources as _engine_project_sources  # noqa: E402
 from cp_engine import wrap_report as _engine_wrap_report  # noqa: E402
 from cp_engine import exec_summary_draft as _engine_exec_summary_draft  # noqa: E402
 from cp_engine import render as _engine_render  # noqa: E402
@@ -8894,7 +8895,6 @@ _WRAP_SPINE_COLUMNS = (
     "id, est_item_id, framing, layer, status, version_label, "
     "version_date, body, serves, scope, archived, project_id"
 )
-_WRAP_VERSION_NUM_RE = re.compile(r"\s*v?(\d+)", re.IGNORECASE)
 
 
 # `wrap_report._as_date`: PostgREST hands back `date` columns as bare
@@ -8969,50 +8969,11 @@ def wrap_summarize_effort(
     }
 
 
-def _wrap_version_rank(row: dict[str, Any]) -> tuple[int, str]:
-    """Version ordering for rows of ONE element: numeric label, then date.
-
-    "v10" must beat "v9", which string comparison gets wrong. An unparseable
-    label ranks -1 and loses to any parseable one — the date is the tie-break.
-    """
-    m = _WRAP_VERSION_NUM_RE.match(str(row.get("version_label") or ""))
-    return (int(m.group(1)) if m else -1, str(row.get("version_date") or ""))
-
-
-def _wrap_one_live_per_element(rows: list[dict]) -> list[dict]:
-    """Collapse duplicate live rows to ONE per element (the #113 defense).
-
-    `spine_substance` stores one row per VERSION and a live-only fetch SHOULD
-    yield one row per element — but the live data carries elements with two
-    `status='live'` rows (sap-5174's e94d0a03: an authored v7 beside a
-    distilled v6 the mirror re-flipped live). A deliverables list that emits
-    the same title twice reads as two deliverables in the retro.
-
-    Keyed on `(est_item_id, scope, origin project_id for account rows)`:
-    authored ids are `_authored/<slug>` and only unique per project, so two
-    sibling projects can each legitimately promote `_authored/janet-dossier`.
-    Rows with no `est_item_id` are unidentifiable, never merged, and appended
-    at the end.
-    """
-    best: dict[tuple, dict] = {}
-    order: list[tuple] = []
-    passthrough: list[dict] = []
-    for r in rows:
-        if not r.get("est_item_id"):
-            passthrough.append(r)
-            continue
-        scope = r.get("scope") or "project"
-        key = (
-            r.get("est_item_id"),
-            scope,
-            r.get("project_id") if scope == "account" else None,
-        )
-        if key not in best:
-            best[key] = r
-            order.append(key)
-        elif _wrap_version_rank(r) >= _wrap_version_rank(best[key]):
-            best[key] = r
-    return [best[k] for k in order] + passthrough
+# The #113 defense — collapse duplicate live rows to ONE per element, the
+# highest version (numeric label, then date) — is the engine's single read-path
+# rule, `project_sources._one_live_per_element` (architecture plan step 1c,
+# inventory H11). It logs each collapsed row as dirty data.
+_wrap_one_live_per_element = _engine_project_sources._one_live_per_element
 
 
 def _wrap_feedback_artifacts(project_code: str) -> tuple[list[str], str | None]:
