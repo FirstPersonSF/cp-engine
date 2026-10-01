@@ -33,7 +33,7 @@ from cp_engine.spine import SpineDirNotFound, find_spine_dir
 
 log = logging.getLogger("cp-engine-webhook")
 
-# The Anthropic model used for spine-inbox distillation. Derived from
+# The Anthropic model the spine-promote route defaults to. Derived from
 # generate_plan's own default so this webhook never drifts from the engine's
 # canonical model choice (rather than re-hardcoding the id).
 DEFAULT_MODEL: str = (
@@ -207,76 +207,6 @@ def _append_retrospective(
         return "error"
 
 
-def _append_inbox_card(
-    *,
-    code: str,
-    transcript_path: Path,
-    meeting_id: str | None,
-) -> str:
-    """Distill the meeting into a *proposed* ``spine_inbox`` card (Phase 3).
-
-    The spine no longer gets un-framed substance stubs written straight from a
-    transcript: instead a human frames+promotes a proposed card (`cp
-    spine-frame`). This step writes that proposed card — a raw-faithful first-pass
-    distillation + a best-guess estimate work item — for one project.
-
-    Best-effort, never raises. Returns one of:
-      - "skipped"   — no supabase client, no source_ref, or no MC-2 project
-      - "proposed"  — a proposed card was upserted
-      - "error"     — an exception was caught (logged); ingest continues
-
-    Writes ONLY to ``spine_inbox`` (one ANTHROPIC call). Does NOT write spine
-    substance — that is the human-directed frame→promote step.
-    """
-    # Env-gated kill-switch. Default ON (prod unchanged), but a single env var
-    # can disable the live inbox write — and its ANTHROPIC call — without a
-    # redeploy. Short-circuits BEFORE any supabase/distiller work.
-    if os.environ.get("SPINE_INBOX_ENABLED", "1") not in ("1", "true", "True"):
-        return "skipped"
-    source_ref = str(meeting_id or "").strip()
-    if not source_ref:
-        return "skipped"
-    client = _create_supabase_client()
-    if client is None:
-        return "skipped"
-    try:
-        from cp_engine import asset_ingest
-        from cp_engine.estimate import fetch_estimate
-        from cp_engine.plan_from_transcript import _call_claude, _read_transcript
-        from cp_engine.spine_inbox import build_inbox_card_from_transcript
-
-        folders = asset_ingest.resolve_project_folders(client, code)
-        if folders is None:
-            log.warning("inbox: no MC-2 project resolved for %s", code)
-            return "skipped"
-        project_id = folders.project_id
-
-        # Estimate is best-effort scope: a missing/unreachable estimate just
-        # means no item guess (guessed_type falls back to "source").
-        try:
-            estimate = fetch_estimate(client, project_id)
-        except Exception as exc:  # noqa: BLE001 — estimator unreachable
-            log.warning("inbox: estimate fetch failed for %s: %s", code, exc)
-            estimate = None
-
-        transcript = _read_transcript(transcript_path)
-        build_inbox_card_from_transcript(
-            client,
-            project_id=project_id,
-            project_code=code,
-            source_ref=source_ref,
-            transcript=transcript,
-            estimate=estimate,
-            distiller=_call_claude,
-            model=DEFAULT_MODEL,
-        )
-        return "proposed"
-    except Exception as exc:  # noqa: BLE001 — must never break auto-ingest
-        log.warning("inbox: proposed-card write failed for %s: %s", code, exc)
-        observability.capture(exc, area="inbox_card_write")
-        return "error"
-
-
 def _ingest_one_project(
     *,
     config: TenantConfig,
@@ -365,14 +295,9 @@ def _ingest_one_project(
         plan=gen.plan,
     )
 
-    # Spine ingestion inbox (Phase 3). Best-effort, never raises: write a
-    # PROPOSED card (raw distillation + guessed estimate item) for a human to
-    # frame+promote via `cp spine-frame`. Never writes spine substance.
-    entry["inbox_card"] = _append_inbox_card(
-        code=code,
-        transcript_path=transcript_path,
-        meeting_id=meeting_id,
-    )
+    # The spine-inbox proposed card (one Anthropic distillation per project
+    # per meeting) was turned off in architecture step 5a: 128 cards sat
+    # `proposed` and unframed. scripts/step5_reject_inbox_cards.py clears them.
     return entry
 
 
@@ -838,7 +763,7 @@ def _perform_auto_ingest(
                 # consumer can tell "transcript only" from "wrote bullets".
                 entry["transcript_persisted"] = transcript_persisted
                 warnings.extend(f"{code}: {w}" for w in entry.get("warnings") or [])
-                for side in ("retrospective", "inbox_card"):
+                for side in ("retrospective",):
                     if entry.get(side) == "error":
                         warnings.append(f"{code}: {side} write failed (see Sentry)")
 

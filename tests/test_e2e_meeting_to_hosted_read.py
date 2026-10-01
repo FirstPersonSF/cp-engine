@@ -343,8 +343,8 @@ def _run(tmp: Path, mp: pytest.MonkeyPatch) -> SimpleNamespace:
     mp.setattr(socket.socket, "connect", _refuse_network(socket.socket.connect))
 
     # The LLM, at the transport. `plan_from_transcript._call_claude` serves
-    # two callers in one ingest: the plan (YAML) and the spine-inbox
-    # distillation (JSON). Each gets its own realistic answer.
+    # the plan (YAML) — the ingest's only model call since step 5a turned off
+    # the spine-inbox distillation and the Deeper-notes synthesis.
     import main as webhook_main  # the webhook app; its modules resolve below
 
     from cp_engine import plan_from_transcript
@@ -352,13 +352,6 @@ def _run(tmp: Path, mp: pytest.MonkeyPatch) -> SimpleNamespace:
     prompts: list[str] = []
 
     def fake_claude(prompt, **_kw):
-        if "distilling a project meeting" in prompt:
-            return json.dumps({
-                "distillation": "Weekly activation check-in. The microsite launches "
-                                "Oct 15. Venue power for the LED wall is unconfirmed. "
-                                "Drew sends the final floor plan by Oct 6.",
-                "matched_item_name": None,
-            })
         prompts.append(prompt)
         return _plan_yaml(asked_for[-1])
 

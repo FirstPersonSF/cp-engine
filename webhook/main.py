@@ -232,7 +232,6 @@ from git_ops import (  # noqa: E402,F401
 from pipeline import (  # noqa: E402,F401
     DEFAULT_MODEL,
     _action_item_texts,
-    _append_inbox_card,
     _append_retrospective,
     _background_tasks,
     _create_supabase_client,
