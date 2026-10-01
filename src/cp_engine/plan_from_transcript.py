@@ -117,14 +117,18 @@ def _route_action_items(
             identity_for=identity_for,
             rehash=rehash,
         )
-    except Exception:  # noqa: BLE001 — routing must never cost the ingest
+    except Exception as exc:  # noqa: BLE001 — routing must never cost the ingest
         logging.getLogger(__name__).warning(
             "action-item routing failed; all items stay on %s", project_code,
             exc_info=True,
         )
         proj = plan.setdefault("projects", {}).setdefault(project_code, {})
         proj.setdefault("record-ask", []).extend(ask_items)
-        return {"kept": len(ask_items), "moved": 0, "left_to_cotagged": 0}
+        # `error` rides the stats dict into `GeneratedPlan.routing`, which the
+        # webhook copies onto the run entry — so "routing failed, everything
+        # kept" is distinguishable from "routing ran, nothing moved".
+        return {"kept": len(ask_items), "moved": 0, "left_to_cotagged": 0,
+                "error": f"{type(exc).__name__}: {exc}"}
 
 
 def apply_attribution_checks(plan: dict, *, config, transcript: str) -> dict:
@@ -167,11 +171,14 @@ def apply_attribution_checks(plan: dict, *, config, transcript: str) -> dict:
             known_for=known_for,
             aliases=getattr(config, "name_aliases", None) or {},
         )
-    except Exception:  # noqa: BLE001 — fidelity pass must never break ingest
+    except Exception as exc:  # noqa: BLE001 — fidelity pass must never break ingest
         logging.getLogger(__name__).warning(
             "attribution pass failed; plan written unchecked", exc_info=True
         )
-        return {}
+        # Not `{}`: an empty dict is what a clean pass with nothing to report
+        # looks like. Say the plan went out UNCHECKED.
+        return {"error": f"attribution pass failed — plan written unchecked "
+                         f"({type(exc).__name__}: {exc})"}
 
 
 def generate_plan(

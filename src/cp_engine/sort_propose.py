@@ -249,9 +249,11 @@ def persist(
     return written
 
 
-def active_prompt_version(client) -> int | None:
+def active_prompt_version(client, errors: list | None = None) -> int | None:
     """The `cp_prompt` version in force, or None. Best-effort — a missing
-    prompt store must not stop a proposal run."""
+    prompt store must not stop a proposal run. A failed read appends to
+    ``errors`` (step 3): proposals persisted with ``prompt_version=None``
+    lose their provenance, and the caller should be able to say so."""
     try:
         rows = (
             client.table(Tables.CP_PROMPT)
@@ -263,6 +265,11 @@ def active_prompt_version(client) -> int | None:
         return rows[0].get("version") if rows else None
     except Exception as exc:  # noqa: BLE001
         log.debug("prompt version lookup failed (%s: %s)", type(exc).__name__, exc)
+        if errors is not None:
+            errors.append(
+                f"prompt version lookup failed ({type(exc).__name__}: {exc}); "
+                "proposals carry no prompt_version"
+            )
         return None
 
 
@@ -271,6 +278,7 @@ def propose(
     *,
     llm,
     batch_size: int = _BATCH,
+    errors: list | None = None,
 ) -> list[Proposed]:
     """Propose a lifetime for each item. `llm(prompt) -> str` is injected.
 
@@ -278,6 +286,10 @@ def propose(
     the model can see a run of similar items as a set. A batch that fails or
     returns garbage is skipped, not retried — those rows reach the human
     unproposed, which is a worse experience but never a wrong one.
+
+    ``errors`` (optional out-list, step 3): one entry per failed batch, so a
+    run whose every batch raised is not reported as "the model proposed
+    nothing" (the route pass's "proposed 0 of 21" defect).
     """
     by_project: dict[str, list[dict]] = {}
     for it in items:
@@ -291,4 +303,9 @@ def propose(
                 out.extend(parse_response(llm(build_prompt(batch)), batch))
             except Exception as exc:  # noqa: BLE001 — one batch must not sink the run
                 log.debug("proposal batch failed (%s: %s)", type(exc).__name__, exc)
+                if errors is not None:
+                    errors.append(
+                        f"lifetime batch of {len(batch)} failed "
+                        f"({type(exc).__name__}: {exc})"
+                    )
     return out

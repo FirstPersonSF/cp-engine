@@ -1816,7 +1816,13 @@ def _stem_from_mc2(client, code: str) -> str | None:
         if not identity:
             return None
         return slug_full_job_name(identity.get("full_job_name")) or None
-    except Exception:  # noqa: BLE001 — never break an ingest over resolution
+    except Exception as exc:  # noqa: BLE001 — never break an ingest over resolution
+        # Degrade, but say WHY: the caller's error then reads "sprint file
+        # missing", which hides that the real cause was a failed MC-2 read.
+        logger.warning(
+            "MC-2 sprint-stem resolution failed for %s: %s: %s",
+            code, type(exc).__name__, exc,
+        )
         return None
 
 
@@ -1935,7 +1941,11 @@ def _project_state_from_mc2(client, project_code: str) -> "ProjectState | None":
             last_touched=None,
             deadline=None,
         )
-    except Exception:  # noqa: BLE001 — never break an ingest over resolution
+    except Exception as exc:  # noqa: BLE001 — never break an ingest over resolution
+        logger.warning(
+            "MC-2 project lookup for first-ever sprint scaffold failed for "
+            "%s: %s: %s", project_code, type(exc).__name__, exc,
+        )
         return None
 
 
@@ -2180,7 +2190,13 @@ def _parent_rollup(
             continue
         try:
             files.append(parse_sprint_file(path))
-        except (ValueError, OSError):
+        except (ValueError, OSError) as exc:
+            # Runs inside sync: WARNING is counted, so a child silently
+            # missing from its parent's rollup is now reported (step 3).
+            logger.warning(
+                "subtree rollup for %s skipped unreadable %s: %s",
+                project.code, path, exc,
+            )
             continue
     rollup = aggregate_subtree_strips(project.code, tuple(files), (), today, roster)
     return summaries, rollup

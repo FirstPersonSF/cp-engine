@@ -411,7 +411,21 @@ def promote_card(
     for md in _iter_substance_files(spine_root):
         try:
             other = parse_substance(md)
-        except Exception:
+        except Exception as exc:
+            # A file we cannot parse may still BIND this id — skipping it
+            # would let the promote create a second file for the same item
+            # (the invariant check below would never see the first). Refuse
+            # when its raw text names the id; otherwise it is unrelated.
+            try:
+                raw = md.read_text(encoding="utf-8")
+            except OSError:
+                raw = ""
+            if est_item_id and est_item_id in raw:
+                raise ValueError(
+                    f"substance file {md} mentions est_item_id {est_item_id!r} "
+                    f"but does not parse ({exc}); refusing to promote into a "
+                    "binding that cannot be checked — fix the file first."
+                ) from exc
             continue
         if other.est_item_id == est_item_id:
             bound.append(md)
@@ -510,9 +524,14 @@ def _db_max_version(client, project_code: str, est_item_id: str) -> int | None:
 
     The #121 fix's data source: authored versions land in `spine_substance`
     first and the disk file learns of them later (or never), so the next
-    distill label must come from max(disk, DB). None on no client, no
-    rows, or an unreachable DB — callers fall back to disk alone, which
-    is the pre-#121 behavior and correct when the element has no DB rows.
+    distill label must come from max(disk, DB). None on no client or no
+    rows — callers fall back to disk alone, which is the pre-#121 behavior
+    and correct when the element has no DB rows.
+
+    A FAILED read raises (step 3). It used to return None, so an
+    unreachable DB or a revoked grant silently reverted to disk-only
+    labelling — and the promote then upserted a version label MC-2 already
+    holds, overwriting that version (the #121 defect, reintroduced silently).
     """
     if client is None:
         return None
@@ -526,8 +545,12 @@ def _db_max_version(client, project_code: str, est_item_id: str) -> int | None:
             .data
             or []
         )
-    except Exception:  # noqa: BLE001 — unreachable DB → disk fallback
-        return None
+    except Exception as exc:  # noqa: BLE001 — re-raised with context
+        raise RuntimeError(
+            f"could not read MC-2 versions for {project_code}/{est_item_id} "
+            f"({type(exc).__name__}: {exc}); refusing to pick a version label "
+            "from disk alone (it may collide with a DB-only version)"
+        ) from exc
     nums = [version_number(r.get("version_label")) for r in rows]
     nums = [n for n in nums if n >= 0]
     return max(nums) if nums else None

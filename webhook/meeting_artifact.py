@@ -205,6 +205,7 @@ def write_meeting_artifacts(
     meeting: dict,
     transcript_text: str,
     project_codes: list[str],
+    errors: list[str] | None = None,
 ) -> list[Path]:
     """Generate + write the per-meeting artifact pair for each project.
 
@@ -217,6 +218,8 @@ def write_meeting_artifacts(
     Returns the list of files written, for the caller to commit.
 
     Never raises — best-effort; a failure logs and returns what it has.
+    `errors` (step 3): when given, a failure is ALSO appended there so the
+    caller's run record carries it instead of only a log line.
     """
     written: list[Path] = []
     try:
@@ -230,6 +233,8 @@ def write_meeting_artifacts(
 
         # One Claude synthesis call, shared across all project copies.
         synthesis = _call_claude_synthesis(transcript_text)
+        if synthesis is None and errors is not None and transcript_text:
+            errors.append("deeper-notes synthesis unavailable (artifact written without it)")
 
         for code in project_codes:
             project_dir = _find_project_dir(tenant_root, code)
@@ -272,5 +277,8 @@ def write_meeting_artifacts(
             )
     except Exception as exc:  # noqa: BLE001 — must never break auto-ingest
         log.warning("meeting-artifact: generation failed: %s", exc)
+        if errors is not None:
+            errors.append(f"artifact generation failed after {len(written)} file(s): "
+                          f"{type(exc).__name__}: {exc}")
 
     return written

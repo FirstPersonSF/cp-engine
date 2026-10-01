@@ -180,5 +180,6 @@ def propose_clickup_tasks(meeting_id: str, project_codes: list[str]) -> dict:
     except Exception as exc:  # noqa: BLE001 — must never break auto-ingest
         log.warning("clickup-propose failed for meeting=%s: %s", meeting_id, exc)
         observability.capture(exc, area="clickup_propose")
+        summary["error"] = f"{type(exc).__name__}: {exc}"
 
     return summary

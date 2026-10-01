@@ -393,7 +393,10 @@ def test_run_plan_for_one_item_dispatches_close_ask_with_hash(monkeypatch, tmp_p
 
 def test_post_response_url_update_logs_non_ok_status(monkeypatch, caplog):
     """If Slack's response_url returns non-2xx, log a warning with the status
-    code and response body (truncated). Don't raise — fire-and-forget UX."""
+    code and response body (truncated) AND raise (architecture plan step 3):
+    both background callers catch it and record the click as PARTIAL on the
+    webhook_runs ledger. Before, a 410 left the user's click with no
+    confirmation and no record anywhere but a log line."""
     from main import _post_response_url_update
     import logging as _logging
 
@@ -410,7 +413,8 @@ def test_post_response_url_update_logs_non_ok_status(monkeypatch, caplog):
 
     monkeypatch.setattr("requests.post", fake_post)
 
-    with caplog.at_level(_logging.WARNING):
+    import pytest as _pytest
+    with caplog.at_level(_logging.WARNING), _pytest.raises(RuntimeError, match="410"):
         _post_response_url_update(
             response_url="https://hooks.slack.com/expired",
             original_message={"blocks": []},

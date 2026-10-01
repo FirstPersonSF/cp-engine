@@ -428,6 +428,9 @@ def preflight(project_code: str, artifact_kind: str = "rfp") -> dict:
             "expected": list(ARTIFACT_KINDS),
         }
 
+    from cp_engine.loud import Warnings
+
+    warnings = Warnings()
     try:
         root = _tenant_root()
         config = load_config(root)
@@ -439,8 +442,12 @@ def preflight(project_code: str, artifact_kind: str = "rfp") -> dict:
             cp_md = working_dir / "cp.md"
             if cp_md.is_file():
                 cp_md_text = cp_md.read_text(encoding="utf-8")
-        except (SpineDirNotFound, OSError):
+        except SpineDirNotFound:
             pass
+        except OSError as exc:
+            # Without this note every cp.md field reads "missing" and the
+            # caller is told the project is unauthored, not unreadable.
+            warnings.add("cp.md read", exc)
 
         sprint_texts = collect_sprint_texts(config.root, resolved_code)
         if not sprint_texts and resolved_code != project_code:
@@ -470,8 +477,11 @@ def preflight(project_code: str, artifact_kind: str = "rfp") -> dict:
                     title = row.get("title") if isinstance(row, dict) else None
                     if title:
                         source_titles.append(str(title))
-        except Exception:  # noqa: BLE001 — MC-2 context is optional
-            pass
+        except Exception as exc:  # noqa: BLE001 — MC-2 context is optional
+            # Optional, but its absence changes the verdict (scope found only
+            # in the spine reads as "missing") — so the caller must know the
+            # read failed rather than that MC-2 holds nothing.
+            warnings.add("MC-2 spine/source context unavailable", exc)
 
         report = run_preflight(
             project_code,
@@ -481,7 +491,10 @@ def preflight(project_code: str, artifact_kind: str = "rfp") -> dict:
             spine_titles=spine_titles,
             source_titles=source_titles,
         )
-        return report.to_dict()
+        out = report.to_dict()
+        if warnings:
+            out["warnings"] = list(warnings)
+        return out
     except Exception as exc:  # noqa: BLE001
         return {"error": f"preflight failed for '{project_code}': {exc}"}
 
@@ -518,10 +531,14 @@ def list_project_sources(project_code: str) -> list[dict]:
         if resolved is None:
             return [{"note": f"code '{project_code}' resolved to no project"}]
         client, pid, cid = resolved
-        return _with_project_status(
-            list_sources(client, pid, cid, include_account=True),
+        warnings: list[str] = []
+        rows = _with_project_status(
+            list_sources(client, pid, cid, include_account=True, warnings=warnings),
             client, pid, project_code,
         )
+        # Step 3: a degraded read says so in the result, as a trailing note row
+        # (same convention as the resolved-to-no-project note).
+        return list(rows) + [{"warning": w} for w in warnings]
     except Exception as exc:  # noqa: BLE001
         # An MCP tool must never throw to the client: return a structured,
         # actionable error note instead of propagating a protocol error.
@@ -862,11 +879,15 @@ def list_spine_elements(project_code: str, layer: str = "",
             # masquerade as a genuinely empty spine (the v0.39.0 false-negative).
             return [{"note": f"code '{project_code}' resolved to no project"}]
         client, pid, cid = resolved
+        warnings: list[str] = []
         rows = list_spine(client, pid, cid, layer=layer or None,
                           scope=scope or None, binding=binding or None,
                           compact=compact, tier=tier or None,
-                          include_absorbed=bool(include_absorbed))
-        return _with_project_status(rows, client, pid, project_code)
+                          include_absorbed=bool(include_absorbed),
+                          warnings=warnings)
+        rows = _with_project_status(rows, client, pid, project_code)
+        # Step 3: a degraded read says so in the result (trailing note rows).
+        return list(rows) + [{"warning": w} for w in warnings]
     except Exception as exc:  # noqa: BLE001
         # An MCP tool must never throw to the client: return a structured,
         # actionable error note instead of propagating a protocol error.
@@ -920,8 +941,12 @@ def pull_spine_element(project_code: str, key: str) -> dict:
                             list_project_meetings,
                         )
                         meetings = list_project_meetings(client, pid)
-                    except Exception:  # noqa: BLE001
+                    except Exception as exc:  # noqa: BLE001
                         meetings = []
+                        result.setdefault("warnings", []).append(
+                            "meetings read failed — the meeting-divergence "
+                            f"drift rule did not run: {type(exc).__name__}: {exc}"
+                        )
                     drift = drift_warnings(
                         est, bars, meetings, today=tenant_today(),
                     )
@@ -935,8 +960,21 @@ def pull_spine_element(project_code: str, key: str) -> dict:
                     nudge = sow_attach_nudge(list_sources(client, pid, cid))
                     if nudge:
                         result["attach_nudge"] = nudge
-            except Exception:  # noqa: BLE001 — projection is best-effort
-                pass
+            except Exception as exc:  # noqa: BLE001 — projection is best-effort
+                # Never break the pull — but a body WITHOUT the engagement
+                # block must not pass for the composed agreement: the caller
+                # would read stored terms as the live shape.
+                if result.get("derived_block"):
+                    what = ("engagement block composed, but the SOW-attach "
+                            "check failed")
+                else:
+                    result["derived_block"] = False
+                    what = ("engagement-shape projection failed — body holds "
+                            "the stored terms only, NOT the live phases/"
+                            "deliverables/dates")
+                result.setdefault("warnings", []).append(
+                    f"{what}: {type(exc).__name__}: {exc}"
+                )
         return _with_project_status(result, client, pid, project_code)
     except Exception as exc:  # noqa: BLE001
         # An MCP tool must never throw to the client: return a structured,

@@ -355,6 +355,9 @@ def _ingest_one_project(
     entry["files_written"] = [str(p) for p in exec_result.files_written]
     entry["skipped_duplicate"] = exec_result.skipped_duplicate
     entry["errors"].extend(exec_result.errors)
+    # Step 3: non-fatal execute_plan degradations (commitments not written
+    # for lack of a client, owner-roster read failures) reach the run row.
+    entry["warnings"] = list(getattr(exec_result, "warnings", None) or [])
 
     # Retrospective append (spine-inversion Part B). Best-effort: never
     # raises, never appends to entry["errors"], so a retrospective failure
@@ -466,6 +469,12 @@ def _fetch_transcript(meeting_id: str) -> str:
     return header + text
 
 
+MEETING_ROW_MISSING = (
+    "meeting row unavailable (fetch failed or Supabase unset; see Sentry) — "
+    "no action items in the plan, no meeting artifacts"
+)
+
+
 def _fetch_meeting(meeting_id: str) -> dict | None:
     """Pull the full fathom_meetings row needed for per-meeting artifacts.
 
@@ -491,8 +500,9 @@ def _fetch_meeting(meeting_id: str) -> dict | None:
             .execute()
         )
         return resp.data or None
-    except Exception as exc:  # noqa: BLE001 — best-effort
+    except Exception as exc:  # noqa: BLE001 — best-effort, but surfaced (step 3)
         log.warning("meeting-artifact: meeting fetch failed for %s: %s", meeting_id, exc)
+        observability.capture(exc, area="meeting_fetch")
         return None
 
 
@@ -715,6 +725,11 @@ def _perform_auto_ingest(
     # published and later ones not. The failure row has to say which.
     ingested: list[dict] = []
     commits: list[str] = []
+    # Side-step failures (architecture plan step 3). None of these fail the
+    # run — the sprint-file ingest is the job — but each used to be a log line
+    # only, so the run row read clean. They go on the row's `warnings` and in
+    # the response, and `cxp health` counts the run as PARTIAL.
+    warnings: list[str] = []
 
     try:
         with git_ops._cloned_tenant() as tenant_root:
@@ -730,6 +745,10 @@ def _perform_auto_ingest(
             # means we'll fall back to LLM-only ingest (no action_items
             # merged) and artifact generation will skip cleanly.
             meeting = _fetch_meeting(meeting_id)
+            if meeting is None:
+                # Without the row there are no action items in the plan and no
+                # meeting artifacts — the run must say so, not read clean.
+                warnings.append(MEETING_ROW_MISSING)
             action_items = (meeting or {}).get("action_items") or []
 
             # Cross-project detection roster (#88): every active project across
@@ -740,8 +759,12 @@ def _perform_auto_ingest(
                 from cp_engine.plan_from_account_meeting import list_active_all
 
                 roster = list_active_all(config)
-            except Exception:  # noqa: BLE001 — detection must never break ingest
+            except Exception as exc:  # noqa: BLE001 — detection must never break ingest
                 log.warning("cross-project roster fetch failed", exc_info=True)
+                warnings.append(
+                    f"cross-project roster fetch failed (detection off this run): "
+                    f"{type(exc).__name__}: {exc}"
+                )
                 roster = None
 
             # Per-project ingest + per-project commit. A multi-project
@@ -776,10 +799,15 @@ def _perform_auto_ingest(
                             source_code=code,
                             proposals=entry["cross_project"],
                         )
-                    except Exception:  # noqa: BLE001
+                    except Exception as exc:  # noqa: BLE001
                         log.warning(
                             "cross-project proposal write failed for %s (meeting %s)",
                             code, meeting_id, exc_info=True,
+                        )
+                        warnings.append(
+                            f"{code}: cross-project proposal write failed "
+                            f"({len(entry['cross_project'])} lost): "
+                            f"{type(exc).__name__}: {exc}"
                         )
 
                 # Persist the FULL verbatim transcript into this project's
@@ -806,11 +834,19 @@ def _perform_auto_ingest(
                             code, meeting_id, exc_info=True,
                         )
                         observability.capture(exc, area="transcript_persist")
+                        warnings.append(
+                            f"{code}: transcript persist failed: "
+                            f"{type(exc).__name__}: {exc}"
+                        )
 
                 # Record per-entry whether a transcript landed so the commit
                 # message can attribute a transcript-only commit and a result
                 # consumer can tell "transcript only" from "wrote bullets".
                 entry["transcript_persisted"] = transcript_persisted
+                warnings.extend(f"{code}: {w}" for w in entry.get("warnings") or [])
+                for side in ("retrospective", "inbox_card"):
+                    if entry.get(side) == "error":
+                        warnings.append(f"{code}: {side} write failed (see Sentry)")
 
                 if entry["files_written"] or transcript_persisted:
                     commit_sha = git_ops._commit_and_push(
@@ -842,7 +878,8 @@ def _perform_auto_ingest(
             # cascade only fires when the webhook actually re-runs — a deploy-time
             # dependency on fathom-meeting-sync, not fixable here.
             if meeting and link_client is not None and link_url and link_key:
-                _link_meeting_safe(link_client, meeting, link_url, link_key)
+                if _link_meeting_safe(link_client, meeting, link_url, link_key) is None:
+                    warnings.append("meeting link/embed failed (see Sentry)")
 
             # Stage A — propose commitments from the meeting's Fathom action
             # items (MC-2 public.commitments; successor to the ClickUp proposal
@@ -853,6 +890,8 @@ def _perform_auto_ingest(
             commitments_summary = propose_commitments(
                 meeting_id, project_codes, roster=roster
             )
+            if isinstance(commitments_summary, dict) and commitments_summary.get("error"):
+                warnings.append(f"commitments proposal failed: {commitments_summary['error']}")
 
             # Per-meeting artifacts — synthesis + transcript into each
             # project's meetings/ dir. Runs after the per-project bullet
@@ -867,6 +906,8 @@ def _perform_auto_ingest(
                 project_codes=project_codes,
                 meeting=meeting,
             )
+            if artifact_summary.get("error"):
+                warnings.append(f"meeting artifacts failed: {artifact_summary['error']}")
 
             if not commits:
                 log.info("auto-ingest no-op: no files changed for meeting=%s", meeting_id)
@@ -876,6 +917,7 @@ def _perform_auto_ingest(
                     "skipped_no_op": True,
                     "commitments": commitments_summary,
                     "meeting_artifacts": artifact_summary,
+                    "warnings": warnings,
                 }
                 _log_run_to_supabase(
                     meeting_id=meeting_id,
@@ -883,6 +925,7 @@ def _perform_auto_ingest(
                     status=_status_from_ingested(ingested, anything_wrote=False),
                     ingested=ingested,
                     commit_sha=None,
+                    warnings=warnings,
                 )
                 return response
 
@@ -901,6 +944,7 @@ def _perform_auto_ingest(
                 "skipped_no_op": False,
                 "commitments": commitments_summary,
                 "meeting_artifacts": artifact_summary,
+                "warnings": warnings,
             }
             # NOT hardcoded "success": something always commits here (the
             # transcript + meeting-history writes happen regardless of
@@ -915,6 +959,7 @@ def _perform_auto_ingest(
                 status=_status_from_ingested(ingested, anything_wrote=True),
                 ingested=ingested,
                 commit_sha=last_commit,
+                warnings=warnings,
             )
             return response
 
@@ -948,6 +993,7 @@ def _perform_auto_ingest(
             ingested=ingested,
             commit_sha=commits[-1] if commits else None,
             top_level_errors=[f"{type(exc).__name__}: {exc}"],
+            warnings=warnings,
         )
         raise
 
@@ -979,13 +1025,17 @@ def _generate_meeting_artifacts(
             meeting = _fetch_meeting(meeting_id)
         if meeting is None:
             return summary
+        artifact_errors: list[str] = []
         paths = write_meeting_artifacts(
             tenant_root=tenant_root,
             meeting=meeting,
             transcript_text=transcript_text,
             project_codes=project_codes,
+            errors=artifact_errors,
         )
         summary["files_written"] = len(paths)
+        if artifact_errors:
+            summary["error"] = "; ".join(artifact_errors)
         if paths:
             sha = git_ops._commit_meeting_artifacts(
                 tenant_root=tenant_root,
@@ -993,9 +1043,18 @@ def _generate_meeting_artifacts(
                 artifact_paths=paths,
             )
             summary["commit_sha"] = sha
+            if sha is None:
+                # git_ops swallows the commit/push failure and returns None;
+                # the files were written to a clone that is about to be
+                # discarded. Surface it here rather than in git_ops (step 2
+                # owns that path).
+                note = f"{len(paths)} artifact file(s) written but the commit/push failed"
+                summary["error"] = f"{summary['error']}; {note}" if summary.get("error") else note
     except Exception as exc:  # noqa: BLE001 — must never break auto-ingest
         log.warning("meeting-artifact: generation step failed: %s", exc)
         observability.capture(exc, area="meeting_artifact_generation")
+        # Surfaced (step 3): the caller folds this into the run's warnings.
+        summary["error"] = f"{type(exc).__name__}: {exc}"
     return summary
 
 
@@ -1076,8 +1135,14 @@ def _log_run_to_supabase(
     ingested: list[dict],
     commit_sha: str | None,
     top_level_errors: list[str] | None = None,
+    warnings: list[str] | None = None,
 ) -> None:
     """Insert one row into auto_ingest_runs. Never raises.
+
+    `warnings` (step 3) are side-step failures that do not fail the run; they
+    go in the `warnings` column (migration 03). Until that column exists they
+    are folded into ``plan_summary["_warnings"]`` — a non-dict value, which
+    the replay bullet count already skips.
 
     Observability is best-effort: a failure to log must not break the
     primary auto-ingest contract with fathom-meeting-sync. We log + swallow.
@@ -1091,7 +1156,7 @@ def _log_run_to_supabase(
     """
     client = mc2_db.get_client(required=False)
     if client is None:
-        log.warning("auto_ingest_runs insert skipped: Supabase env not set")
+        log.error("auto_ingest_runs insert skipped: Supabase env not set")
         return
 
     plan_summary = {
@@ -1111,21 +1176,30 @@ def _log_run_to_supabase(
         "commit_sha": commit_sha,
         "errors": errors_flat or None,
     }
+    if warnings:
+        row["warnings"] = list(warnings)
     cid = observability.current_correlation_id()
     if cid:
         row["correlation_id"] = cid
     try:
-        try:
-            client.table(Tables.AUTO_INGEST_RUNS).insert(row).execute()
-        except Exception as exc:  # noqa: BLE001 — column-tolerant retry below
-            # Pre-migration tolerance: until the `correlation_id` column
-            # lands in the shared DB (mc-2 ledger), a PostgREST unknown-
-            # column error must not cost us the whole run row.
-            if "correlation_id" in row and "correlation_id" in str(exc):
-                row.pop("correlation_id")
+        # Column-tolerant: an optional column the shared DB doesn't have yet
+        # (mc-2 ledger lag) must not cost us the whole run row. Up to two
+        # retries — one per optional column.
+        for _attempt in range(3):
+            try:
                 client.table(Tables.AUTO_INGEST_RUNS).insert(row).execute()
-            else:
-                raise
+                break
+            except Exception as exc:  # noqa: BLE001 — column-tolerant retry
+                msg = str(exc)
+                if "correlation_id" in row and "correlation_id" in msg:
+                    row.pop("correlation_id")
+                elif "warnings" in row and "warnings" in msg:
+                    folded = dict(row.get("plan_summary") or {})
+                    folded["_warnings"] = row.pop("warnings")
+                    row["plan_summary"] = folded
+                else:
+                    raise
     except Exception as exc:  # noqa: BLE001 — observability must never throw
-        log.warning("auto_ingest_runs insert failed for %s: %s", meeting_id, exc)
+        # ERROR, not warning: a missing run row is the #262 shape.
+        log.error("auto_ingest_runs insert failed for %s: %s", meeting_id, exc)
         observability.capture(exc, area="auto_ingest_runs_insert")

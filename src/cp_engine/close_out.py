@@ -86,7 +86,9 @@ def element_from_spine(el: Any) -> CloseElement:
     )
 
 
-def load_mirror_elements(workdir: Path) -> list[CloseElement]:
+def load_mirror_elements(
+    workdir: Path, skipped: list[str] | None = None
+) -> list[CloseElement]:
     """Offline/degraded fallback: read the ON-DISK spine mirror, read-only.
 
     A modern project's elements live under ``spine/`` as substance files —
@@ -106,6 +108,9 @@ def load_mirror_elements(workdir: Path) -> list[CloseElement]:
     picked up via `load_spine`, deduped by key. Malformed files are skipped
     (a broken file must not abort the checklist); archived items and
     superseded versions are excluded, matching the live read's filters.
+
+    ``skipped`` (step 3): when given, each unparseable substance file appends
+    one note so the checklist can say what it could not read.
     """
     from cp_engine.spine import load_spine
     from cp_engine.substance import parse_substance
@@ -124,7 +129,14 @@ def load_mirror_elements(workdir: Path) -> list[CloseElement]:
                 continue
             try:
                 item = parse_substance(md)
-            except Exception:  # noqa: BLE001 — malformed file: skip, don't abort
+            except Exception as exc:  # noqa: BLE001 — malformed file: skip, don't abort
+                # Skip, but count it: an element missing from a close-out
+                # checklist is an element nobody closes (step 3). `skipped`
+                # is the caller's channel; there is no log handler here.
+                if skipped is not None:
+                    skipped.append(
+                        f"{md.relative_to(workdir)}: {type(exc).__name__}: {exc}"
+                    )
                 continue
             if item.archived or item.est_item_id in seen:
                 continue

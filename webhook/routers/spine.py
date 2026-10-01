@@ -17,6 +17,7 @@ import git_ops
 import httpx
 import observability
 import pipeline
+import run_ledger
 import signatures
 from fastapi import APIRouter, HTTPException, Request, Response
 
@@ -332,6 +333,7 @@ def _frame_promote_in_tree(
     # reconciles. So we record mirrored=false and keep going.
     mirrored = True
     mirror_skipped: list[dict] = []
+    mirror_warnings: list[str] = []
     try:
         sync_spine_substance(
             client,
@@ -340,6 +342,7 @@ def _frame_promote_in_tree(
             project_dir=project_dir,
             estimate=estimate,
             malformed_out=mirror_skipped,
+            warnings_out=mirror_warnings,
         )
     except Exception as exc:  # noqa: BLE001 — never lose a successful write
         log.warning(
@@ -369,6 +372,7 @@ def _frame_promote_in_tree(
     # merged per (field, source) and no other producer owns this source.
     # Best-effort — the durable write must never fail on its own warning.
     fidelity_flagged = False
+    fidelity_flag_error = None
     if fidelity.get("low") and mirrored and not created_new_element:
         try:
             from datetime import UTC, datetime
@@ -402,6 +406,10 @@ def _frame_promote_in_tree(
         except Exception as exc:  # noqa: BLE001 — a warning never fails the write
             log.warning("spine-promote: fidelity flag write failed for %s: %s",
                         card.id, exc)
+            observability.capture(exc, area="spine_promote_fidelity_flag")
+            # Surfaced (step 3): a LOW-fidelity body with no review flag is
+            # the one the review surface will never list.
+            fidelity_flag_error = f"{type(exc).__name__}: {exc}"
     if fidelity.get("low"):
         log.warning("spine-promote: LOW distill fidelity for card=%s: %s",
                     card.id, fidelity.get("reason"))
@@ -468,6 +476,9 @@ def _frame_promote_in_tree(
         "rel_path": rel_path,
         "mirrored": mirrored,
         "mirror_skipped": [s["rel_path"] for s in mirror_skipped],
+        # Present only when the mirror degraded (step 3), so a clean result's
+        # shape is unchanged.
+        **({"mirror_warnings": mirror_warnings} if mirror_warnings else {}),
         "created_new_element": created_new_element,
         "card_flipped": card_flipped,
         "edge_proposal": edge_proposal,
@@ -479,6 +490,8 @@ def _frame_promote_in_tree(
             "reason": fidelity.get("reason"),
             "flagged": fidelity_flagged or (bool(fidelity.get("low"))
                                             and created_new_element),
+            # Present only on failure, so a clean result's shape is unchanged.
+            **({"flag_error": fidelity_flag_error} if fidelity_flag_error else {}),
         },
     }
 
@@ -539,8 +552,15 @@ async def _run_frame_promote(
             _spine_promote_runs_table(pipeline._create_supabase_client()).update(
                 {"status": "failed", "error": str(exc), "finished_at": _utc_now_iso()}
             ).eq("id", run_id).execute()
-        except Exception:  # noqa: BLE001 — best effort; nothing else to do
+        except Exception as rec_exc:  # noqa: BLE001 — fall back to the ledger
             log.error("spine frame-promote run %s: could not record failure", run_id)
+            # The run row stays 'running' forever. Leave a trace somewhere a
+            # human (and `cxp health`) reads (step 3).
+            run_ledger.record_run(
+                route="/api/spine/promote#background", status="failed",
+                error=f"{exc} (and spine_promote_runs update failed: {rec_exc})",
+                detail={"run_id": run_id},
+            )
 
 
 def _spine_promote_runs_table(client):
@@ -639,7 +659,12 @@ async def _run_promote(
             _spine_promote_runs_table(pipeline._create_supabase_client()).update(
                 {"status": "failed", "error": str(exc), "finished_at": _utc_now_iso()}
             ).eq("id", run_id).execute()
-        except Exception:  # noqa: BLE001 — best effort; nothing else to do
+        except Exception as rec_exc:  # noqa: BLE001 — fall back to the ledger
+            run_ledger.record_run(
+                route="/api/spine/promote-transcript#background", status="failed",
+                error=f"{exc} (and spine_promote_runs update failed: {rec_exc})",
+                detail={"run_id": run_id},
+            )
             log.error("spine-promote run %s: could not record failure", run_id)
 
 

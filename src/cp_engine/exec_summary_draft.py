@@ -804,7 +804,20 @@ def draft_summaries(
                 results.append(DraftResult(p.code, "current", "skipped",
                                            "summary is current"))
             continue
-        commitments = _fetch_project_commitments(supabase_client, p) if supabase_client else ()
+        # strict: a failed commitments read must not become a draft whose
+        # Next up / Blockers were written as if there were none (step 3).
+        try:
+            commitments = (
+                _fetch_project_commitments(supabase_client, p, strict=True)
+                if supabase_client else ()
+            )
+        except Exception as exc:  # noqa: BLE001 — one workstream never sinks the run
+            results.append(DraftResult(
+                p.code, reason, "error",
+                f"commitments read failed, not drafting from partial sources: "
+                f"{type(exc).__name__}: {exc}",
+            ))
+            continue
         try:
             results.append(draft_one(
                 p, tenant_root=config.root, work_dir=work_dir, reason=reason,

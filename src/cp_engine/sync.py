@@ -1986,7 +1986,11 @@ def _recent_commits_for_repo(
             check=True,
         )
     except (subprocess.CalledProcessError, FileNotFoundError, OSError) as exc:
-        logger.debug("git log failed for %s: %s", repo_path, exc)
+        # The clone EXISTS (checked above), so a failing `git log` is a real
+        # failure, not an absent repo: WARNING so sync counts it (step 3).
+        logger.warning(
+            "git log failed for %s — sprint commits omitted: %s", repo_path, exc
+        )
         return ()
     commits: list[SprintCommit] = []
     for line in result.stdout.splitlines():
@@ -2039,9 +2043,16 @@ def _collect_sprint_per_project_data(
     try:
         from cp_engine import mc2_db
 
-        mc2_client = mc2_db.get_client(config)
-    except Exception:  # noqa: BLE001 — deliverable lines are best-effort
-        logger.info("sprint deliverable-cards: no MC-2 client; skipping")
+        # required=False: absent creds are the documented empty state (None,
+        # no noise); anything that still raises is a real failure (step 3).
+        mc2_client = mc2_db.get_client(config, required=False)
+    except Exception as exc:  # noqa: BLE001 — deliverable lines are best-effort
+        # WARNING, not info: sync's _WarningCounter only counts WARNING+, so
+        # an info here vanished while every sprint file lost its cards.
+        logger.warning(
+            "sprint deliverable-cards skipped — MC-2 client failed: %s: %s",
+            type(exc).__name__, exc,
+        )
     for project in projects:
         if mc2_client is not None:
             try:
@@ -2050,9 +2061,10 @@ def _collect_sprint_per_project_data(
                 lines = _fetch_deliverable_lines(mc2_client, project)
                 if lines:
                     out.setdefault(project.code, {})["deliverable_lines"] = lines
-            except Exception:  # noqa: BLE001 — best-effort per project
-                logger.info(
-                    "sprint deliverable-cards fetch failed for %s", project.code
+            except Exception as exc:  # noqa: BLE001 — best-effort per project
+                logger.warning(
+                    "sprint deliverable-cards fetch failed for %s: %s: %s",
+                    project.code, type(exc).__name__, exc,
                 )
         repo_path = config.local_repos.get(project.code)
         if repo_path is None:
@@ -2505,7 +2517,12 @@ def _read_envelope_flags(backend: Backend) -> "list[dict] | None":
 
         return mc2_db.fetch_open_workstream_flags(client)
     except Exception as exc:  # noqa: BLE001 — a strip row, never a sync failure
-        logger.info("envelope flags unavailable (%s); rendering as unknown", exc)
+        # WARNING (counted by sync) — a read that HAD a client and failed is
+        # a failure, not the no-creds empty state (step 3).
+        logger.warning(
+            "envelope flags unavailable (%s: %s); rendering as unknown",
+            type(exc).__name__, exc,
+        )
         return None
 
 

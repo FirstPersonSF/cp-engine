@@ -38,6 +38,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import git_ops
+import observability
 import pipeline
 import signatures
 from fastapi import APIRouter, HTTPException, Request
@@ -286,6 +287,20 @@ def _record_unrouted(payload: dict, *, reason: str, attempted_code: str | None) 
         return False
 
 
+def _with_unrecorded_warning(response: dict) -> dict:
+    """Carry a failed unrouted-email write in the response (step 3).
+
+    The 200 stays (the Worker must not retry-storm), but an email that was
+    neither parked nor recorded is LOST — the run ledger marks this PARTIAL
+    and `cxp health` counts it, instead of a log line nobody reads.
+    """
+    if not response.get("recorded"):
+        response["warnings"] = [
+            "unrouted email NOT recorded in unrouted_emails — it is in no queue"
+        ]
+    return response
+
+
 @router.post("/api/inbound-email")
 async def inbound_email(request: Request) -> dict:
     """Park + distill an inbound email into its project's working dir.
@@ -334,7 +349,9 @@ async def inbound_email(request: Request) -> dict:
                 "inbound-email: bare cp@ with no project code (%r) — unrouted (recorded=%s)",
                 to_addr, recorded,
             )
-            return {"status": "unrouted", "reason": "no_code", "to": to_addr, "recorded": recorded}
+            return _with_unrecorded_warning(
+                {"status": "unrouted", "reason": "no_code", "to": to_addr, "recorded": recorded}
+            )
         log.warning("inbound-email: unrelated address %r — no-op", to_addr)
         return {"status": "unresolved", "to": to_addr}
 
@@ -368,13 +385,13 @@ async def inbound_email(request: Request) -> dict:
                 "inbound-email: code %r did not resolve to a project — unrouted (recorded=%s)",
                 routing.code, recorded,
             )
-            return {
+            return _with_unrecorded_warning({
                 "status": "unrouted",
                 "reason": "unknown_code",
                 "code": routing.code,
                 "shape": routing.shape,
                 "recorded": recorded,
-            }
+            })
 
         result = _park_and_distill(
             tenant_root=tenant_root,
@@ -500,17 +517,26 @@ async def route_email(request: Request) -> dict:
         )
 
     # Flip the row to routed only after the ingest actually committed.
+    warnings: list[str] = []
     try:
         client.table(mc2_db.Tables.UNROUTED_EMAILS).update(
             {"status": "routed", "routed_to_code": code}
         ).eq("id", message_id).execute()
-    except Exception:  # noqa: BLE001 — the ingest succeeded; a status-flip miss is recoverable
+    except Exception as exc:  # noqa: BLE001 — the ingest succeeded; a status-flip miss is recoverable
         log.warning(
             "route-email: ingest committed for %s → %s but status flip failed",
             message_id, code, exc_info=True,
         )
+        # Surfaced (step 3): the row still reads 'unrouted', so the queue
+        # will offer it again — the caller must know to flip it by hand.
+        warnings.append(
+            f"ingest committed but unrouted_emails status flip failed "
+            f"(row still 'unrouted'): {type(exc).__name__}: {exc}"
+        )
 
     result["routed_from"] = "unrouted"
+    if warnings:
+        result["warnings"] = warnings
     result["message_id"] = message_id
     return result
 
@@ -562,12 +588,17 @@ def _park_and_distill(
                 # meeting_id, no roster. _ingest_one_project guards each —
                 # the LLM-only plan path runs cleanly.
             )
-        except Exception:  # noqa: BLE001 — distill must never lose the parked mail
+        except Exception as exc:  # noqa: BLE001 — distill must never lose the parked mail
             log.warning(
                 "inbound-email: distill failed for %s (email parked, committed anyway)",
                 code, exc_info=True,
             )
-            distill = {"errors": ["distill raised — see logs"], "files_written": []}
+            observability.capture(exc, area="inbound_email_distill")
+            # The error text itself, not "see logs" — nobody reads the logs.
+            distill = {
+                "errors": [f"distill raised: {type(exc).__name__}: {exc}"],
+                "files_written": [],
+            }
     else:
         log.info(
             "inbound-email: empty delta for %s — parked, no distill (scheduling-only?)",

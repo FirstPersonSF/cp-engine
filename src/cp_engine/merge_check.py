@@ -41,6 +41,11 @@ _HASH_RE = re.compile(r"cp:hash=(?P<hash>[0-9a-f]{8})")
 _CHECKED_SUFFIXES = (".md",)
 
 
+class MergeCheckError(RuntimeError):
+    """The check could not read the reference commit — so it cannot prove
+    nothing was lost, and must not report "no content lost" (step 3)."""
+
+
 @dataclass(frozen=True)
 class LostContent:
     """One `cp:hash` present on the reference commit but missing from the tree.
@@ -73,6 +78,28 @@ def _git(args: list[str], cwd: Path) -> str:
         return out.stdout if out.returncode == 0 else ""
     except OSError:
         return ""
+
+
+def _git_show_checked(ref: str, rel: str, cwd: Path) -> str:
+    """`git show ref:rel` for a path `ls-tree` just listed — so it EXISTS on
+    the ref, and a failure is a real failure, not the new-file case `_git`
+    swallows. Raises MergeCheckError."""
+    try:
+        out = subprocess.run(
+            ["git", "show", f"{ref}:{rel}"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise MergeCheckError(f"git show {ref}:{rel} failed: {exc}") from exc
+    if out.returncode != 0:
+        raise MergeCheckError(
+            f"git show {ref}:{rel} exited {out.returncode}: "
+            f"{(out.stderr or '').strip()[:200]}"
+        )
+    return out.stdout
 
 
 def _hashes_with_context(body: str) -> dict[str, str]:
@@ -110,7 +137,9 @@ def check_merge(
         if not rel or not rel.endswith(_CHECKED_SUFFIXES):
             continue
 
-        ref_body = _git(["show", f"{ref}:{rel}"], repo_root)
+        # Listed by ls-tree, so it exists on `ref`: a failed read here would
+        # otherwise skip the file and report "no content lost" (step 3).
+        ref_body = _git_show_checked(ref, rel, repo_root)
         if not ref_body:
             continue
         ref_hashes = _hashes_with_context(ref_body)

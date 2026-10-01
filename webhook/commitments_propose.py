@@ -333,5 +333,7 @@ def propose_commitments(
     except Exception as exc:  # noqa: BLE001 — must never break auto-ingest
         log.warning("commitments-propose failed for meeting=%s: %s", meeting_id, exc)
         observability.capture(exc, area="commitments_propose")
+        # Surfaced (step 3): the pipeline folds this into the run's warnings.
+        summary["error"] = f"{type(exc).__name__}: {exc}"
 
     return summary

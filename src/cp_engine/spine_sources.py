@@ -96,5 +96,14 @@ def fetch_project_assets(client, project_code):
             .execute()
             .data
         ) or []
-    except Exception:  # noqa: BLE001 — facet is best-effort, never break the sweep
+    except Exception as exc:  # noqa: BLE001 — facet is best-effort, never break the sweep
+        # The only caller is the CLI, where print is what reaches the user;
+        # an empty facet must not read as "this project has no sources".
+        import sys
+
+        print(
+            f"(WARNING: source-asset facet unreadable for {project_code} — "
+            f"sources are NOT listed: {type(exc).__name__}: {exc})",
+            file=sys.stderr,
+        )
         return []

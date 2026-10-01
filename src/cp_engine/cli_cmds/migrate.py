@@ -105,6 +105,8 @@ def migrate_projects_flat_cmd(tenant_root: Path | None) -> None:
         click.echo(f"  removed empty: {path.relative_to(root)}")
     for path in result.rewrote_cp_links:
         click.echo(f"  rewrote .cp-link: {path}")
+    for w in getattr(result, "warnings", ()):
+        click.echo(f"  ⚠ WARNING: {w}", err=True)
     click.echo(
         f"\nDone. Review the staged changes (`git status`) and commit when "
         f"satisfied. Source-repo .cp-link files are not under git control "

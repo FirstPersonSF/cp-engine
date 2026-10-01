@@ -114,7 +114,15 @@ def _warn_if_behind_upstream(root: Path) -> None:
     upstream (as of the last fetch). Never raises; never fetches."""
     try:
         lag = commits_behind_upstream(root)
-    except Exception:  # noqa: BLE001 — advisory, never fail a sync
+    except Exception as exc:  # noqa: BLE001 — advisory, never fail a sync
+        # Never fail the sync — but never skip the guard silently either: a
+        # clone behind upstream is exactly how webhook bullets get dropped
+        # (#310), so "could not check" must be said, not implied by silence.
+        click.echo(
+            f"⚠ WARNING: could not check whether this clone is behind its "
+            f"upstream ({type(exc).__name__}: {exc}). Pull before syncing.",
+            err=True,
+        )
         return
     if not lag or lag[1] <= 0:
         return
@@ -162,8 +170,14 @@ def render() -> None:
 
         for warning in unparsed_bullet_warnings(config.root):
             click.echo(warning, err=True)
-    except Exception:  # noqa: BLE001 — advisory pass, never fail a render
-        pass
+    except Exception as exc:  # noqa: BLE001 — advisory pass, never fail a render
+        # The exit code stays clean (sync already ran), but a crashed lint
+        # pass must not read as a clean one: silence here meant "no findings".
+        click.echo(
+            f"⚠ WARNING: advisory lint pass after render failed — findings "
+            f"are incomplete ({type(exc).__name__}: {exc})",
+            err=True,
+        )
 
 
 def _exec_summary_warnings(root: Path) -> list[str]:
@@ -190,7 +204,9 @@ def _exec_summary_warnings(root: Path) -> list[str]:
             continue
         try:
             findings = lint_exec_summary(cp_md.read_text(encoding="utf-8"))
-        except OSError:
+        except OSError as exc:
+            # An unreadable cp.md is not a clean one — say it was skipped.
+            out.append(f"{rel.parent}: cp.md unreadable, exec-summary lint skipped ({exc})")
             continue
         out.extend(f"{rel.parent}: {w}" for w in findings)
     return out
@@ -238,7 +254,12 @@ def brief_cmd(code: str) -> None:
         cp_md = working_dir / "cp.md"
         if cp_md.is_file():
             cp_md_text = cp_md.read_text(encoding="utf-8")
-    except (SpineDirNotFound, OSError):
+    except SpineDirNotFound:
+        working_dir = None
+    except OSError as exc:
+        # The dir exists but cp.md could not be read: the pack degrades to
+        # its MC-2 half, and says why instead of passing for a dir-less code.
+        click.echo(f"(WARNING: could not read cp.md for {code}: {exc})", err=True)
         working_dir = None
 
     # MC-2 half — best-effort throughout: a missing client or a failed read
@@ -407,7 +428,13 @@ def merge_check_cmd(ref: str) -> None:
         click.echo("Error: not inside a git repository.", err=True)
         sys.exit(2)
 
-    lost, checked = check_merge(root, ref=ref)
+    from cp_engine.merge_check import MergeCheckError
+
+    try:
+        lost, checked = check_merge(root, ref=ref)
+    except MergeCheckError as exc:
+        click.echo(f"Error: {exc} — cannot prove nothing was lost.", err=True)
+        sys.exit(1)
 
     if not checked:
         click.echo(
@@ -703,7 +730,12 @@ def preflight_cmd(code: str, artifact_kind: str, weeks: int, as_json: bool) -> N
         if cp_md.is_file():
             cp_md_text = cp_md.read_text(encoding="utf-8")
         resolved_code = working_dir.name
-    except (SpineDirNotFound, OSError):
+    except SpineDirNotFound:
+        resolved_code = code
+    except OSError as exc:
+        # Preflight would report every cp.md field "missing" — say the real
+        # reason is a read failure, not an unauthored project.
+        click.echo(f"(WARNING: could not read cp.md for {code}: {exc})", err=True)
         resolved_code = code
 
     sprint_texts = collect_sprint_texts(config.root, resolved_code, weeks=weeks)
@@ -965,3 +997,55 @@ def promote_uphill_cmd(
             else:
                 click.echo(f"  step: position {step.get('position')} on {step.get('est_item_id')}")
     sys.exit(1 if result.get("error") else 0)
+
+
+@click.command("health")
+@click.option("--post", "do_post", is_flag=True,
+              help="Post the line to the partners' Slack channel (default: print only).")
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output.")
+@click.option("--scheduled", "scheduled", default=None, metavar="CRON",
+              help="The cron expression that fired this run; skip unless it is "
+                   "the slot that lands at 05:xx tenant time.")
+def health_cmd(do_post: bool, as_json: bool, scheduled: str | None) -> None:
+    """The daily health line: sync, ingest, webhook, hosted, CI, spine, summaries.
+
+    Architecture plan step 3. Read-only everywhere; prints to stdout unless
+    --post. Exits 1 when any check needs a look, so a workflow run goes red
+    on a bad day instead of reading green.
+    """
+    import json as _json
+
+    from cp_engine import daily_health
+    from cp_engine.mc2_db import get_client
+
+    root: Path | None = Path.cwd()
+    config = None
+    try:
+        config = load(root)
+    except (CommittedConfigMissing, ConfigError) as exc:
+        click.echo(f"(no tenant config here — tree checks unreadable: {exc})", err=True)
+        root = None
+    if scheduled:
+        from cp_engine.clock import tenant_now, tenant_timezone
+
+        now = tenant_now().replace(tzinfo=tenant_timezone())
+        if not daily_health.is_morning_slot(scheduled, now):
+            click.echo(f"not the morning slot ({scheduled!r}); the other slot posts today.")
+            sys.exit(0)
+    client = get_client(config, required=False)
+    report = daily_health.gather(tenant_root=root, client=client)
+    if as_json:
+        click.echo(_json.dumps(report.to_dict(), indent=2))
+    else:
+        click.echo(report.render())
+    if do_post:
+        if config is None:
+            click.echo("Error: --post needs the tenant config (run from the tenant root).", err=True)
+            sys.exit(2)
+        try:
+            ts = daily_health.post(report, config=config, client=client)
+        except Exception as exc:  # noqa: BLE001 — a post that failed must fail the run
+            click.echo(f"Error: health line NOT posted: {exc}", err=True)
+            sys.exit(2)
+        click.echo(f"posted (ts={ts})", err=True)
+    sys.exit(0 if report.ok else 1)

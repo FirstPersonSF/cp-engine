@@ -91,12 +91,14 @@ def _ttl_bucket(c: dict, today: date) -> str | None:
 _PARTNERS_CHANNEL_KEY = "dates_loop_partners_channel"
 
 
-def _partners_channel(client: Any) -> str | None:
+def _partners_channel(client: Any, errors: list | None = None) -> str | None:
     """The tenant-wide rollup channel id from MC-2 app_config, or None.
 
     The jsonb value is accepted as either a bare string ("C0…") or an
     object with a "channel" key. Absent/blank → the rollup is skipped
-    (per-project posts still go out)."""
+    (per-project posts still go out). A FAILED lookup also skips the rollup,
+    but appends to ``errors`` (step 3) — "not configured" and "could not
+    read the config" must not look the same in the run summary."""
     try:
         rows = (
             client.table(Tables.APP_CONFIG)
@@ -108,6 +110,10 @@ def _partners_channel(client: Any) -> str | None:
         )
     except Exception as exc:  # noqa: BLE001 — rollup is optional
         log.warning("partners-channel lookup failed: %s", exc)
+        if errors is not None:
+            errors.append(
+                f"partners-channel lookup failed — rollup NOT posted: {exc}"
+            )
         return None
     if not rows:
         return None
@@ -372,7 +378,7 @@ def run_dates_loop(
     window_days = window_days or config.dates_loop.window_days
 
     client = mc2_db.get_client(config)
-    result.partners_channel = _partners_channel(client)
+    result.partners_channel = _partners_channel(client, result.errors)
     commitments = _fetch_open_commitments(client)
     by_owner: dict[str, list[dict]] = {}
     for c in commitments:

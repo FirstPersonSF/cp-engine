@@ -71,7 +71,10 @@ async def resolve_tags_endpoint(request: Request) -> dict:
     from cp_engine.tag_resolve import resolve_tags
 
     client = pipeline._create_supabase_client()
-    return {"resolutions": resolve_tags(client, tags)}
+    errors: list[str] = []
+    resolutions = resolve_tags(client, tags, errors=errors)
+    # Step 3: "MC-2 index unreadable" must not look like "no tag resolved".
+    return {"resolutions": resolutions, **({"errors": errors} if errors else {})}
 
 
 @router.post("/clickup-task-closed")
@@ -241,8 +244,7 @@ def _lookup_proposal_by_clickup_task_id(task_id: str) -> tuple[str, str] | None:
     owner column, #301) → ``<company>-<number>`` via projects → companies.
 
     Returns None if no row matches, the owner doesn't resolve, or Supabase
-    is unavailable. Best-effort: any exception is swallowed and treated as
-    'not found' (the webhook returns `ingested: false`).
+    is unavailable. A query ERROR raises (step 3) — it is not "not found".
     """
     client = mc2_db.get_client(required=False)
     if client is None:
@@ -286,11 +288,15 @@ def _lookup_proposal_by_clickup_task_id(task_id: str) -> tuple[str, str] | None:
             "clickup-task-closed: proposal for task=%s has no owner", task_id
         )
         return None
-    except Exception as exc:  # noqa: BLE001 — best-effort
-        log.warning(
+    except Exception as exc:  # noqa: BLE001 — re-raised: a DB error is not "no match"
+        # Step 3 (class c): this used to return None, so an MC-2 outage read
+        # exactly like "this task has no cp proposal" — the route answered
+        # 200 `ingested: false` and ClickUp never retried, so the close was
+        # lost. Raise: the route 500s, ClickUp retries, the ledger records it.
+        log.error(
             "clickup-task-closed: task lookup failed for %s: %s", task_id, exc
         )
-        return None
+        raise
 
 
 def _resolve_engagement_code(client, project_id: str) -> str | None:

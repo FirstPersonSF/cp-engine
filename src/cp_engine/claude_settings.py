@@ -26,8 +26,11 @@ Design constraints:
 from __future__ import annotations
 
 import json
+import logging
 from importlib import resources
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # Substring that identifies the engine's own SessionStart hook entry in a
 # tenant's settings.json. Stable across versions so re-syncs recognize and
@@ -236,9 +239,16 @@ def install_into_tenant(tenant_root: Path) -> list[Path]:
     if settings_path.exists():
         try:
             existing = json.loads(settings_path.read_text())
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError) as exc:
             # Don't clobber a file we can't parse — a tenant may have
-            # hand-written hooks we'd destroy. Skip the merge this sync.
+            # hand-written hooks we'd destroy. Skip the merge this sync —
+            # loudly: the only caller is `cxp sync`, whose warning counter
+            # prints this on the outcome line. Silently skipped, the engine
+            # hooks (and .mcp.json below) were never installed.
+            logger.warning(
+                "%s unreadable (%s); engine hooks and .mcp.json NOT merged "
+                "this sync — fix or remove the file", settings_path, exc,
+            )
             return written
         if not isinstance(existing, dict):
             return written
@@ -260,7 +270,11 @@ def install_into_tenant(tenant_root: Path) -> list[Path]:
     if mcp_path.exists():
         try:
             existing_mcp = json.loads(mcp_path.read_text())
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning(
+                "%s unreadable (%s); cp-sources MCP server NOT registered "
+                "this sync — fix or remove the file", mcp_path, exc,
+            )
             return written
         if not isinstance(existing_mcp, dict):
             return written

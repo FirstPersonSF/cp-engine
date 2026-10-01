@@ -23,7 +23,7 @@ def test_list_project_sources_delegates(monkeypatch):
 
     captured = {}
 
-    def fake_list_sources(client, project_id, company_id, include_account=False):
+    def fake_list_sources(client, project_id, company_id, include_account=False, warnings=None):
         captured["args"] = (client, project_id, company_id)
         # The MCP list names the company's account-scoped docs too (#324).
         captured["include_account"] = include_account
@@ -120,7 +120,7 @@ def test_list_project_sources_pure_fn_raises_returns_error(monkeypatch):
     """A raising pure fn (RPC error) is caught and returned as a structured error."""
     monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
 
-    def boom(client, project_id, company_id, include_account=False):
+    def boom(client, project_id, company_id, include_account=False, warnings=None):
         raise RuntimeError("rpc failed")
 
     monkeypatch.setattr("cp_engine.project_sources.list_sources", boom)
@@ -278,7 +278,7 @@ def test_list_spine_elements_delegates(monkeypatch):
 
     def fake_list_spine(client, project_id, company_id=None, *,
                         layer=None, scope=None, binding=None, compact=False,
-                        tier=None, include_absorbed=None):
+                        tier=None, include_absorbed=None, warnings=None):
         captured["args"] = (client, project_id)
         captured["filters"] = (layer, scope, binding)
         captured["compact"] = compact
@@ -1187,7 +1187,7 @@ def test_matched_versions_leave_success_results_untouched(monkeypatch):
     monkeypatch.setattr(srv, "_installed_version", lambda: None)
     monkeypatch.setattr(
         "cp_engine.project_sources.list_sources",
-        lambda client, pid, cid, include_account=False: [{"id": "a1", "title": "Doc"}],
+        lambda client, pid, cid, include_account=False, warnings=None: [{"id": "a1", "title": "Doc"}],
     )
 
     out = srv.list_project_sources("IBX-5153")

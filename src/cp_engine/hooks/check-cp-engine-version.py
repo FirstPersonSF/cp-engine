@@ -186,8 +186,11 @@ def _repair_mcp_command(root: Path) -> None:
         return
     try:
         data = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return  # malformed or unreadable — leave it for `cxp sync` to rewrite
+    except (OSError, json.JSONDecodeError) as exc:
+        # Leave it for `cxp sync` to rewrite — but say so: an unparseable
+        # .mcp.json means cp-sources (every MCP tool) is offline.
+        _note(f"could not read {path} ({exc}); cp-sources MCP may be offline.")
+        return
 
     entry = (data.get("mcpServers") or {}).get("cp-sources")
     if not isinstance(entry, dict) or entry.get("command") != "cp":
@@ -196,7 +199,8 @@ def _repair_mcp_command(root: Path) -> None:
     entry["command"] = "cxp"
     try:
         path.write_text(json.dumps(data, indent=2) + "\n")
-    except OSError:
+    except OSError as exc:
+        _note(f"FAILED to repair stale 'cp' command in {path}: {exc}")
         return
     _note(f"repaired stale 'cp' command in {path} -> 'cxp'.")
 

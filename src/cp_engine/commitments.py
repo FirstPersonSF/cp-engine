@@ -134,12 +134,15 @@ def _valid_due_date(raw: str | None) -> str | None:
         return None
 
 
-def _entity_people(client: Any) -> list[dict]:
+def _entity_people(client: Any, warnings: list | None = None) -> list[dict]:
     """The person roster from ``entities`` (staff + freelancers), cached.
 
     Archived rows are included but sorted last so an active duplicate of
     the same name wins (e.g. the two "Eric Seanor" rows). Never raises —
-    a roster fetch failure returns [] and the caller keeps raw values.
+    a roster fetch failure returns [] and the caller keeps raw values; the
+    failure is appended to ``warnings`` when the caller passes a list, so an
+    unreadable roster (an ungranted ``entities`` read) does not silently stop
+    canonicalization for every writer (step 3, fail loudly).
     """
     global _PEOPLE_CACHE, _PEOPLE_CACHE_AT
     now = time.monotonic()
@@ -157,6 +160,12 @@ def _entity_people(client: Any) -> list[dict]:
         _PEOPLE_CACHE, _PEOPLE_CACHE_AT = rows, now
     except Exception as exc:  # noqa: BLE001 — resolution is enrichment, never a gate
         log.warning("commitments: entities roster fetch failed: %s", exc)
+        if warnings is not None:
+            warnings.append(
+                "owner canonicalization skipped — entities roster unreadable "
+                f"({type(exc).__name__}: {exc})"
+                + ("; using the cached roster" if _PEOPLE_CACHE else "")
+            )
         return _PEOPLE_CACHE or []
     return _PEOPLE_CACHE
 
@@ -181,6 +190,7 @@ def resolve_owner_identity(
     client: Any,
     owner_name: str | None,
     owner_email: str | None,
+    warnings: list | None = None,
 ) -> tuple[str | None, str | None]:
     """Canonicalize an owner against the ``entities`` person roster (#157).
 
@@ -210,7 +220,7 @@ def resolve_owner_identity(
     name = _clean_owner_name(raw_name)
 
     try:
-        people = _entity_people(client)
+        people = _entity_people(client, warnings)
         if email:
             for p in people:
                 if (p.get("email") or "").strip().lower() == email:
@@ -241,6 +251,11 @@ def resolve_owner_identity(
                     )
     except Exception as exc:  # noqa: BLE001 — see docstring: never a gate
         log.warning("commitments: owner resolution failed: %s", exc)
+        if warnings is not None:
+            warnings.append(
+                f"owner resolution failed ({type(exc).__name__}: {exc}); "
+                "raw owner kept"
+            )
 
     return name or None, email
 
@@ -260,8 +275,12 @@ def write_commitment(
     work_item_kind: str | None = None,
     spine_element_id: str | None = None,
     source_meeting_id: str | None = None,
+    warnings: list | None = None,
 ) -> str:
     """Insert one commitment row; returns ``"inserted"`` or ``"duplicate"``.
+
+    ``warnings`` (optional out-list) collects the degrades that did not stop
+    the insert — today, owner canonicalization that could not run.
 
     ``owner`` is a :func:`resolve_commitment_owner` dict; the row is owned
     through ``project_id`` (the one owner column, #301). ``due_date`` must
@@ -279,7 +298,7 @@ def write_commitment(
     # every writer (ingest verbs, webhook, MCP) stores one spelling per
     # person. Unresolvable owners (client-side people) pass through.
     owner_name, owner_email = resolve_owner_identity(
-        client, owner_name, owner_email
+        client, owner_name, owner_email, warnings
     )
 
     row = {

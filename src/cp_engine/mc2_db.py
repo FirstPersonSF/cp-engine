@@ -1161,7 +1161,14 @@ def upsert_spine_snapshot(client: "Client", row: dict) -> None:
 # broke Supabase-only code that never used MCP. See the v0.80.1 webhook
 # ModuleNotFoundError. ``mcp_server`` now re-exports both for its own use.
 
-def canonical_spine_code(client, project_id: str, fallback: str, *, on_error=None) -> str:
+def canonical_spine_code(
+    client,
+    project_id: str,
+    fallback: str,
+    warnings: list | None = None,
+    *,
+    on_error=None,
+) -> str:
     """The canonical spine `project_code` for a project — read off its own
     `spine_substance` rows (uniform dir-slug since mig 129 + the sync
     healers). Writers that receive a caller-supplied code (webhook inbox
@@ -1178,6 +1185,11 @@ def canonical_spine_code(client, project_id: str, fallback: str, *, on_error=Non
     `on_error(stage, exc)`, when given, is called on each failed lookup in
     place of the stderr print — the hosted server routes it to its log and
     alerting (`stage` is "spine" or "projects").
+
+    Step 3: stderr reaches a CLI user but not a webhook run row or an MCP
+    caller, so each failed lookup is also appended to ``warnings`` when the
+    caller passes a list — a write that fell back to the caller's spelling is
+    the drift #309 seeded, and the writer should be able to say so.
     """
 
     def _report(stage: str, exc: Exception) -> None:
@@ -1185,6 +1197,8 @@ def canonical_spine_code(client, project_id: str, fallback: str, *, on_error=Non
             on_error(stage, exc)
         else:
             print(f"[warn] canonical_spine_code: {stage} lookup failed: {exc}", file=sys.stderr)
+        if warnings is not None:
+            warnings.append(f"canonical_spine_code: {stage} lookup failed: {exc}")
 
     try:
         rows = (
@@ -1216,6 +1230,10 @@ def canonical_spine_code(client, project_id: str, fallback: str, *, on_error=Non
             return slug
     except Exception as exc:  # noqa: BLE001 — see above
         _report("projects", exc)
+    if warnings:
+        warnings.append(
+            f"canonical_spine_code: fell back to caller's code {fallback!r}"
+        )
     return fallback
 
 
@@ -1443,31 +1461,33 @@ def project_sprint_identity(client, project_code: str) -> dict | None:
     Returns ``{"full_job_name", "name", "company_code", "company_name"}``.
     Resolution goes through `_resolve_project_id`, which already handles the
     working-dir `<company>-<number>` form vs. `projects.code`'s
-    company-prefixed slug. Best-effort: any failure returns None.
+    company-prefixed slug.
+
+    None means NOT FOUND (no client, no such project). A failed read RAISES
+    (step 3, fail loudly): "MC-2 errored" and "no such project" used to be the
+    same None, so a permission or schema failure scaffolded a sprint file
+    under the short code with no signal. Callers that want best-effort catch.
     """
     if client is None:
         return None
-    try:
-        project_id = _resolve_project_id(client, project_code)
-        if not project_id:
-            return None
-        row = (
-            client.table(Tables.PROJECTS)
-            .select("full_job_name, name, companies(code, name)")
-            .eq("id", project_id)
-            .limit(1)
-            .execute()
-        )
-        data = getattr(row, "data", None) or []
-        if not data:
-            return None
-        r = data[0]
-        company = r.get("companies") or {}
-        return {
-            "full_job_name": r.get("full_job_name"),
-            "name": r.get("name"),
-            "company_code": (company.get("code") or "").lower() or None,
-            "company_name": company.get("name"),
-        }
-    except Exception:  # noqa: BLE001 — never break an ingest over resolution
+    project_id = _resolve_project_id(client, project_code)
+    if not project_id:
         return None
+    row = (
+        client.table(Tables.PROJECTS)
+        .select("full_job_name, name, companies(code, name)")
+        .eq("id", project_id)
+        .limit(1)
+        .execute()
+    )
+    data = getattr(row, "data", None) or []
+    if not data:
+        return None
+    r = data[0]
+    company = r.get("companies") or {}
+    return {
+        "full_job_name": r.get("full_job_name"),
+        "name": r.get("name"),
+        "company_code": (company.get("code") or "").lower() or None,
+        "company_name": company.get("name"),
+    }

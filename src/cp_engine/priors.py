@@ -92,12 +92,15 @@ def resolve_priors(
             if not isinstance(text, str):
                 text = str(text or "")
     except Exception as exc:  # noqa: BLE001 — fail-soft is the contract
-        # DEBUG, not WARNING: an empty prompt store is the expected resting
-        # state for a tenant that has not authored priors yet, and this path
-        # also covers the offline/test case. A real misconfiguration surfaces
-        # as "the prompt I wrote is not being applied", which is diagnosable
-        # from `cp priors` (below), not from log noise on every ingest.
-        log.debug("priors unavailable (%s: %s)", type(exc).__name__, exc)
+        # WARNING (step 3). An empty prompt store does NOT reach here — the
+        # RPC returns "" for it — and the offline case is `client is None`.
+        # An exception is a failed read of priors that exist: every model call
+        # then runs without the master prompt, which used to show only as
+        # "the prompt I wrote is not being applied". Still fail-soft.
+        log.warning(
+            "priors unavailable — model calls run WITHOUT the master prompt "
+            "(%s: %s)", type(exc).__name__, exc,
+        )
         text = ""
 
     _CACHE[project_id] = text
@@ -154,7 +157,12 @@ def project_id_for_code(code: str, *, config=None) -> str | None:
         if rows and rows[0].get("project_id"):
             return rows[0]["project_id"]
     except Exception as exc:  # noqa: BLE001 — fail-soft is the contract
-        log.debug("project id lookup failed (%s: %s)", type(exc).__name__, exc)
+        # WARNING (step 3): `client is None` (offline) returned above, so this
+        # is a failed read — project priors silently fall back to global.
+        log.warning(
+            "project id lookup for %s failed — project priors not applied "
+            "(%s: %s)", code, type(exc).__name__, exc,
+        )
     return None
 
 
