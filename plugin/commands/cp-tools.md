@@ -310,20 +310,27 @@ framework names/ids are INTERNAL — never in client-facing material):
 
 **4 — Commitments** (MC-2's dated-obligations store — who owes what by when;
 the same store meeting auto-ingest proposes into, the weekly dates loop
-ratifies, and the Monday partners digest reads):
+ratifies, and the Monday partners digest reads). **Asks live here (step 4a).**
+A sprint file's `### Open asks` is RENDERED from this store at sync (the
+`open-asks` region); a bullet typed under it is imported here on the next
+sync, matched first against every status so a closed ask never comes back.
+Closing an ask means resolving its commitment — never editing the file. One
+hash recipe everywhere: `cp_engine.asks.ask_hash(<canonical full code>,
+<normalized text>)`:
 - `create_commitment(project_code, description, owner_email?, due_date?, direction?, source_meeting_id?)` — **hosted-server verb** (`cp-hosted` connector; cp-engine #138 ratcheted it off stdio) —
   register a session-agreed commitment as a PROPOSAL (`source_kind='session'`,
   review-gate parity with auto-ingest — nothing is auto-confirmed).
   `direction` ∈ `us_to_them | them_to_us | internal`; `owner_email` is who
   owes it (an email); `due_date` ISO or omitted (never guess a date the humans
-  didn't agree). NOT idempotent — the same text twice makes two rows, so check
-  `list_commitments` before re-logging one.
+  didn't agree). Idempotent on the ask's text: re-creating an OPEN ask
+  returns it (`duplicate_of`) instead of a second row; re-creating a CLOSED
+  one is a deliberate repeat and lands as a new open row.
   `source_meeting_id` (a `meeting_id` from `list_project_meetings`) links a
   row logged mid-session to its meeting, so it groups with the rows the
   webhook later writes for that meeting (#311); `commitments_sweep` flags
   likely-duplicate pairs either way.
 - `list_commitments(project_code, status?)` — the read side (`status` ∈
-  `open | done | dropped | all`). Use at wrap up to reconcile promised vs.
+  `open | done | dropped | routed | expired | all`). Use at wrap up to reconcile promised vs.
   delivered; `date_status` shows ratification, `source_kind` shows origin.
 - `resolve_commitment(project_code, key, outcome?)` — **hosted-server verb**
   (`cp-hosted` connector; cp-engine #143 ported it off stdio) — close an open row

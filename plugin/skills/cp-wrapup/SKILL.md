@@ -100,6 +100,13 @@ belongs to its account or program: `cxp promote-uphill <code> --decision
 
 ## 3 — Sweep the touched projects' open commitments
 
+**Asks live in MC-2** (step 4a): every open ask IS an open commitment, and the
+sprint file's `### Open asks` only renders them. So this sweep is the ask
+sweep too — an ask the session settled is closed by resolving its commitment,
+not by editing the sprint file (the next sync drops it everywhere). A new ask
+the session raised goes in as `create_commitment`, or as an `[open · date ·
+who]` bullet under `### Open asks` that the next sync imports.
+
 `cxp commitments-sweep <code>` per touched project:
 
 - resolve what the session completed
@@ -271,8 +278,9 @@ rolls off entries older than ~4 weeks; here the verb only REPORTS them
 
 ### h3 — Sweep open commitments
 
-**`commitments_sweep <code>`** per touched project — resolve what the session
-completed (`resolve_commitment`), drop what it made moot, and question undated
+**`commitments_sweep <code>`** per touched project — the ask sweep too, since
+asks live in MC-2 and the sprint file only renders them. Resolve what the
+session completed (`resolve_commitment`), drop what it made moot, and question undated
 rows ≥2 weeks old. An undated commitment expires at 14 days; the `ttl` field is
 where that gets noticed in time rather than after. The likely-duplicate pairs name
 rows that read as one obligation — resolve the redundant row when they match.
