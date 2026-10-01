@@ -70,15 +70,7 @@ cp-engine ships a Claude Code plugin at `/plugin/` so a developer can wrap a ses
 
 ### Daily use
 
-Inside any tracked source repo, finish your session with:
-
-```
-/cp-summarize
-```
-
-The command drafts a session summary, writes it to `<cp-working-dir>/sessions/<YYYY-MM-DD>-<HHMM>-<user>.md`, updates that project's `cp.md` "Last session:" line, then commits and pushes the cp clone.
-
-If the current repo isn't tracked in the cp tenant, the summary lands in `<cp-tenant>/exceptions/` and gets surfaced on the next `cxp sync` via the engine-managed `exceptions/README.md` plus a one-line "Exceptions ({N} this week)" pointer in `master-cp.md`.
+Session records land in `<cp-working-dir>/sessions/` through `cxp capture-session`, which the `/cp-wrapup` ritual runs. (`/cp-summarize`, `/cp-context` and `/cp-ingest` were retired in architecture step 5a; meeting ingest is the auto-ingest webhook.)
 
 ## Sprint files
 
@@ -113,15 +105,15 @@ cp-engine/
 │   ├── migrate.py                ← v0.2 → v0.3 migration (legacy)
 │   ├── migrate_flat.py           ← v0.6 → v0.7 layout migration (drops projects/)
 │   ├── link_local.py             ← write .cp-link files into source repos
-│   ├── capture_session.py        ← /cp-summarize backend
-│   ├── project_context.py        ← /cp-context backend (commits + sessions timeline)
+│   ├── capture_session.py        ← `cxp capture-session` backend
+│   ├── project_context.py        ← `cxp project-context` (commits + sessions timeline)
 │   ├── pin_resolver.py           ← resolve [engine].version → highest matching git tag (v0.6)
 │   ├── cli.py                    ← `cp` entry point
 │   └── templates/                ← Jinja2 (master-cp, weekly-cp, project-cp,
 │                                   CLAUDE.md, _repo.md, _dropbox.md)
 ├── plugin/                       ← Claude Code plugin
 │   ├── plugin.json
-│   ├── commands/                 ← /cp-summarize, /cp-context
+│   ├── commands/                 ← /cp-prep, /cp-tools, /cp-wrap
 │   └── hooks/                    ← SessionStart auto-install hook (v0.6)
 ├── actions/sync/                 ← reusable GitHub Action
 ├── tests/                        ← pytest (228 tests as of v0.7)

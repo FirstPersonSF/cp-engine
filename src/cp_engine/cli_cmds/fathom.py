@@ -29,7 +29,7 @@ import cp_engine.cli as _cli
         "work-session", "1-1", "untagged",
     ]),
     default=None,
-    help="Filter by meeting_type (Phase B). Used by /cp-ingest --account to "
+    help="Filter by meeting_type (Phase B). Used by the account-ingest flow to "
     "pull just account-status meetings. Default: no filter.",
 )
 def fathom_list_cmd(since_iso: str | None, limit: int, meeting_type: str | None) -> None:
@@ -65,7 +65,7 @@ def fathom_fetch_cmd(meeting_id: str, needs_review: bool) -> None:
     tenant root. Pass `--needs-review` to stage to needs-review/ instead.
 
     Output is JSON: `{path, meeting_id, title, project_tags, ...}`.
-    Hand the path to /cp-ingest to deepen.
+    Turn the staged transcript into a plan for `cxp ingest` to deepen.
     """
     import json
 

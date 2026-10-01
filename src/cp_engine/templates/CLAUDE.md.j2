@@ -115,8 +115,7 @@ A separate per-machine map at `.cp-engine.local.toml` under `[local-repos]`
 Conversely, when the working directory is a tracked source repo rather than a cp
 working dir, look for `.cp-link` at the repo root. It contains the absolute path
 of the corresponding cp working dir — `cd` there to read the project's `cp.md`,
-session history, and decisions. The `/cp-summarize` slash command writes a
-session summary back to the cp working dir at the end of a development session.
+session history, and decisions.
 
 ## MC-2 storage: sources + spine (the `cp-sources` MCP server)
 

@@ -238,7 +238,7 @@ def stage_transcript(
         f"# meeting_type: {meeting.meeting_type}\n"
         f"# project_tags: {', '.join(meeting.project_tags) or '(none)'}\n"
         f"# duration_minutes: {meeting.duration_minutes or 'unknown'}\n"
-        f"# (staged by cp fathom-fetch — feed to /cp-ingest <path>)\n"
+        f"# (staged by cp fathom-fetch — turn into a plan for cxp ingest)\n"
         "\n---\n\n"
     )
     body = _render_transcript_body(meeting.transcript)
