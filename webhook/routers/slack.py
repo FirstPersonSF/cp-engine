@@ -17,6 +17,7 @@ from datetime import UTC
 import git_ops
 import observability
 import pipeline
+import run_ledger
 import signatures
 from fastapi import APIRouter, HTTPException, Request
 
@@ -270,6 +271,7 @@ async def _run_action_in_background(
     )
 
     confirmation = _confirmation_text(verb=verb, extras=extras, result=result)
+    slack_update_error = None
     try:
         await asyncio.to_thread(
             _post_response_url_update,
@@ -278,10 +280,17 @@ async def _run_action_in_background(
             confirmation=confirmation,
             clicked_action_id=clicked_action_id,
         )
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         log.exception(
             "slack-action response_url update failed: %s/%s", code, cp_hash
         )
+        slack_update_error = f"{type(exc).__name__}: {exc}"
+    await asyncio.to_thread(
+        _record_background_outcome,
+        route="/slack-action#background",
+        verb=verb, code=code, cp_hash=cp_hash,
+        result=result, slack_update_error=slack_update_error,
+    )
 
 
 def _run_plan_for_one_item(
@@ -416,6 +425,11 @@ def _post_response_url_update(
             "response_url update returned %s: %s",
             resp.status_code, resp.text[:200],
         )
+        # Raise (step 3): the caller records it on the ledger row. A non-2xx
+        # here means the user's click shows no confirmation.
+        raise RuntimeError(
+            f"response_url update returned {resp.status_code}: {resp.text[:200]}"
+        )
 
 
 async def _run_xproject_in_background(
@@ -452,6 +466,7 @@ async def _run_xproject_in_background(
     confirmation = _xproject_confirmation_text(
         verb=verb, target_code=target_code, result=result
     )
+    slack_update_error = None
     try:
         await asyncio.to_thread(
             _post_response_url_update,
@@ -460,10 +475,51 @@ async def _run_xproject_in_background(
             confirmation=confirmation,
             clicked_action_id=clicked_action_id,
         )
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         log.exception(
             "xproject response_url update failed: %s/%s", target_code, cp_hash
         )
+        slack_update_error = f"{type(exc).__name__}: {exc}"
+    await asyncio.to_thread(
+        _record_background_outcome,
+        route="/slack-action#background",
+        verb=verb, code=target_code, cp_hash=cp_hash,
+        result=result, slack_update_error=slack_update_error,
+    )
+
+
+def _record_background_outcome(
+    *, route: str, verb: str, code: str, cp_hash: str,
+    result: dict, slack_update_error: str | None,
+) -> bool:
+    """One ledger row per finished click (architecture plan step 3).
+
+    The click's route returned 200 before any work ran, so without this the
+    only trace of a failed resolve/snooze was a `slack_action_complete` log
+    line (and the in-Slack confirmation, if that update itself landed).
+    """
+    errors = list(result.get("errors") or [])
+    if errors:
+        status = "failed"
+    elif slack_update_error:
+        status = "partial"  # the cp write landed; the user wasn't told
+    else:
+        status = "ok"
+    error = errors[0] if errors else (
+        f"Slack confirmation update failed: {slack_update_error}"
+        if slack_update_error else None
+    )
+    return run_ledger.record_run(
+        route=route,
+        status=status,
+        project_code=code,
+        error=error,
+        detail={
+            "verb": verb, "hash": cp_hash,
+            "committed": bool(result.get("committed")),
+            "commit_sha": result.get("commit_sha"),
+        },
+    )
 
 
 def _run_xproject_action(*, verb: str, target_code: str, cp_hash: str) -> dict:

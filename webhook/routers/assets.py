@@ -15,6 +15,7 @@ import os
 
 import observability
 import pipeline
+import run_ledger
 import signatures
 from fastapi import APIRouter, HTTPException, Request, Response
 
@@ -125,8 +126,14 @@ async def _run_asset_ingest(
             _asset_runs_table(pipeline._create_supabase_client()).update(
                 {"status": "failed", "error": str(exc), "finished_at": _utc_now_iso()}
             ).eq("id", run_id).execute()
-        except Exception:  # noqa: BLE001 — best effort; nothing else to do
+        except Exception as rec_exc:  # noqa: BLE001 — fall back to the ledger
             log.error("asset-ingest run %s: could not record failure", run_id)
+            run_ledger.record_run(
+                route="/api/assets/ingest#background", status="failed",
+                project_code=code,
+                error=f"{exc} (and asset_ingest_runs update failed: {rec_exc})",
+                detail={"run_id": run_id},
+            )
 
 
 @router.post("/api/assets/ingest")

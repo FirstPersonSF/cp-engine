@@ -377,7 +377,11 @@ async def auto_ingest_account(request: Request) -> dict:
         # (Part B: "every meeting that touches a project"). Fetched once;
         # action_items stay None here — they have no per-project attribution
         # on an account meeting (same constraint as the bullet routing above).
+        # Side-step failures, surfaced on the run row (architecture plan step 3).
+        warnings: list[str] = []
         meeting = pipeline._fetch_meeting(meeting_id)
+        if meeting is None:
+            warnings.append(pipeline.MEETING_ROW_MISSING)
 
         ingested: list[dict] = []
         commits: list[str] = []
@@ -501,6 +505,8 @@ async def auto_ingest_account(request: Request) -> dict:
             transcript_text=transcript_text,
             project_codes=[p.code for p in active],
         )
+        if artifact_summary.get("error"):
+            warnings.append(f"meeting artifacts failed: {artifact_summary['error']}")
 
         if not commits:
             log.info(
@@ -510,9 +516,12 @@ async def auto_ingest_account(request: Request) -> dict:
             pipeline._log_run_to_supabase(
                 meeting_id=meeting_id,
                 project_codes=[p.code for p in active],
-                status="skipped_no_op",
+                # Derived, not hardcoded (step 3): a project whose plan
+                # failed and wrote nothing is a FAILED run, not a no-op.
+                status=pipeline._status_from_ingested(ingested, anything_wrote=False),
                 ingested=ingested,
                 commit_sha=None,
+                warnings=warnings,
             )
             return {
                 "ingested": ingested,
@@ -520,15 +529,20 @@ async def auto_ingest_account(request: Request) -> dict:
                 "commit_shas": [],
                 "skipped_no_op": True,
                 "meeting_artifacts": artifact_summary,
+                "warnings": warnings,
             }
 
         last_commit = commits[-1]
         pipeline._log_run_to_supabase(
             meeting_id=meeting_id,
             project_codes=[p.code for p in active],
-            status="success",
+            # NOT hardcoded "success" (step 3) — the #194 shape: a run that
+            # committed one project and dropped another's plan stamped
+            # success over the error. Same derivation as /api/auto-ingest.
+            status=pipeline._status_from_ingested(ingested, anything_wrote=True),
             ingested=ingested,
             commit_sha=last_commit,
+            warnings=warnings,
         )
         return {
             "ingested": ingested,
@@ -536,6 +550,7 @@ async def auto_ingest_account(request: Request) -> dict:
             "commit_shas": commits,
             "skipped_no_op": False,
             "meeting_artifacts": artifact_summary,
+            "warnings": warnings,
         }
 
 
@@ -654,7 +669,11 @@ async def auto_ingest_sprint_planning(request: Request) -> dict:
 
         # Whole Fathom summary → each touched project's Retrospective (Part B).
         # Fetched once; action_items stay None (no per-project attribution).
+        # Side-step failures, surfaced on the run row (architecture plan step 3).
+        warnings: list[str] = []
         meeting = pipeline._fetch_meeting(meeting_id)
+        if meeting is None:
+            warnings.append(pipeline.MEETING_ROW_MISSING)
 
         ingested: list[dict] = []
         commits: list[str] = []
@@ -789,6 +808,8 @@ async def auto_ingest_sprint_planning(request: Request) -> dict:
             transcript_text=transcript_text,
             project_codes=[p.code for p in active],
         )
+        if artifact_summary.get("error"):
+            warnings.append(f"meeting artifacts failed: {artifact_summary['error']}")
 
         if not commits:
             log.info(
@@ -798,9 +819,12 @@ async def auto_ingest_sprint_planning(request: Request) -> dict:
             pipeline._log_run_to_supabase(
                 meeting_id=meeting_id,
                 project_codes=[p.code for p in active],
-                status="skipped_no_op",
+                # Derived, not hardcoded (step 3): a project whose plan
+                # failed and wrote nothing is a FAILED run, not a no-op.
+                status=pipeline._status_from_ingested(ingested, anything_wrote=False),
                 ingested=ingested,
                 commit_sha=None,
+                warnings=warnings,
             )
             return {
                 "ingested": ingested,
@@ -808,15 +832,20 @@ async def auto_ingest_sprint_planning(request: Request) -> dict:
                 "commit_shas": [],
                 "skipped_no_op": True,
                 "meeting_artifacts": artifact_summary,
+                "warnings": warnings,
             }
 
         last_commit = commits[-1]
         pipeline._log_run_to_supabase(
             meeting_id=meeting_id,
             project_codes=[p.code for p in active],
-            status="success",
+            # NOT hardcoded "success" (step 3) — the #194 shape: a run that
+            # committed one project and dropped another's plan stamped
+            # success over the error. Same derivation as /api/auto-ingest.
+            status=pipeline._status_from_ingested(ingested, anything_wrote=True),
             ingested=ingested,
             commit_sha=last_commit,
+            warnings=warnings,
         )
         return {
             "ingested": ingested,
@@ -824,4 +853,5 @@ async def auto_ingest_sprint_planning(request: Request) -> dict:
             "commit_shas": commits,
             "skipped_no_op": False,
             "meeting_artifacts": artifact_summary,
+            "warnings": warnings,
         }

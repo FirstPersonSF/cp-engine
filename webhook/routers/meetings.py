@@ -15,6 +15,7 @@ import os
 
 import observability
 import pipeline
+import run_ledger
 import signatures
 from fastapi import APIRouter, HTTPException, Request, Response
 
@@ -34,8 +35,8 @@ def _fetch_meeting_by_recording_id(client, recording_id: int) -> dict | None:
     (recording_id, transcript, transcript_promoted_at, title) plus the
     project link/tags used to resolve the project here, and the fields the
     deep-synthesis path reads (`synthesis_generated_at` skip guard, `meeting_date`
-    for recording auto-discovery). Returns the row or None (no match, or any
-    error — best-effort).
+    for recording auto-discovery). Returns the row, or None when no row
+    matches; any other error raises (step 3).
     """
     try:
         resp = (
@@ -49,12 +50,18 @@ def _fetch_meeting_by_recording_id(client, recording_id: int) -> dict | None:
             .execute()
         )
         return resp.data or None
-    except Exception as exc:  # noqa: BLE001 — best-effort; treat as not found
-        log.warning(
+    except Exception as exc:  # noqa: BLE001 — only "no row" is not-found
+        # `.single()` raises PGRST116 when zero rows match — that, and only
+        # that, is "not found". Anything else (network, auth, a dropped
+        # column) used to become a 404 "no meeting with recording_id",
+        # sending the user hunting for a meeting that exists (step 3, c).
+        if "PGRST116" in str(exc) or "0 rows" in str(exc):
+            return None
+        log.error(
             "meeting-promote: fetch failed for recording_id=%s: %s",
             recording_id, exc,
         )
-        return None
+        raise
 
 
 async def _run_meeting_promote(
@@ -98,12 +105,23 @@ async def _run_meeting_promote(
                 "meeting-promote: recording_id=%s not promoted: %s",
                 recording_id, result.get("reason"),
             )
+        outcome, error = ("ok", None) if result.get("ok") else ("failed", result.get("reason"))
     except Exception as exc:  # noqa: BLE001 — never crash the background task
         log.warning(
             "meeting-promote: recording_id=%s run failed: %s",
             recording_id, exc, exc_info=True,
         )
         observability.capture(exc, area="meeting_promote_run")
+        outcome, error = "failed", f"{type(exc).__name__}: {exc}"
+    # There is no domain runs table for this route: the 202 left an
+    # 'accepted' ledger row; this records how it ended (step 3).
+    await asyncio.to_thread(
+        run_ledger.record_run,
+        route="/api/meetings/promote-transcript#background",
+        status=outcome,
+        error=error,
+        detail={"recording_id": recording_id},
+    )
 
 
 @router.post("/api/meetings/promote-transcript")
@@ -230,10 +248,19 @@ async def _run_meeting_synthesize(
         else:
             log.warning("meeting-synthesize: recording_id=%s not done: %s",
                         recording_id, result.get("reason"))
+        outcome, error = ("ok", None) if result.get("ok") else ("failed", result.get("reason"))
     except Exception as exc:  # noqa: BLE001 — never crash the background task
         log.warning("meeting-synthesize: recording_id=%s run failed: %s",
                     recording_id, exc, exc_info=True)
         observability.capture(exc, area="meeting_synthesize_run")
+        outcome, error = "failed", f"{type(exc).__name__}: {exc}"
+    await asyncio.to_thread(
+        run_ledger.record_run,
+        route="/api/meetings/synthesize#background",
+        status=outcome,
+        error=error,
+        detail={"recording_id": recording_id},
+    )
 
 
 def _transcript_segments_for_service(meeting_row: dict) -> list | None:

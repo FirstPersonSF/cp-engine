@@ -92,6 +92,14 @@ observability.init_sentry(release=cp_engine.__version__)
 
 app = FastAPI(title="cp-engine-webhook", version=cp_engine.__version__)
 
+# One webhook_runs row per POST on every path (architecture plan step 3).
+# Added BEFORE the correlation-id middleware below so it sits INSIDE it:
+# Starlette wraps later-added middleware around earlier ones, and the
+# correlation contextvar set by the outer layer is visible to the inner one.
+import run_ledger  # noqa: E402
+
+app.add_middleware(run_ledger.RunLedgerMiddleware)
+
 
 @app.middleware("http")
 async def _correlation_id_middleware(request: Request, call_next):
