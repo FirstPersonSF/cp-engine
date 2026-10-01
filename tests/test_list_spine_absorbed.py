@@ -1,16 +1,14 @@
-# tests/test_list_spine_absorbed.py — stdio `list_spine_elements` is
-# lifecycle-aware, with the hosted verb's `include_absorbed` semantics (#330).
+# tests/test_list_spine_absorbed.py — the engine's `list_spine` is
+# lifecycle-aware when asked, with the hosted verb's `include_absorbed`
+# semantics (#330).
 #
-# Before: stdio read no lifecycle edges at all. An element sealed into a
-# shipped deliverable (`absorbed_by`) is HISTORICAL — hosted hides it by
-# default and says how many it hid — but stdio listed it in the working set
-# unmarked, and with both servers strict (#318) a caller passing
-# `include_absorbed` to stdio failed outright. These drive the REAL verb and the
-# REAL `list_spine`, against a fake Supabase-shaped client that serves both
+# An element sealed into a shipped deliverable (`absorbed_by`) is HISTORICAL:
+# hidden by default with a count of what was hidden. The stdio verb that first
+# exposed this was retired (step 5b); these now drive the REAL `list_spine`
+# directly, against a fake Supabase-shaped client that serves both
 # `spine_substance` and `spine_relations`.
 import pytest
 
-import cp_engine.mcp_server as srv
 import cp_engine.project_sources as ps
 
 
@@ -70,11 +68,16 @@ def _edge(frm, to, *, pid="p1", kind="absorbed_by", status="active"):
 @pytest.fixture
 def served(monkeypatch):
     monkeypatch.setattr(ps, "fetch_project_done_map", lambda c, p: {})
-    monkeypatch.setattr(srv, "_with_project_status", lambda rows, *a: rows)
+    held = {}
 
     def serve(client):
-        monkeypatch.setattr(srv, "_resolve", lambda code: (client, "p1", "co"))
+        held["client"] = client
         return client
+
+    def listing(compact=False, include_absorbed=False):
+        return ps.list_spine(held["client"], "p1", "co", compact=compact,
+                             include_absorbed=include_absorbed)
+    serve.list = listing
     return serve
 
 
@@ -100,7 +103,7 @@ def test_absorbed_element_hidden_by_default_and_counted(served, compact):
     """The default is the working set: the sealed element is gone, and a
     trailing note row says how many were hidden and how to see them."""
     served(_sealed_client())
-    out = srv.list_spine_elements("ibx-5192", compact=compact)
+    out = served.list(compact=compact)
     assert _ids(out) == ["_authored/deck-v2"]
     (note,) = _notes(out)
     assert note["absorbed_hidden"] == 1
@@ -112,7 +115,7 @@ def test_include_absorbed_lists_and_annotates(served, compact):
     """Retrospective mode lists the sealed element, marked with the
     deliverable that absorbed it; unsealed rows carry no marker."""
     served(_sealed_client())
-    out = srv.list_spine_elements("ibx-5192", compact=compact, include_absorbed=True)
+    out = served.list(compact=compact, include_absorbed=True)
     by_id = {r["est_item_id"]: r for r in out if "est_item_id" in r}
     assert set(by_id) == {"_authored/raw-feedback", "_authored/deck-v2"}
     assert by_id["_authored/raw-feedback"]["absorbed_by"] == "_authored/deck-v2"
@@ -123,15 +126,15 @@ def test_include_absorbed_lists_and_annotates(served, compact):
 def test_nothing_sealed_keeps_the_exact_old_shape(served):
     """No edges → no note row: a live project's list is unchanged."""
     served(_Client(project_rows=[_row("_authored/a")]))
-    assert _ids(srv.list_spine_elements("ibx-5192")) == ["_authored/a"]
-    assert _notes(srv.list_spine_elements("ibx-5192")) == []
+    assert _ids(served.list()) == ["_authored/a"]
+    assert _notes(served.list()) == []
 
 
 def test_failed_edge_read_lists_everything_and_says_so(served):
     """An empty edge map un-hides every sealed element while looking exactly
     like "nothing was ever sealed" — so a failed read must be reported."""
     served(_Client(project_rows=[_row("_authored/a")], edges_fail=True))
-    out = srv.list_spine_elements("ibx-5192")
+    out = served.list()
     assert _ids(out) == ["_authored/a"]
     (note,) = _notes(out)
     assert note["annotations_available"] is False
@@ -146,21 +149,10 @@ def test_account_row_edges_read_under_its_home_project(served):
     client = served(_Client(project_rows=[_row("_authored/a")],
                             account_rows=[promoted],
                             edges=[_edge("_authored/fred", "_authored/x", pid="p9")]))
-    out = srv.list_spine_elements("ibx-5192")
+    out = served.list()
     assert set(client.edge_project_ids) == {"p1", "p9"}
     assert _ids(out) == ["_authored/a"]
     assert _notes(out)[0]["absorbed_hidden"] == 1
-
-
-def test_positional_call_from_before_the_flag_still_binds():
-    """`include_absorbed` is appended LAST, so an existing positional call
-    (project_code, layer, scope, binding, compact, tier) binds unchanged."""
-    import inspect
-
-    params = list(inspect.signature(srv.list_spine_elements).parameters)
-    assert params[-1] == "include_absorbed"
-    assert params[:6] == ["project_code", "layer", "scope", "binding",
-                          "compact", "tier"]
 
 
 def test_in_process_callers_read_no_edges():

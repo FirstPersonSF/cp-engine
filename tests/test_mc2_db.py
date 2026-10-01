@@ -310,67 +310,22 @@ def test_registry_covers_known_tables() -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  Import-coupling guard: webhook code must never import mcp_server
+#  Import-coupling guard: engine code must import without the mcp package
 # ──────────────────────────────────────────────────────────────────────
 #
 # Regression for the v0.80.1 production failure (Sentry):
 #   ModuleNotFoundError: No module named 'mcp.server.fastmcp'
 # raised from meetings._default_resolver -> mcp_server import chain, which
-# killed the webhook's post-commit meeting-link step. `mcp_server` imports
-# FastMCP at module scope, so importing it anywhere in a webhook code path
-# requires the MCP server stack in a container that has no MCP server.
-
-_MCP_SERVER_IMPORT = re.compile(
-    r"(?:from|import)\s+cp_engine\.mcp_server\b(?:\s+import\s+(?P<names>[^\n#]+))?"
-)
-
-# Launching the MCP server is fine — that code path only runs under `cp mcp`,
-# where the mcp package is by definition present. What must never happen is
-# borrowing a non-lifecycle HELPER from mcp_server (the v0.80.1 bug), which
-# drags FastMCP into Supabase-only code.
-_MCP_LIFECYCLE_NAMES = {"run_stdio", "mcp", "main"}
-
-
-def test_no_helper_borrowing_from_mcp_server() -> None:
-    """No module may borrow a non-lifecycle helper from `cp_engine.mcp_server`.
-
-    `mcp_server` imports FastMCP at module scope, so importing anything from
-    it requires the MCP server stack. The webhook container installs
-    cp-engine but never runs an MCP server — in v0.80.1 that turned a
-    renamed `mcp.server.fastmcp` into a crash in the Supabase-only
-    meeting-link path (Sentry ModuleNotFoundError).
-
-    Importing the server's own lifecycle entrypoints (`run_stdio`) is fine —
-    that code only runs under `cp mcp`. Pure MC-2 helpers belong in
-    `mc2_db`; import them from there. See `mc2_db._resolve_project_id`.
-    """
-    offenders: list[str] = []
-    for path in _scan_dirs():
-        if path.name == "mcp_server.py":
-            continue
-        text = path.read_text()
-        for match in _MCP_SERVER_IMPORT.finditer(text):
-            names = {
-                n.strip() for n in (match.group("names") or "").split(",") if n.strip()
-            }
-            # Bare `import cp_engine.mcp_server` (no names) is also a drag-in.
-            if names and names <= _MCP_LIFECYCLE_NAMES:
-                continue
-            lineno = text.count("\n", 0, match.start()) + 1
-            line = text.splitlines()[lineno - 1].strip()
-            offenders.append(f"{path.relative_to(_REPO_ROOT)}:{lineno}: {line}")
-    assert not offenders, (
-        "these imports borrow a helper from cp_engine.mcp_server, which pulls "
-        "in FastMCP.\nThe webhook has no MCP server — move the helper to "
-        "mc2_db and import it there:\n" + "\n".join(offenders)
-    )
+# killed the webhook's post-commit meeting-link step. The stdio server that
+# chain ran through was retired in step 5b; the subprocess check below stays,
+# because it reproduces the webhook container's condition directly.
 
 
 def test_resolver_importable_without_the_mcp_package() -> None:
     """`_resolve_project_id` must import with the `mcp` package absent.
 
     Reproduces the webhook container's condition directly rather than
-    trusting the grep guard above: blocks `mcp*` at the import system, then
+    trusting any grep guard: blocks `mcp*` at the import system, then
     imports the resolver and the meetings seam that crashed in prod.
     """
     import subprocess

@@ -31,8 +31,10 @@ because both were learned expensively:
    may constrain Q4 capacity" changes the send order, so it is a
    first-class field rather than a note in prose.
 
-Composition here is PURE — validation and rendering, no network. The
-MC-2 reads/writes live in the MCP verbs that call these.
+Composition is PURE — validation and rendering, no network. The two
+MC-2 READS at the bottom (`read_vendors`, `read_respondents`) take the
+caller's client, so the hosted server runs them under the caller's
+identity; they moved here from the retired stdio server (step 5b).
 """
 
 from __future__ import annotations
@@ -256,3 +258,104 @@ def render_pipeline(pipe: Pipeline) -> str:
             L.append(f"- {r.vendor_name} ({r.email_confidence})")
         L.append("")
     return "\n".join(L)
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  MC-2 reads (moved from the retired stdio server, architecture step 5b)
+# ──────────────────────────────────────────────────────────────────────
+#
+# Both take a client and never construct one: the hosted server passes a
+# client bound to the CALLER'S JWT, so RLS decides what is visible. Explicit
+# columns only — `notes` and `watch_outs` are the widest fields read.
+
+VENDOR_COLUMNS = (
+    "name,slug,city,timezone,website,key_person,contact_route,"
+    "contact_email,email_confidence,capability_tags,watch_outs,notes,status"
+)
+
+
+def read_vendors(client, capability: str = "", include_archived: bool = False) -> dict:
+    """`{count, vendors}` from the registry, name-ordered.
+
+    `capability` keeps rows whose `capability_tags` contain it as a
+    case-insensitive substring. Raises on a read error — the caller is an
+    MCP boundary and turns that into a structured error.
+    """
+    from cp_engine.mc2_db import Tables
+
+    q = client.table(Tables.VENDORS).select(VENDOR_COLUMNS)
+    if not include_archived:
+        q = q.eq("status", "active")
+    rows = q.order("name").execute().data or []
+    needle = (capability or "").strip().lower()
+    if needle:
+        rows = [
+            r for r in rows
+            if any(needle in (t or "").lower() for t in (r.get("capability_tags") or []))
+        ]
+    return {"count": len(rows), "vendors": rows}
+
+
+def read_respondents(client, project_id: str, project_code: str) -> dict:
+    """One project's RFP pipeline: counts, rows, and the rendered table.
+
+    Contact details come from the registry row, rendered through
+    `Respondent.contact_display` so an unvouched address never reads as a
+    usable one. Raises on a read error.
+    """
+    from cp_engine.mc2_db import Tables
+
+    rows = (
+        client.table(Tables.RFP_RESPONDENTS)
+        .select("vendor_name,status,response_note,decline_reason,vendor_id")
+        .eq("project_id", project_id)
+        .execute()
+        .data
+        or []
+    )
+    vendor_ids = [r["vendor_id"] for r in rows if r.get("vendor_id")]
+    vendors: dict[str, dict] = {}
+    if vendor_ids:
+        vrows = (
+            client.table(Tables.VENDORS)
+            .select("id,city,contact_email,email_confidence,watch_outs")
+            .in_("id", vendor_ids)
+            .execute()
+            .data
+            or []
+        )
+        vendors = {v["id"]: v for v in vrows}
+
+    respondents = []
+    for r in rows:
+        v = vendors.get(r.get("vendor_id") or "", {})
+        respondents.append(
+            Respondent(
+                vendor_name=r["vendor_name"],
+                status=r.get("status") or "not_sent",
+                city=v.get("city"),
+                contact_email=v.get("contact_email"),
+                email_confidence=v.get("email_confidence") or "unresearched",
+                watch_outs=v.get("watch_outs"),
+                response_note=r.get("response_note"),
+                decline_reason=r.get("decline_reason"),
+            )
+        )
+    pipe = Pipeline(project_code=project_code, respondents=respondents)
+    return {
+        "project_code": project_code,
+        "counts": pipe.counts(),
+        "respondents": [
+            {
+                "vendor_name": r.vendor_name,
+                "status": r.status,
+                "city": r.city,
+                "contact": r.contact_display,
+                "watch_outs": r.watch_outs,
+                "response_note": r.response_note,
+                "decline_reason": r.decline_reason,
+            }
+            for r in respondents
+        ],
+        "rendered": render_pipeline(pipe),
+    }

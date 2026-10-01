@@ -1,6 +1,5 @@
 # tests/test_notes.py — #107 create_note (partner ping: in-app note + Slack DM)
 import cp_engine.notes as notes
-import cp_engine.mcp_server as srv
 
 
 # ── fake supabase client ────────────────────────────────────────────────────

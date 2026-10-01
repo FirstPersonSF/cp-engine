@@ -613,14 +613,16 @@ mcp_server = MCPServer(
         "sequence for a session like this one, which has no `cxp` and no file "
         "editing. Read `master-cp.md` for the project index; get each "
         "project's path from there rather than constructing it.\n\n"
-        "MOST TOOLS READ; 40 OF THEM WRITE. The writers are the `create_*`, `set_*`, "
+        "MOST TOOLS READ; 41 OF THEM WRITE. The writers are the `create_*`, `set_*`, "
         "`add_*`, `remove_*`, `reorder_*`, `promote_*`, `retire_*`, `resolve_*`, "
         "`route_*`, `rotate_*`, `seal_to_*` and `capture_*` verbs, plus "
-        "`log_improvement` — a name that sounds like a mutation is one (a "
-        "read-only endpoint, `/mcp/read`, carries none of them). Every write is "
-        "delegated upstream under YOUR identity; the server holds no write "
-        "key, which is why authorship is real and why nothing here can be "
-        "undone by the server on your behalf. When refreshing an Exec "
+        "`log_improvement` and `push_to_dropbox` — a name that sounds like a "
+        "mutation is one (a read-only endpoint, `/mcp/read`, carries none of "
+        "them). Every tenant write is delegated upstream under YOUR identity; "
+        "the server holds no MC-2 write key, which is why authorship is real "
+        "and why nothing here can be undone by the server on your behalf. The "
+        "one exception is `push_to_dropbox`, which writes into Dropbox with "
+        "the service's own credentials (team members only). When refreshing an Exec "
         "Summary with `capture_project_state`, pass "
         "every field you mean to be current, not just `status`: omitted fields "
         "are left as they were, so a status-only refresh advances the "
@@ -1446,8 +1448,8 @@ def list_spine_elements(
 
     `compact=true` trims each row to the orientation fields — slug, framing,
     layer, binding, important, version_label, plus the scope/canon/
-    absorbed_by markers — dropping status, dates and actor. Same flag as the
-    stdio `cxp mcp` verb, so `tier="working", compact=true` works on both.
+    absorbed_by markers — dropping status, dates and actor. Prefer
+    `tier="working", compact=true` as the first call on a big spine.
 
     Args:
         project_code: engagement, initiative, or standalone-repo code
@@ -5126,7 +5128,7 @@ def set_spine_element(
        only the live row moves. For an element with history, its superseded rows
        keep the OLD layer/framing/serves. The return says so explicitly
        (`versions_updated` / `superseded_untouched`) rather than implying a
-       whole-element move. Use the stdio verb when the whole history must move.
+       whole-element move. There is no MCP verb that moves the whole history.
 
     2. **TRANSCRIPT PROMOTION IS DELEGATED, AND USUALLY SKIPS.** Like the engine
        verb, a genuine `important` false->true transition fires a transcript
@@ -5137,7 +5139,7 @@ def set_spine_element(
        Fathom recording behind the element (see `promote_spine_transcript`).
        An element that cites no Fathom source — which is MOST of them — gets
        `promotion: {fired: false, skipped: ...}` with the reason, not a failure.
-       Use the stdio verb when the tenant FILE is what must be embedded.
+       No MCP verb embeds the tenant FILE (the retired stdio verb did).
 
     Args:
         project_code: engagement, initiative, or standalone-repo code.
@@ -12075,9 +12077,36 @@ def rotate_word_count(project_code: str) -> dict[str, Any]:
 # test suite exercises exactly what the server serves.
 
 
-# The mechanism lives in `cp_engine.mcp_strict` (imported) so the
-# stdio `cxp mcp` server refuses the same way — one implementation, not two
-# that drift. Imported here, at the end, because the swap must see every tool.
+# ── Verbs ported from the retired stdio server (step 5b) ──────────────
+# `ported_tools.py` holds them (fetch/compare/comments/push, preflight, the
+# vendor registry). Loaded BY PATH for the same reason as observability.py,
+# and registered HERE — before the strict-arguments swap and before
+# `/mcp/read` is populated — so they get both, like every verb above.
+_ported_spec = importlib.util.spec_from_file_location(
+    "hosted_mcp_ported_tools", Path(__file__).resolve().parent / "ported_tools.py",
+)
+ported_tools = importlib.util.module_from_spec(_ported_spec)
+sys.modules["hosted_mcp_ported_tools"] = ported_tools
+_ported_spec.loader.exec_module(ported_tools)
+
+
+class _ServerView:
+    """This module's namespace, read LIVE — so a test's monkeypatch of
+    `server.user_client` reaches the ported verbs too. Not `sys.modules
+    [__name__]`: a test that loads this file by spec never registers it."""
+
+    def __getattr__(self, name: str):
+        try:
+            return globals()[name]
+        except KeyError:
+            raise AttributeError(name) from None
+
+
+ported_tools.register(_ServerView())
+
+# The mechanism lives in `cp_engine.mcp_strict` (imported) — one
+# implementation, not a hosted copy. Imported here, at the end, because the
+# swap must see every tool.
 from cp_engine.mcp_strict import forbid_unknown_arguments  # noqa: E402
 
 forbid_unknown_arguments(mcp_server)
@@ -12137,6 +12166,13 @@ READ_ONLY_TOOLS: dict[str, str] = {
     "commitments_sweep": "pure sweep over SELECTed rows",
     "seal_sweep": "pure sweep over SELECTed rows (reporting; sealing is seal_to_deliverable)",
     "word_count_check": "reporting only; rotation is rotate_word_count",
+    # ── ported from the retired stdio server (step 5b, ported_tools.py) ──
+    "fetch_project_source": "SELECT rag_assets + downloads the original (team-gated)",
+    "compare_project_sources": "two fetches + a local text diff; writes nothing",
+    "pull_document_comments": "SELECT rag_assets + reads the file's comments (team-gated)",
+    "preflight": "tree reads + SELECT spine/sources; pure report",
+    "list_vendors": "SELECT vendors (team-gated: its policy admits any authenticated user)",
+    "list_rfp_respondents": "SELECT rfp_respondents + vendors (team-gated)",
 }
 
 # name -> what it writes (the reason it is NOT on `/mcp/read`).
@@ -12181,6 +12217,8 @@ MAIN_ONLY_TOOLS: dict[str, str] = {
     "record_round": "INSERT spine_substance/steps",
     "promote_uphill": "INSERT commitments/spine + POST mc-2",
     "rotate_word_count": "POST mc-2 -> tenant rotation commit",
+    # ported (step 5b): the one writer, with the service's Dropbox credentials
+    "push_to_dropbox": "Dropbox upload / upload link (service credentials)",
 }
 
 READ_INSTRUCTIONS = (

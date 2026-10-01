@@ -156,68 +156,6 @@ def test_snapshots_listing_names_malformed_snapshot(monkeypatch, tmp_path):
     assert "2026-06-01-broken.md" in result.stderr
 
 
-# ── mcp_server.py ───────────────────────────────────────────────────────
-
-
-def test_mcp_preflight_carries_mc2_context_failure(monkeypatch, tmp_path):
-    import cp_engine.config as config_mod
-    import cp_engine.mcp_server as srv
-
-    monkeypatch.setattr(srv, "_tenant_root", lambda: tmp_path)
-    monkeypatch.setattr(config_mod, "load", lambda root: SimpleNamespace(root=tmp_path))
-
-    def boom(code):
-        raise RuntimeError("MC-2 unreachable")
-
-    monkeypatch.setattr(srv, "_resolve", boom)
-    out = srv.preflight("sap-5198", "rfp")
-    assert "error" not in out, out
-    assert any("MC-2 unreachable" in w for w in out.get("warnings", [])), out
-
-
-def _agreement_pull(monkeypatch):
-    import cp_engine.mcp_server as m
-
-    monkeypatch.setattr(m, "_resolve", lambda code: (object(), "pid", "cid"))
-    monkeypatch.setattr(
-        "cp_engine.project_sources.pull_spine",
-        lambda c, pid, key, cid=None: {
-            "est_item_id": "_authored/sow", "layer": "Agreement",
-            "body": "human terms", "sources": ["s1"]},
-    )
-    monkeypatch.setattr(m, "_with_project_status", lambda r, *a: r)
-    return m
-
-
-def test_mcp_agreement_projection_failure_is_flagged(monkeypatch):
-    m = _agreement_pull(monkeypatch)
-
-    def boom(c, pid):
-        raise RuntimeError("estimator 500")
-
-    monkeypatch.setattr("cp_engine.estimate.fetch_estimate", boom)
-    res = m.pull_spine_element("p", "sow")
-    assert res["body"] == "human terms"
-    assert res["derived_block"] is False
-    assert any("estimator 500" in w for w in res["warnings"]), res
-
-
-def test_mcp_agreement_meetings_failure_is_flagged(monkeypatch):
-    from tests.test_agreement_projection import _estimate
-
-    m = _agreement_pull(monkeypatch)
-    monkeypatch.setattr("cp_engine.estimate.fetch_estimate", lambda c, pid: _estimate())
-    monkeypatch.setattr("cp_engine.estimate.fetch_schedule", lambda c, ids: [])
-
-    def boom(c, pid):
-        raise RuntimeError("meetings 503")
-
-    monkeypatch.setattr("cp_engine.project_sources.list_project_meetings", boom)
-    res = m.pull_spine_element("p", "sow")
-    assert res["derived_block"] is True
-    assert any("meetings 503" in w for w in res["warnings"]), res
-
-
 # ── claude_settings.py (surfaces through sync's warning counter) ────────
 
 

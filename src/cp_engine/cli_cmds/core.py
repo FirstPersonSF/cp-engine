@@ -566,16 +566,6 @@ def write_region_cmd(
         click.echo("no change")
 
 
-@click.command("mcp")
-def mcp_cmd() -> None:
-    """Run the local stdio MCP server exposing this tenant's project sources."""
-    from cp_engine.mcp_server import run_stdio
-
-    run_stdio()
-
-
-
-
 @click.command("priors")
 @click.option("--code", default=None, help="Resolve for one project/initiative code.")
 @click.option("--publish", "publish_path", type=click.Path(exists=True, dir_okay=False),

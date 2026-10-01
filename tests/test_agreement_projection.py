@@ -125,28 +125,6 @@ def test_block_without_drift_is_unchanged():
     assert "Drift" not in out
 
 
-def test_pull_tool_surfaces_drift_warnings(monkeypatch):
-    import cp_engine.mcp_server as m
-    monkeypatch.setattr(m, "_resolve", lambda code: (object(), "pid", "cid"))
-    monkeypatch.setattr("cp_engine.project_sources.pull_spine",
-                        lambda c, pid, key, cid=None: {
-                            "est_item_id": "_authored/sow", "layer": "Agreement",
-                            "body": "human terms", "sources": ["s1"]})
-    monkeypatch.setattr("cp_engine.estimate.fetch_estimate",
-                        lambda c, pid: _estimate())
-    monkeypatch.setattr("cp_engine.estimate.fetch_schedule",
-                        lambda c, est_id: [_bar("i", "a1", week=2)])
-    monkeypatch.setattr("cp_engine.project_sources.list_project_meetings",
-                        lambda c, pid: [{"work_item_id": "a1",
-                                         "meeting_date": "2026-07-30"}])
-    res = m.pull_spine_element("p", "sow")
-    assert res["derived_block"] is True
-    assert res["drift_warnings"] == [
-        "⚠ 1:1 Stakeholder Interviews — linked meeting 2026-07-30 "
-        "vs estimate ~2026-06-29 (+31d)"]
-    assert "⚠ Drift" in res["body"]
-
-
 def test_attach_nudge_names_sow_looking_doc():
     nudge = sow_attach_nudge([{"title": "Kickoff deck"},
                               {"title": "SAP 5171 Display Ads SOW v02.docx"}])
@@ -157,42 +135,3 @@ def test_attach_nudge_none_when_no_sow_doc():
     assert sow_attach_nudge([{"title": "Kickoff deck"}]) is None
 
 
-def test_pull_tool_composes_block_for_agreement(monkeypatch):
-    import cp_engine.mcp_server as m
-    monkeypatch.setattr(m, "_resolve", lambda code: (object(), "pid", "cid"))
-    monkeypatch.setattr("cp_engine.project_sources.pull_spine",
-                        lambda c, pid, key, cid=None: {
-                            "est_item_id": "_authored/sow", "layer": "Agreement",
-                            "body": "human terms", "sources": ["s1"]})
-    monkeypatch.setattr("cp_engine.estimate.fetch_estimate",
-                        lambda c, pid: _estimate())
-    monkeypatch.setattr("cp_engine.estimate.fetch_schedule",
-                        lambda c, est_id: [])
-    res = m.pull_spine_element("p", "sow")
-    assert res["derived_block"] is True
-    assert res["body"].startswith("human terms")
-    assert "Engagement shape" in res["body"]
-    assert "attach_nudge" not in res            # has a source attached
-
-
-def test_pull_tool_fail_soft_without_estimate(monkeypatch):
-    import cp_engine.mcp_server as m
-    monkeypatch.setattr(m, "_resolve", lambda code: (object(), "pid", None))
-    monkeypatch.setattr("cp_engine.project_sources.pull_spine",
-                        lambda c, pid, key, cid=None: {
-                            "est_item_id": "_authored/sow", "layer": "Agreement",
-                            "body": "human terms", "sources": []})
-    monkeypatch.setattr("cp_engine.estimate.fetch_estimate", lambda c, pid: None)
-    res = m.pull_spine_element("initiative", "sow")
-    assert res["body"] == "human terms" and "derived_block" not in res
-
-
-def test_pull_tool_untouched_for_non_agreement(monkeypatch):
-    import cp_engine.mcp_server as m
-    monkeypatch.setattr(m, "_resolve", lambda code: (object(), "pid", "cid"))
-    monkeypatch.setattr("cp_engine.project_sources.pull_spine",
-                        lambda c, pid, key, cid=None: {
-                            "est_item_id": "_authored/x", "layer": "Note",
-                            "body": "b", "sources": []})
-    res = m.pull_spine_element("p", "x")
-    assert res["body"] == "b" and "derived_block" not in res

@@ -417,21 +417,22 @@ def test_claude_md_restart_note_covers_credentials() -> None:
 
 def test_cp_tools_command_carries_the_verb_catalog() -> None:
     """The catalog moved (not vanished): the /cp-tools plugin command holds
-    all five numbered stores and their verbs."""
+    the numbered stores and their verbs. (Inbound frameworks, store 3, was
+    retired with the stdio server in step 5b.)"""
     cmd = (
         Path(__file__).parents[1] / "plugin" / "commands" / "cp-tools.md"
     ).read_text(encoding="utf-8")
     assert "1 — RAG source store" in cmd
     assert "2 — Spine" in cmd
-    assert "3 — Inbound frameworks" in cmd
-    assert "4 — Commitments" in cmd
-    assert "5 — Notes" in cmd
+    assert "3 — Commitments" in cmd
+    assert "4 — Notes" in cmd
+    assert "framework_" not in cmd
     for verb in (
         "list_project_sources",
         "pull_document_comments",
+        "push_to_dropbox",
         "create_spine_element",
         "pull_element_from_project",
-        "framework_decompose",
         "create_commitment",
         "create_note",
     ):
