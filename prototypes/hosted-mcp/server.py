@@ -123,6 +123,7 @@ from cp_engine import mc2_db as _engine_mc2_db  # noqa: E402
 from cp_engine import spine as _engine_spine  # noqa: E402
 from cp_engine import spine_steps as _engine_spine_steps  # noqa: E402
 from cp_engine.commitments import _valid_due_date as _engine_valid_due_date  # noqa: E402
+from cp_engine.commitments import commitment_row as _engine_commitment_row  # noqa: E402
 from cp_engine.asks import ask_hash as _engine_ask_hash  # noqa: E402
 from cp_engine.asks import resolve_canonical_code as _engine_resolve_canonical_code  # noqa: E402
 from cp_engine import exec_summary_draft as _engine_exec_summary_draft  # noqa: E402
@@ -6499,8 +6500,9 @@ def create_commitment(
 ) -> dict[str, Any]:
     """Register a dated commitment, under the caller's identity.
 
-    INSERT-only into `public.commitments`, mirroring the row shape
-    `cp_engine.commitments.write_commitment` builds: it lands as a PROPOSAL
+    INSERT-only into `public.commitments`, with the row
+    `cp_engine.commitments.commitment_row` builds (the engine's own writer
+    uses it too): it lands as a PROPOSAL
     (`date_status='proposed'`, `status='open'`, `source_kind='session'`) — the
     same review gate the meeting auto-ingest path uses. Nothing is auto-confirmed.
 
@@ -6620,20 +6622,19 @@ def create_commitment(
             "note": "this ask is already an open commitment; nothing was inserted",
         }
 
-    row: dict[str, Any] = {
-        "description": text,
-        "owner_email": email_norm,
-        "owner_name": resolved_name,
-        "direction": direction,
-        "due_date": due_iso,
-        "date_status": "proposed",
-        "status": "open",
-        "source_kind": "session",
-        # The engine's one ask recipe (see the docstring).
-        "cp_hash": cp_hash,
-        "project_id": scope["id"],
-        "source_meeting_id": meeting_id,
-    }
+    # The engine's one row builder (H14): columns and defaults cannot drift
+    # from `write_commitment`'s. `cp_hash` is the engine's ask recipe too.
+    row = _engine_commitment_row(
+        project_id=scope["id"],
+        description=text,
+        cp_hash=cp_hash,
+        source_kind="session",
+        direction=direction,
+        owner_email=email_norm,
+        owner_name=resolved_name,
+        due_date=due_iso,
+        source_meeting_id=meeting_id,
+    )
 
     try:
         result = client.table("commitments").insert(row).execute()

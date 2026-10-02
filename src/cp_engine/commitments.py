@@ -317,7 +317,49 @@ def write_commitment(
         client, owner_name, owner_email, warnings
     )
 
-    row = {
+    row = commitment_row(
+        project_id=owner["id"],
+        description=description,
+        cp_hash=cp_hash,
+        source_kind=source_kind,
+        direction=direction,
+        owner_email=owner_email,
+        owner_name=owner_name,
+        due_date=due_date,
+        work_item_id=work_item_id,
+        work_item_kind=work_item_kind,
+        spine_element_id=spine_element_id,
+        source_meeting_id=source_meeting_id,
+    )
+
+    client.table(Tables.COMMITMENTS).insert(row).execute()
+    return "inserted"
+
+
+def commitment_row(
+    *,
+    project_id: str,
+    description: str,
+    cp_hash: str,
+    source_kind: str,
+    direction: str = INTERNAL,
+    owner_email: str | None = None,
+    owner_name: str | None = None,
+    due_date: str | None = None,
+    work_item_id: str | None = None,
+    work_item_kind: str | None = None,
+    spine_element_id: str | None = None,
+    source_meeting_id: str | None = None,
+) -> dict:
+    """The one INSERT row for a new commitment — every writer's shape.
+
+    It lands as a PROPOSAL (`date_status='proposed'`, `status='open'`), the
+    review gate every path shares; owned through `project_id` (#301). Pure:
+    callers resolve the hash, owner and date first. The hosted server's
+    `create_commitment` builds its row here too, so columns and defaults
+    cannot drift between the two (architecture inventory H14).
+    """
+    return {
         "description": description,
         "owner_email": owner_email,
         "owner_name": owner_name,
@@ -331,11 +373,8 @@ def write_commitment(
         "source_kind": source_kind,
         "source_meeting_id": source_meeting_id,
         "cp_hash": cp_hash,
-        "project_id": owner["id"],
+        "project_id": project_id,
     }
-
-    client.table(Tables.COMMITMENTS).insert(row).execute()
-    return "inserted"
 
 
 def list_commitments(client: Any, owner: dict, status: str = "open") -> list[dict]:
