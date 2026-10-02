@@ -118,6 +118,70 @@ def test_reordered_content_is_not_a_loss(repo):
 
 
 # ──────────────────────────────────────────────────────────────────────
+#  Managed regions are projections, not content (2026-10-01: 35 false
+#  "MISSING" after a merge, every one inside a generated region)
+# ──────────────────────────────────────────────────────────────────────
+
+REGION_BODY = (
+    "## Carry-forward\n"
+    "<!-- cp-engine:start carry-forward -->\n"
+    "- [risk · watching] projected from last week <!-- cp:hash=aaaa1111 -->\n"
+    "<!-- cp-engine:end carry-forward -->\n"
+    "## Open asks\n"
+    "<!-- cp-engine:start open-asks -->\n"
+    "- [ask] rendered from MC-2 <!-- cp:hash=bbbb2222 -->\n"
+    "<!-- cp-engine:end open-asks -->\n"
+    "- [ask] hand-typed below the markers <!-- cp:hash=cccc3333 -->\n"
+)
+
+
+def test_a_hash_leaving_a_managed_region_is_not_reported(repo):
+    """Sync regenerated the regions without the projected bullets; the
+    hand-written one survived — nothing was lost."""
+    p = _seed(repo, REGION_BODY)
+    p.write_text(
+        "## Carry-forward\n"
+        "<!-- cp-engine:start carry-forward -->\n"
+        "<!-- cp-engine:end carry-forward -->\n"
+        "## Open asks\n"
+        "<!-- cp-engine:start open-asks -->\n"
+        "<!-- cp-engine:end open-asks -->\n"
+        "- [ask] hand-typed below the markers <!-- cp:hash=cccc3333 -->\n"
+    )
+
+    lost, _ = check_merge(repo, ref="remote-side")
+
+    assert lost == []
+
+
+def test_a_hash_removed_outside_the_markers_is_still_reported(repo):
+    """The check exists for hand-written content: a blanket --ours on
+    2026-08-25 deleted 20 such bullets. Regions beside it change nothing."""
+    p = _seed(repo, REGION_BODY)
+    p.write_text(REGION_BODY.replace(
+        "- [ask] hand-typed below the markers <!-- cp:hash=cccc3333 -->\n", ""))
+
+    lost, _ = check_merge(repo, ref="remote-side")
+
+    assert [item.hash for item in lost] == ["cccc3333"]
+
+
+def test_a_hash_both_inside_and_outside_a_region_is_still_required(repo):
+    """A carry-forward projection of a bullet does not excuse losing the
+    hand-written original in the same file."""
+    body = REGION_BODY.replace("aaaa1111", "cccc3333")
+    p = _seed(repo, body)
+    p.write_text(body.replace(
+        "- [ask] hand-typed below the markers <!-- cp:hash=cccc3333 -->\n", "")
+        .replace("- [risk · watching] projected from last week "
+                 "<!-- cp:hash=cccc3333 -->\n", ""))
+
+    lost, _ = check_merge(repo, ref="remote-side")
+
+    assert [item.hash for item in lost] == ["cccc3333"]
+
+
+# ──────────────────────────────────────────────────────────────────────
 #  #310 — sync on a clone behind its upstream
 # ──────────────────────────────────────────────────────────────────────
 
