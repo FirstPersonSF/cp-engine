@@ -4,6 +4,28 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.131.3 — 2026-10-01
+
+**Workstream phase 6, engine side (#306), and one source-title resolver.** Patch.
+
+*The engine no longer names `projects.is_internal`* — not in a select, not in a
+filter — so it works before and after mc-2 drops the column. Every workstream
+now gets its per-project hours row, internal ones included; the per-person
+engagement/internal split comes from company kind (`self-fpsf` = internal),
+which gives today's numbers unchanged. The unused `parent_id` probe is gone.
+
+*One resolver for source titles.* `resolve_source(rows, key, mode=...)`:
+**strict** for writes (uuid or exact, case-sensitive title) and **lookup** for
+reads (uuid, exact, case-insensitive exact, then a UNIQUE substring). Both
+return candidates on ambiguity. Behaviour changes: `fetch_source` no longer
+silently takes the first of several matches; `pull_source` no longer merges
+case-variant documents; `fetch_source` and `pull_document_comments` see active
+documents only (an archived "SOW v01" can no longer be served instead of v02),
+resolve uuids, and `pull_document_comments` now finds account-scoped documents.
+
+*Hosted tests no longer leak tenant-tree clones into `$TMPDIR`* (a conftest
+check fails on growth).
+
 ## v0.131.2 — 2026-10-01
 
 **Architecture plan follow-ups.** Patch.
