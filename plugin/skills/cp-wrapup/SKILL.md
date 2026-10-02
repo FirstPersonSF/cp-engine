@@ -174,8 +174,11 @@ Authored text counts: hand-written prose plus the Exec Summary (it sits in a
 `cp-engine` region but you write it, so trim it too). Every other
 `cp-engine:start/end` region is excluded. Sprint files are not measured.
 
-`cxp render` warns on both thresholds (warn-only — it never blocks a commit
-and never edits). Acting on the warning is yours: the audit is manual; for
+`cxp render --check` warns on both thresholds and on Exec Summary field
+budgets (warn-only — it never blocks a commit, and with `--check` it writes
+nothing: no tenant file, no MC-2 row). Plain `cxp render` is a full sync —
+it rewrites generated files and expires stale MC-2 commitments — so do not
+run it just to read the counts. Acting on the warning is yours: the audit is manual; for
 the rotation, `rotate_word_count` (on `cp-hosted`) moves Updates older than
 28 days to `cp-archive-<YYYY-MM>.md` in one commit — pull before your own
 commit, since it lands upstream. Trimming hand-written sections stays manual.

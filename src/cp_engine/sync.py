@@ -1112,6 +1112,7 @@ def _sync_tenant_inner(
             readme_path,
             new_readme,
             splice_regions=("exceptions-list",),
+            dry_run=dry_run,
         ):
             files_written.append(readme_path)
 

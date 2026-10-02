@@ -139,20 +139,29 @@ def _warn_if_behind_upstream(root: Path) -> None:
 
 
 @click.command()
-def render() -> None:
-    """Re-render generated files (alias for `cxp sync` in v0.1)."""
-    # In v0.1 there's no separate render-only path — sync already writes
-    # only when content changed and never reaches out to the database
-    # for unchanged regions. Future: a true `--no-network` render that
-    # uses cached project state.
-    click.echo("`cxp render` is currently an alias for `cxp sync`. Running sync…")
-    ctx = click.get_current_context()
-    ctx.invoke(sync)
+@click.option(
+    "--check",
+    is_flag=True,
+    help="Report only: print the word-count, Exec Summary and bullet "
+    "warnings without syncing. Writes no file and no MC-2 row.",
+)
+def render(check: bool) -> None:
+    """Re-render generated files (alias for `cxp sync` in v0.1).
+
+    `--check` skips the sync and runs only the advisory passes over the tree
+    as it stands — the wrap-up word-count step. A plain render is a FULL
+    sync: it rewrites generated files and writes MC-2 (asks import, expiry
+    of stale commitments, stakeholder import). 2026-10-01: a render run only
+    to read word counts rewrote 78 tenant files and expired 3 commitments.
+    """
+    if not check:
+        click.echo("`cxp render` is currently an alias for `cxp sync`. Running sync…")
+        ctx = click.get_current_context()
+        ctx.invoke(sync)
 
     # Word-count discipline: warn-only Exec Summary per-field budget pass over
     # every live project cp.md. Best-effort — findings are echoed and NEVER
-    # affect the exit code; any failure here degrades silently (sync already
-    # ran).
+    # affect the exit code. Pure reads, so `--check` runs exactly this.
     try:
         config = load(Path.cwd())
         for warning in _exec_summary_warnings(config.root):
@@ -171,7 +180,7 @@ def render() -> None:
         for warning in unparsed_bullet_warnings(config.root):
             click.echo(warning, err=True)
     except Exception as exc:  # noqa: BLE001 — advisory pass, never fail a render
-        # The exit code stays clean (sync already ran), but a crashed lint
+        # The exit code stays clean (any sync already ran), but a crashed lint
         # pass must not read as a clean one: silence here meant "no findings".
         click.echo(
             f"⚠ WARNING: advisory lint pass after render failed — findings "
