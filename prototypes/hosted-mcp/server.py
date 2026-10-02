@@ -1714,6 +1714,13 @@ def pull_spine_element(
 ) -> dict[str, Any]:
     """Pull one spine element's body + metadata, under the caller's identity.
 
+    AGREEMENT elements are projections: the stored body carries only the
+    human-authored terms, and this pull appends the live engagement shape
+    (phases, deliverables, dates, done-marks) from the estimator
+    (`derived_block: true`). Deliverables/dates edited in the estimate are
+    instantly true here — never retype them into the element. A failed read
+    sets `derived_block: false` and names itself in `warnings`.
+
     Args:
         element_id: `spine_substance.est_item_id` (e.g. "_authored/janet-dossier")
                     or the row's own `id`. Exact match only on this server —
@@ -1777,7 +1784,7 @@ def pull_spine_element(
     # The status is the element's HOME project's (`row.project_id`), not the
     # optional scope's: an account element reached from a live sibling still
     # belongs to the project it was written on (#279).
-    return _with_project_status({
+    result: dict[str, Any] = {
         "element_id": element_id,
         "caller": caller_subject(),
         "slug": row.get("est_item_id"),
@@ -1799,7 +1806,67 @@ def pull_spine_element(
         "body": row.get("body"),
         "versions_visible": len(rows),
         **_provenance_fields(row),
-    }, client, row.get("project_id"), row.get("project_code"))
+    }
+    if (row.get("layer") or "").lower() == "agreement" and row.get("project_id"):
+        _compose_agreement_projection(result, client, row.get("project_id"))
+    return _with_project_status(
+        result, client, row.get("project_id"), row.get("project_code"))
+
+
+def _compose_agreement_projection(
+    result: dict[str, Any], client, project_id: str,
+) -> None:
+    """Append the live engagement shape to an Agreement element's body.
+
+    The stored body carries only the human-authored terms; phases,
+    deliverables, dates and done-marks come from the estimator at read time
+    (`derived_block: true`), so an estimate edit is instantly true here. The
+    engine's `agreement_projection` renders it — the retired stdio pull's
+    behaviour, ported. Fail-soft but loud: a missing estimate (initiatives,
+    pre-estimate deals) is no block; a failed read is `derived_block: false`
+    plus a warning, never a stored body passing for the composed one.
+    """
+    try:
+        from cp_engine.agreement_projection import (
+            drift_warnings, render_engagement_block, sow_attach_nudge,
+        )
+        from cp_engine.estimate import fetch_estimate, fetch_schedule
+        from cp_engine.project_sources import list_project_meetings, list_sources
+
+        est = fetch_estimate(client, project_id)
+        if est is not None:
+            bars = fetch_schedule(client, est.estimate_ids)
+            # Drift is best-effort within the block: a meetings failure just
+            # means the meeting-divergence rule did not run.
+            try:
+                meetings = list_project_meetings(client, project_id)
+            except Exception as exc:  # noqa: BLE001
+                meetings = []
+                result.setdefault("warnings", []).append(
+                    "meetings read failed — the meeting-divergence drift rule "
+                    f"did not run: {type(exc).__name__}: {exc}"
+                )
+            drift = drift_warnings(est, bars, meetings, today=tenant_today())
+            result["body"] = (result.get("body") or "") + "\n\n" + \
+                render_engagement_block(est, bars, drift=drift)
+            result["derived_block"] = True
+            if drift:
+                result["drift_warnings"] = drift
+        company_id = resolve_company_id(client, project_id)
+        if not result.get("sources") and company_id:
+            nudge = sow_attach_nudge(list_sources(client, project_id, company_id))
+            if nudge:
+                result["attach_nudge"] = nudge
+    except Exception as exc:  # noqa: BLE001 — projection is best-effort
+        if result.get("derived_block"):
+            what = "engagement block composed, but the SOW-attach check failed"
+        else:
+            result["derived_block"] = False
+            what = ("engagement-shape projection failed — body holds the "
+                    "stored terms only, NOT the live phases/deliverables/dates")
+        result.setdefault("warnings", []).append(
+            f"{what}: {type(exc).__name__}: {exc}"
+        )
 
 
 def _provenance_fields(row: dict[str, Any]) -> dict[str, Any]:
