@@ -1127,7 +1127,7 @@ def _sync_tenant_inner(
 
     # Deactivation sweep — any live working dir whose code isn't in
     # `live_dirs` represents a project that fell out of sync's view (MC-2
-    # status flipped, deleted, or is_internal=true). Move the whole
+    # status flipped to Archived, or deleted). Move the whole
     # working dir to <scope>/inactive/<dir_slug>/. Reactivation is
     # symmetric: a live dir matching an inactive one gets restored.
     files_deactivated = (

@@ -82,9 +82,7 @@ class _Query:
 
 
 class _Client:
-    """`tables` maps name → rows. Rows carry whatever keys the schema has;
-    the probe reads `parent_id` off the first `projects` row, exactly as
-    PostgREST returns `parent_id: null` for a real column."""
+    """`tables` maps name → rows. Rows carry whatever keys the schema has."""
 
     def __init__(self, tables: dict[str, list[dict]]):
         self.tables = tables
@@ -109,13 +107,6 @@ def _cfg():
     return None
 
 
-@pytest.fixture(autouse=True)
-def _fresh_probe():
-    mc2_db._reset_workstream_probe()
-    yield
-    mc2_db._reset_workstream_probe()
-
-
 # ------------------------------------------------------------------ rows
 
 _GGL = {"code": "GGL", "name": "Google", "kind": "client"}
@@ -131,7 +122,6 @@ def _ws(**kw):
         "name": "Go Safety Website",
         "mc_status": "Open",
         "account_manager": "Tony Welch",
-        "is_internal": False,
         "deal_stage": "Won",
         "budget": "146250",
         "updated_at": "2026-09-01T00:00:00+00:00",
@@ -153,7 +143,6 @@ def _internal(**kw):
         name="Mission Control",
         deal_stage=None,
         budget=None,
-        is_internal=True,
         companies=_FP,
     )
     base.update(kw)
@@ -163,25 +152,10 @@ def _internal(**kw):
 # ------------------------------------------------------------------ probe
 
 
-def test_probe_reads_workstream_when_parent_id_present_even_if_null():
-    c = _Client({"projects": [_ws()]})
-    assert mc2_db.workstream_schema(c) is True
-
-
-def test_probe_is_false_when_parent_id_missing_or_unreachable():
-    """False is a health answer now — a database the engine no longer
-    supports — not a second code path (the legacy reader is gone)."""
-    legacy = _Client({"projects": [{k: v for k, v in _ws().items() if k != "parent_id"}]})
-    assert mc2_db.workstream_schema(legacy) is False
-    down = _Client({})
-    assert mc2_db.workstream_schema(down) is False
-    n = len(down.calls)
-    assert mc2_db.workstream_schema(down) is False
-    assert len(down.calls) == n, "second probe must come from the cache"
-
-
 def test_the_reader_does_not_consult_the_probe():
-    """One stream, unconditionally: no probe select, no schema branch."""
+    """One stream, unconditionally: no probe select, no schema branch. The
+    #300 probe itself was deleted in #306."""
+    assert not hasattr(mc2_db, "workstream_schema")
     c = _Client({"projects": [_ws()]})
     _backend(c).read_projects(_cfg())
     assert [cols for t, cols in c.calls if t == "projects" and cols == "id, parent_id"] == []
@@ -294,7 +268,7 @@ def test_internal_rows_come_through_as_mc2_stores_them():
     assert s.code == "1pi-9005-mission-control"
     assert s.mc2_id == "i-mc"  # the initiative uuid survives the merge
     assert s.status == "Holding"  # the real mc_status, not "On hold"
-    assert s.is_internal is True  # as stored; gates nothing any more
+    assert not hasattr(s, "is_internal")  # never read (#306)
     assert s.company_kind == "self-fpsf"
     assert s.has_agreement is False
     assert s.label == "initiative"

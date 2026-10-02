@@ -65,7 +65,6 @@ def make_state(
     code: str = "ggl-5168",
     name: str = "Playbooks (Activation)",
     status: str = "Open",
-    is_internal: bool = False,
     days_ago: int | None = 1,
     summary: str | None = "Storyboards in flight; client review Wed.",
     has_agreement: bool = True,
@@ -87,7 +86,6 @@ def make_state(
         company_code="GGL",
         company_name="Google",
         status=status,
-        is_internal=is_internal,
         owner="drew",
         last_touched=last_touched,
         deadline=None,
@@ -108,7 +106,7 @@ def test_master_cp_includes_only_active_projects() -> None:
         make_state("ggl-9999", "Holding Project", "Holding"),
         make_state("ggl-1111", "Closed Project", "Closed"),
         make_state("ggl-2222", "Archived Project", "Archived"),
-        make_state("ggl-3333", "Internal Project", "Open", is_internal=True),
+        make_state("ggl-3333", "Internal Project", "Open"),
     )
 
     out = render_master_cp(tenant, projects, last_sync=datetime.now(timezone.utc))
@@ -837,7 +835,6 @@ def test_master_cp_section_summary_uses_count_and_state_phrase() -> None:
             company_code="GGL",
             company_name="Google",
             status="Deal",
-            is_internal=False,
             owner="drew",
             last_touched=None,
             deadline=None,
@@ -953,19 +950,19 @@ def test_slack_rollup_extracts_latest_bullet_per_project(tmp_path: Path) -> None
         ProjectState(
             code="ggl-5168", name="GGL 5168 Activation", has_agreement=True,
             company_kind="client", company_code="GGL", company_name="Google",
-            status="Open", is_internal=False, owner="Brandon",
+            status="Open", owner="Brandon",
             last_touched=None, deadline=None,
         ),
         ProjectState(
             code="ibx-5153", name="IBX 5153 AI Campaign", has_agreement=True,
             company_kind="client", company_code="IBX", company_name="Infoblox",
-            status="Open", is_internal=False, owner="Drew",
+            status="Open", owner="Drew",
             last_touched=None, deadline=None,
         ),
         ProjectState(
             code="sap-5171", name="SAP 5171 Display Ads 26", has_agreement=True,
             company_kind="client", company_code="SAP", company_name="SAP",
-            status="Open", is_internal=False, owner="Drew",
+            status="Open", owner="Drew",
             last_touched=None, deadline=None,
         ),
     ]
@@ -999,7 +996,7 @@ def test_slack_rollup_returns_none_when_no_projects_have_digests(
         ProjectState(
             code="ggl-5168", name="x", has_agreement=True,
             company_kind="client", company_code="GGL", company_name="Google",
-            status="Open", is_internal=False, owner=None,
+            status="Open", owner=None,
             last_touched=None, deadline=None,
         ),
     ]
@@ -1016,7 +1013,7 @@ def test_slack_rollup_returns_none_when_sprint_dir_missing(
         ProjectState(
             code="ggl-5168", name="x", has_agreement=True,
             company_kind="client", company_code="GGL", company_name="Google",
-            status="Open", is_internal=False, owner=None,
+            status="Open", owner=None,
             last_touched=None, deadline=None,
         ),
     ]
@@ -1045,7 +1042,7 @@ def test_slack_rollup_takes_last_bullet_when_multiple_for_same_week(
         ProjectState(
             code="ggl-5168", name="x", has_agreement=True,
             company_kind="client", company_code="GGL", company_name="Google",
-            status="Open", is_internal=False, owner=None,
+            status="Open", owner=None,
             last_touched=None, deadline=None,
         ),
     ]

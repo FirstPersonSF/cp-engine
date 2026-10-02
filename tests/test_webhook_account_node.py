@@ -39,7 +39,7 @@ def _ws(code, name, *, label=None, parent_code=None, has_agreement=True,
         company_code="GGL", company_name="Google", status="Open"):
     return ProjectState(
         code=code, name=name, company_kind="client", company_code=company_code,
-        company_name=company_name, status=status, is_internal=False, owner="Drew",
+        company_name=company_name, status=status, owner="Drew",
         last_touched=datetime(2026, 9, 24, tzinfo=timezone.utc), deadline=None,
         parent_code=parent_code, has_agreement=has_agreement, label=label,
     )

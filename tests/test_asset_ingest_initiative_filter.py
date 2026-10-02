@@ -20,7 +20,6 @@ def _state(
     has_agreement: bool,
     status: str,
     company_kind: str = "client",
-    is_internal: bool = False,
 ) -> ProjectState:
     return ProjectState(
         code=code,
@@ -30,7 +29,6 @@ def _state(
         company_code="GGL",
         company_name="Google",
         status=status,
-        is_internal=is_internal,
         owner="drew",
         last_touched=datetime(2026, 6, 20, tzinfo=timezone.utc),
         deadline=None,
@@ -89,7 +87,7 @@ def test_active_engagement_still_ingestable(monkeypatch):
             # INCLUDED since #301: `is_internal` is MC-2's flag as stored and
             # gates nothing — the internal workstreams carry it and deserve
             # ingest like any other active workstream.
-            _state("int-1", has_agreement=True, status="Open", is_internal=True),
+            _state("int-1", has_agreement=True, status="Open"),
         ],
     )
     codes = asset_ingest_cli.active_ingestable_codes(_config())

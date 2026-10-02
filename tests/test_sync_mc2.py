@@ -107,7 +107,6 @@ def test_engagement_row_to_state_happy_path() -> None:
         "name": "Playbooks (Activation)",
         "mc_status": "Open",
         "account_manager": "Drew Fiero",
-        "is_internal": False,
         "deal_stage": "Won",
         "budget": "150000",
         "updated_at": "2026-05-07T16:14:34.123456+00:00",
@@ -122,7 +121,6 @@ def test_engagement_row_to_state_happy_path() -> None:
     assert state.name == "GGL 5168 Playbooks"
     assert state.status == "Open"
     assert state.owner == "Drew Fiero"
-    assert state.is_internal is False
     assert state.deal_stage == "Won"
     assert state.budget == 150000.0
     assert state.last_touched == datetime(
@@ -138,7 +136,6 @@ def test_engagement_row_to_state_legacy_row_without_company() -> None:
         "name": "SentinelOne 5107",
         "mc_status": "Deal",
         "account_manager": None,
-        "is_internal": False,
         "deal_stage": None,
         "budget": None,
         "updated_at": None,
@@ -158,7 +155,6 @@ def test_engagement_row_to_state_falls_back_to_name_when_full_job_name_missing()
         "name": "Just the project name",
         "mc_status": "Open",
         "account_manager": None,
-        "is_internal": False,
         "updated_at": None,
     }
     state = _engagement_row_to_state(row)
@@ -172,24 +168,11 @@ def test_engagement_row_to_state_settles_for_empty_name_when_both_null() -> None
         "full_job_name": None,
         "name": None,
         "mc_status": "Open",
-        "is_internal": False,
         "updated_at": None,
     }
     state = _engagement_row_to_state(row)
     assert state.name == ""
 
-
-def test_engagement_row_to_state_internal_flag_coerces_to_bool() -> None:
-    row = {
-        "number": 1,
-        "companies": {"code": "X", "kind": "client"},
-        "full_job_name": "X",
-        "name": "X",
-        "mc_status": "Open",
-        "is_internal": 1,
-        "updated_at": None,
-    }
-    assert _engagement_row_to_state(row).is_internal is True
 
 def test_parse_numeric_handles_string_and_float() -> None:
     assert _parse_numeric("150000") == 150000.0
@@ -470,7 +453,6 @@ def test_engagement_row_to_state_populates_linked_repos() -> None:
         "name": "go/safety",
         "mc_status": "Open",
         "account_manager": "Brandon Grande",
-        "is_internal": False,
         "deal_stage": "Won",
         "budget": "0",
         "updated_at": "2026-05-07T16:14:34+00:00",
@@ -496,7 +478,6 @@ def test_engagement_row_to_state_empty_linked_repos_when_no_join() -> None:
         "full_job_name": "GGL 5188 Calendar",
         "name": "Calendar",
         "mc_status": "Open",
-        "is_internal": False,
         "updated_at": "2026-05-07T16:14:34+00:00",
         # no `repos` key — tests that absent join doesn't crash
     }

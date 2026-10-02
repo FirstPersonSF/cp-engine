@@ -110,7 +110,6 @@ def _state(
         company_code=company_code,
         company_name=company_name,
         status=status,
-        is_internal=False,
         owner="drew",
         last_touched=datetime(2026, 5, 20, tzinfo=timezone.utc),
         deadline=None,
@@ -129,7 +128,6 @@ def _account(code: str, company_code: str, company_name: str) -> ProjectState:
         company_code=company_code,
         company_name=company_name,
         status="Open",
-        is_internal=False,
         owner="drew",
         last_touched=datetime(2026, 5, 20, tzinfo=timezone.utc),
         deadline=None,
@@ -445,7 +443,7 @@ def test_inactive_dirs_route_to_per_account_inactive(tmp_path: Path) -> None:
         code="hex-5184", name="Internal Thing", has_agreement=True,  # type: ignore[arg-type]
         company_kind="client",  # type: ignore[arg-type]
         company_code="HEX", company_name="Hexagon",
-        status="Open", is_internal=True, owner="drew",
+        status="Open", owner="drew",
         last_touched=datetime(2026, 5, 20, tzinfo=timezone.utc),
         deadline=None,
     )

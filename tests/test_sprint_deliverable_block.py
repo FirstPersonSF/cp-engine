@@ -10,7 +10,7 @@ def _project(has_agreement=True, company_kind="client"):
     return ProjectState(
         code="sap-5174", name="Vision Update 2026", has_agreement=has_agreement,
         company_kind=company_kind, company_code="SAP", company_name="SAP Concur",
-        status="Open", is_internal=False, owner="drew",
+        status="Open", owner="drew",
         last_touched=datetime(2026, 7, 11, tzinfo=timezone.utc),
         deadline=None,
     )

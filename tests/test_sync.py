@@ -101,7 +101,6 @@ def make_state(
     code: str = "mc-2",
     name: str | None = None,
     status: str = "Open",
-    is_internal: bool = False,
     summary: str | None = None,
     has_agreement: bool = True,
     company_kind: str = "client",
@@ -124,7 +123,6 @@ def make_state(
         company_code=company_code,
         company_name=company_name,
         status=status,
-        is_internal=is_internal,
         owner="drew",
         last_touched=datetime(2026, 5, 7, tzinfo=timezone.utc),
         deadline=None,
@@ -525,7 +523,7 @@ def test_sync_with_mixed_statuses_renders_correct_subtables(tmp_path: Path) -> N
             make_state(code="hold-1", name="Held one", status="Holding"),
             make_state(code="closed-1", name="Closed one", status="Closed"),
             make_state(
-                code="internal-1", name="Internal one", status="Open", is_internal=True
+                code="internal-1", name="Internal one", status="Open"
             ),
         )
     )
@@ -745,7 +743,6 @@ def test_mixed_scopes_land_under_correct_dirs(tmp_path: Path) -> None:
                 company_kind="self-fpsf",
                 has_agreement=False,
                 status="Open",
-                is_internal=True,
             ),
             make_state(
                 code="cnc-9004-storyos",
@@ -753,7 +750,6 @@ def test_mixed_scopes_land_under_correct_dirs(tmp_path: Path) -> None:
                 company_kind="self-canonic",
                 has_agreement=False,
                 status="Open",
-                is_internal=True,
             ),
         )
     )
@@ -823,7 +819,6 @@ def test_dropbox_md_scaffolded_when_url_present(tmp_path: Path) -> None:
         company_code="GGL",
         company_name="Google",
         status="Open",
-        is_internal=False,
         owner="drew",
         last_touched=datetime(2026, 5, 7, tzinfo=timezone.utc),
         deadline=None,
@@ -865,7 +860,6 @@ def test_dropbox_md_re_renders_on_url_change(tmp_path: Path) -> None:
             company_code=None,
             company_name=None,
             status="Open",
-            is_internal=False,
             owner=None,
             last_touched=datetime(2026, 5, 7, tzinfo=timezone.utc),
             deadline=None,
@@ -1267,7 +1261,6 @@ def test_sync_tenant_writes_sprint_files_for_active_projects(tmp_path: Path) -> 
                 code="internal-1",
                 name="Internal one",
                 status="Open",
-                is_internal=True,
             ),
             # FPSF internal workstream: no agreement, Open → written
             make_state(
@@ -1276,7 +1269,6 @@ def test_sync_tenant_writes_sprint_files_for_active_projects(tmp_path: Path) -> 
                 has_agreement=False,
                 company_kind="self-fpsf",
                 status="Open",
-                is_internal=True,
             ),
             # Canonic workstream: same shape, different company_kind → written
             make_state(
@@ -1285,7 +1277,6 @@ def test_sync_tenant_writes_sprint_files_for_active_projects(tmp_path: Path) -> 
                 has_agreement=False,
                 company_kind="self-canonic",
                 status="Open",
-                is_internal=True,
             ),
             # Holding internal workstream → no sprint file
             make_state(
@@ -1294,7 +1285,6 @@ def test_sync_tenant_writes_sprint_files_for_active_projects(tmp_path: Path) -> 
                 has_agreement=False,
                 company_kind="self-fpsf",
                 status="Holding",
-                is_internal=True,
             ),
         )
     )
@@ -1348,7 +1338,6 @@ def test_linked_repo_md_includes_local_clone_paths_per_user(tmp_path: Path) -> N
             has_agreement=False,
             company_kind="self-fpsf",
             status="Open",
-            is_internal=True,
         ),
         linked_repos=(
             LinkedRepo(repo_name="mc-2", github_org="FirstPersonSF", status="Active"),

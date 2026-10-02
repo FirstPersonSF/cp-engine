@@ -65,7 +65,6 @@ def make_state(
         company_code=company_code,
         company_name=company_name,
         status=status,
-        is_internal=False,
         owner=owner,
         last_touched=datetime(2026, 6, 1, tzinfo=timezone.utc),
         deadline=None,

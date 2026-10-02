@@ -70,7 +70,6 @@ def make_state(
     status: str = "Open",
     has_agreement: bool = True,
     owner: str = "drew",
-    is_internal: bool = False,
 ) -> ProjectState:
     return ProjectState(
         code=code,
@@ -80,7 +79,6 @@ def make_state(
         company_code=company_code,
         company_name=company_name,
         status=status,
-        is_internal=is_internal,
         owner=owner,
         last_touched=datetime(2026, 6, 1, tzinfo=timezone.utc),
         deadline=None,

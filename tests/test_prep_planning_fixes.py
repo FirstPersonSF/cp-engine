@@ -228,7 +228,6 @@ def _by_project(entries_by_code: dict[str, list[str]]) -> dict:
     return {
         code: ProjectAllocation(
             project_code=code,
-            is_internal=False,
             entries=tuple(
                 PersonHours(person_name=n, hours=8.0) for n in names
             ),

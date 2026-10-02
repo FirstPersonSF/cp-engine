@@ -211,7 +211,7 @@ def list_channel_map(config: TenantConfig) -> list[ChannelMapRow]:
 
     out: list[ChannelMapRow] = []
     # Internal workstreams (Mission Control, StoryOS, …) are `projects` rows
-    # with `is_internal=True` and real Slack channels (#301) — nothing is
+    # with real Slack channels (#301) — nothing is
     # skipped on that flag.
     for row in engagement_rows:
         company = row.get("companies") or {}

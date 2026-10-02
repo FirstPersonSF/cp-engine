@@ -2396,7 +2396,7 @@ def _render_current_template_sprint_file(has_agreement: bool = True) -> str:
             code="1pi-9005-mission-control", name="Mission Control",
             has_agreement=False, company_kind="self-fpsf",
             company_code="1PI", company_name="First Person",
-            status="Open", is_internal=True, owner="Tony",
+            status="Open", owner="Tony",
             last_touched=None, deadline=None,
         )
     else:
@@ -2404,7 +2404,7 @@ def _render_current_template_sprint_file(has_agreement: bool = True) -> str:
             code="ggl-5168", name="GGL Activation",
             has_agreement=True, company_kind="client",
             company_code="GGL", company_name="Google",
-            status="Open", is_internal=False, owner="Drew",
+            status="Open", owner="Drew",
             last_touched=None, deadline=None,
         )
     return render_sprint_scaffold(

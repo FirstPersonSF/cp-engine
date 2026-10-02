@@ -89,7 +89,6 @@ def make_engagement(
     summary: str | None = None,
     budget: float | None = None,
     dropbox_folder_url: str | None = None,
-    is_internal: bool = False,
     mc2_id: str | None = None,
 ) -> ProjectState:
     return ProjectState(
@@ -100,7 +99,6 @@ def make_engagement(
         company_code=company_code,
         company_name=company_name,
         status=status,
-        is_internal=is_internal,
         owner=owner,
         last_touched=last_touched,
         deadline=None,
@@ -132,7 +130,6 @@ def make_initiative(
         company_code=company_code,
         company_name=company_name,
         status=status,
-        is_internal=True,
         owner=owner,
         last_touched=_TOUCHED_YESTERDAY,
         deadline=None,
@@ -226,8 +223,8 @@ def _mixed_population() -> tuple[ProjectState, ...]:
             company_code="IBX", company_name="Infoblox",
             last_touched=_TOUCHED_LAST_WEEK,
         ),
-        # A client row carrying `is_internal` renders; archived does not.
-        make_engagement("ggl-9998", "Internal Scratch", is_internal=True),
+        # Any non-archived client row renders; archived does not.
+        make_engagement("ggl-9998", "Internal Scratch"),
         make_engagement("ggl-9999", "Old Archived Thing", status="Archived"),
         # Internal workstreams (merged codes, mc-2 mig 192), both scopes;
         # Holding must not surface.
@@ -287,7 +284,6 @@ def _allocations() -> WeeklyAllocations:
         by_project={
             "ggl-5168": ProjectAllocation(
                 project_code="ggl-5168",
-                is_internal=False,
                 entries=(
                     PersonHours(person_name="Drew Fiero", hours=6.0),
                     PersonHours(person_name="Tony Rossi", hours=2.5),
@@ -295,7 +291,6 @@ def _allocations() -> WeeklyAllocations:
             ),
             "ibx-5153": ProjectAllocation(
                 project_code="ibx-5153",
-                is_internal=False,
                 entries=(PersonHours(person_name="Tony Rossi", hours=8.0),),
             ),
         },

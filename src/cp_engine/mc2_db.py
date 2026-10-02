@@ -114,7 +114,7 @@ class Tables:
 # `projects` rows with `deal_stage IS NULL`, repos hang off `project_id`.
 PROJECTS_SYNC_COLUMNS = (
     "id, number, full_job_name, name, mc_status, account_manager, "
-    "is_internal, deal_stage, budget, dropbox_folder_url, updated_at, "
+    "deal_stage, budget, dropbox_folder_url, updated_at, "
     "parent_id, companies(code, name, kind), "
     "repos!project_id(repo_name, status, description, github_orgs!inner(name))"
 )
@@ -123,7 +123,7 @@ PROJECTS_SYNC_COLUMNS = (
 # Channel ids come from project_integrations bindings (read-flip; the flat
 # slack columns are being retired) — `id` is here so the map can join them.
 PROJECTS_SLACK_COLUMNS = (
-    "id, number, name, mc_status, is_internal, enable_slack, "
+    "id, number, name, mc_status, enable_slack, "
     "full_job_name, companies!inner(code)"
 )
 
@@ -1221,52 +1221,15 @@ def canonical_spine_code(
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  Workstream-schema probe (#300) and the owner-column helpers
+#  Owner-column helpers
 # ──────────────────────────────────────────────────────────────────────
 #
-# mc-2 migration 190 added `projects.parent_id`, 192 merged the old
-# `initiatives` rows into `projects`, 194 retired that table. The reader
-# handled both shapes through v0.123.x; since #301 the workstream schema is
-# the ONLY schema and every owner-scoped table has exactly one owner column,
-# `project_id`. The probe stays as a health question ("is this the database
-# we expect?") and the two helpers stay so call sites keep one spelling of
-# the owner column. Cached per client object; `_reset_workstream_probe()`
-# for tests.
-
-_WORKSTREAM_PROBE: dict[int, bool] = {}
+# Since #301 every owner-scoped table has exactly one owner column,
+# `project_id`. The two helpers stay so call sites keep one spelling of it.
+# (The #300 `parent_id` schema probe was deleted in #306: the live database
+# carries `parent_id` everywhere and nothing called it.)
 
 OWNER_COLUMN = "project_id"
-
-
-def workstream_schema(client) -> bool:
-    """True when MC-2 carries `projects.parent_id` (the workstream schema).
-
-    One `select id, parent_id ... limit 1` per client; PostgREST answers an
-    unknown column with an APIError (42703). False now means a database the
-    engine no longer supports, not a second code path.
-    """
-    key = id(client)
-    cached = _WORKSTREAM_PROBE.get(key)
-    if cached is not None:
-        return cached
-    try:
-        rows = (
-            client.table(Tables.PROJECTS).select("id, parent_id").limit(1).execute().data
-            or []
-        )
-        # The KEY must come back, not just a row: PostgREST returns
-        # `parent_id: null` for a real column, and a fake that ignores the
-        # column list returns rows without it.
-        present = bool(rows) and isinstance(rows[0], dict) and "parent_id" in rows[0]
-    except Exception:  # noqa: BLE001 — unreachable or unknown column: not the expected shape
-        present = False
-    _WORKSTREAM_PROBE[key] = present
-    return present
-
-
-def _reset_workstream_probe() -> None:
-    """Forget cached probe answers (tests, and long-lived processes)."""
-    _WORKSTREAM_PROBE.clear()
 
 
 def owner_columns(client) -> str:

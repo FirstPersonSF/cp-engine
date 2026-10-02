@@ -395,11 +395,6 @@ class ProjectState:
     # (Deal | Open | Holding | Closed | Archived). Active = Deal ∪ Open.
     status: str
 
-    # MC-2's flag as stored. Internal workstreams carry True; it gates
-    # NOTHING in the engine any more (they deserve working dirs like every
-    # other workstream) and is kept for the allocation rollup's
-    # engagement-vs-internal hours split.
-    is_internal: bool
     owner: str | None
     last_touched: datetime | None
     deadline: datetime | None  # not tracked yet for either source
@@ -683,7 +678,6 @@ class ProjectAllocation:
     """All allocations for one project in one week, sorted by hours desc."""
 
     project_code: str  # canonical id (matches ProjectState.code)
-    is_internal: bool  # excludes from per-row rendering, included in per-person rollup
     entries: tuple[PersonHours, ...]
 
     @property

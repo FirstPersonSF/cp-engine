@@ -48,7 +48,6 @@ def _make_state(code: str, company_kind: str = "client") -> ProjectState:
         company_code=None,
         company_name=None,
         status="Open",
-        is_internal=False,
         owner=None,
         last_touched=datetime(2026, 5, 7, tzinfo=timezone.utc),
         deadline=None,

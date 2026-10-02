@@ -263,7 +263,7 @@ def _planning_inputs(tmp_path: Path):
     state = ProjectState(
         code="ggl-5188-calendar-maintenance", name="Calendar maintenance",
         has_agreement=True, company_kind="client", company_code="GGL",
-        company_name="Google", status="Open", is_internal=False,
+        company_name="Google", status="Open",
         owner="drew", last_touched=None, deadline=None,
     )
     return config, state

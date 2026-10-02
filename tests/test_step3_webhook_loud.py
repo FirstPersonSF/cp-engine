@@ -227,7 +227,7 @@ def account_stubs(monkeypatch, tmp_path):
     def ws(code, label=None, parent=None, agreement=True):
         return ProjectState(
             code=code, name=code, company_kind="client", company_code="GGL",
-            company_name="Google", status="Open", is_internal=False, owner="Drew",
+            company_name="Google", status="Open", owner="Drew",
             last_touched=datetime(2026, 9, 24, tzinfo=timezone.utc), deadline=None,
             parent_code=parent, has_agreement=agreement, label=label,
         )

@@ -82,7 +82,7 @@ PROJECTS = [
     {"number": 5136, "companies": {"code": "GGL"}},
     {"number": 5153, "companies": {"code": "IBX"}},
     # An internal workstream: a `projects` row like any other (mig 192).
-    {"number": 9005, "companies": {"code": "1PI"}, "is_internal": True},
+    {"number": 9005, "companies": {"code": "1PI"}},
 ]
 
 
@@ -190,12 +190,12 @@ def test_endpoint_validates_body(client, monkeypatch):
 # ── internal rows index like any other (#221 retired by #301) ────────
 
 INTERNAL_PROJECTS = [
-    {"number": 5136, "companies": {"code": "GGL"}, "is_internal": False},
+    {"number": 5136, "companies": {"code": "GGL"}},
     # Under the legacy schema this row duplicated the `storyos` initiative
     # and had no working dir, so #221 skipped it. mc-2 mig 192 merged the
     # initiative INTO this row (keeping the initiative uuid) — it is now
     # the one home for StoryOS, with a working dir at `cnc-9004-storyos/`.
-    {"number": 9004, "companies": {"code": "CNC"}, "is_internal": True},
+    {"number": 9004, "companies": {"code": "CNC"}},
 ]
 
 

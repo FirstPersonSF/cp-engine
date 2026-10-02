@@ -29,7 +29,6 @@ def _fixture_project(
     code: str = "peb",
     status: str = "Open",
     has_agreement: bool = True,
-    is_internal: bool = False,
     company_kind: str = "client",
 ) -> ProjectState:
     """Reusable ProjectState for sprint-file tests.
@@ -52,7 +51,6 @@ def _fixture_project(
         company_code="PEB",
         company_name="Pebble Foods",
         status=status,
-        is_internal=is_internal,
         owner="Drew",
         last_touched=None,
         deadline=None,
@@ -361,7 +359,6 @@ def test_render_sprint_scaffold_round_trips_through_parser(tmp_path: Path) -> No
         company_code="PEB",
         company_name="Pebble Foods",
         status="Deal",
-        is_internal=False,
         owner="Drew",
         last_touched=None,
         deadline=None,
@@ -646,15 +643,15 @@ def test_ensure_sprint_files_includes_repo_source_active_projects(tmp_path) -> N
     engagement = _fixture_project(code="peb", status="Open")
     fpsf_repo = _fixture_project(
         code="mc-2", status="Open", has_agreement=False,
-        is_internal=True, company_kind="self-fpsf",
+        company_kind="self-fpsf",
     )
     canonic_repo = _fixture_project(
         code="storyos", status="Open", has_agreement=False,
-        is_internal=True, company_kind="self-canonic",
+        company_kind="self-canonic",
     )
     inactive_repo = _fixture_project(
         code="lns", status="Holding", has_agreement=False,
-        is_internal=True, company_kind="self-fpsf",
+        company_kind="self-fpsf",
     )
     paths = ensure_sprint_files_for_active_projects(
         active_projects=(engagement, fpsf_repo, canonic_repo, inactive_repo),
@@ -858,7 +855,6 @@ def _scaffold_project() -> ProjectState:
         company_code="GGL",
         company_name="Google",
         status="Deal",
-        is_internal=False,
         owner="Drew",
         last_touched=None,
         deadline=None,
@@ -1163,7 +1159,6 @@ def test_initiative_scaffold_placeholders_are_html_comments() -> None:
         company_code="1PI",
         company_name="First Person",
         status="Active",
-        is_internal=True,
         owner="Tony",
         last_touched=None,
         deadline=None,

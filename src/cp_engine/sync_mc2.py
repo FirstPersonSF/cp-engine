@@ -92,7 +92,7 @@ class MC2Backend:
             .select(
                 "hours, "
                 "entities!inner(name), "
-                "projects!inner(number, full_job_name, is_internal, companies(code))"
+                "projects!inner(number, full_job_name, companies(code, kind))"
             )
             .eq("week_start", week_start)
             .execute()
@@ -100,9 +100,14 @@ class MC2Backend:
             or []
         )
 
-        # Group by project (canonical id) and by person.
+        # Group by project (canonical id) and by person. Every workstream
+        # gets its own per-project row (#306 — internal hours too). The
+        # rollup's engagement-vs-internal split derives from the company
+        # kind, never from `projects.is_internal` (the engine does not read
+        # that column; mc-2 drops it): First Person's own company
+        # (`self-fpsf`) is internal admin, client and Canonic work is
+        # engagement.
         by_project_raw: dict[str, dict[str, float]] = {}  # code -> {person -> hours}
-        is_internal_by_project: dict[str, bool] = {}
         person_engagement: dict[str, float] = {}
         person_engagement_projects: dict[str, set[str]] = {}
         person_internal: dict[str, float] = {}
@@ -117,25 +122,16 @@ class MC2Backend:
             if not person or number is None:
                 continue
             code = _canonical_id_from_project_join(project)
-            is_internal = bool(project.get("is_internal", False))
+            internal = _is_internal_admin(project)
             try:
                 hours = float(row["hours"])
             except (TypeError, ValueError, KeyError):
                 continue
 
-            # Per-project (skip internal — they don't render per-row, but we
-            # still feed them into per-person rollup below).
-            if not is_internal:
-                by_project_raw.setdefault(code, {})
-                by_project_raw[code][person] = by_project_raw[code].get(person, 0.0) + hours
-                is_internal_by_project[code] = False
-            else:
-                # Per-project entries for internal projects are not surfaced
-                # in by_project (they're rolled into the per-person summary).
-                pass
+            by_project_raw.setdefault(code, {})
+            by_project_raw[code][person] = by_project_raw[code].get(person, 0.0) + hours
 
-            # Per-person rollup: split engagement vs internal.
-            if is_internal:
+            if internal:
                 person_internal[person] = person_internal.get(person, 0.0) + hours
             else:
                 person_engagement[person] = person_engagement.get(person, 0.0) + hours
@@ -150,11 +146,7 @@ class MC2Backend:
                     key=lambda e: (-e.hours, e.person_name),
                 )
             )
-            by_project[code] = ProjectAllocation(
-                project_code=code,
-                is_internal=is_internal_by_project.get(code, False),
-                entries=entries,
-            )
+            by_project[code] = ProjectAllocation(project_code=code, entries=entries)
 
         # Build PersonRollup list (sorted by total hours desc).
         all_people = set(person_engagement.keys()) | set(person_internal.keys())
@@ -243,7 +235,6 @@ def _engagement_row_to_state(row: dict) -> ProjectState:
         company_code=company.get("code"),
         company_name=company.get("name"),
         status=row["mc_status"],
-        is_internal=bool(row.get("is_internal", False)),
         owner=row.get("account_manager") or None,
         last_touched=_parse_iso(row.get("updated_at")),
         deadline=None,
@@ -287,8 +278,8 @@ def workstream_rows_to_states(rows: list[dict]) -> tuple[ProjectState, ...]:
     the non-Archived read leaves `parent_code=None`; that is a parent that
     is itself archived, and the child renders at the top of its company).
     Internal workstreams come through exactly as MC-2 stores them — real
-    `mc_status`, `is_internal=True` — and nothing downstream maps or gates
-    on either. **Account nodes** come through too (#302), labelled
+    `mc_status` — and nothing downstream maps or gates on it; the engine
+    never reads `projects.is_internal` (#306). **Account nodes** come through too (#302), labelled
     `account`; sync gives them the existing `1p/<company>/` dir.
     """
     from dataclasses import replace
@@ -370,6 +361,20 @@ def _engagement_canonical_id(row: dict) -> str:
     company = row.get("companies") or {}
     prefix = (company.get("code") or "").strip().lower() if isinstance(company, dict) else ""
     return f"{prefix}-{number}" if prefix else str(number)
+
+
+# The company kind whose hours count as internal admin in the per-person
+# rollup. Matches the live split `projects.is_internal` encoded (2026-10-01:
+# the 7 `self-fpsf` rows were the only is_internal=true rows; StoryOS and
+# SOC 2 under Canonic are false).
+_INTERNAL_ADMIN_KIND = "self-fpsf"
+
+
+def _is_internal_admin(project: dict) -> bool:
+    company = project.get("companies") or {}
+    if not isinstance(company, dict):
+        return False
+    return company.get("kind") == _INTERNAL_ADMIN_KIND
 
 
 def _canonical_id_from_project_join(project: dict) -> str:

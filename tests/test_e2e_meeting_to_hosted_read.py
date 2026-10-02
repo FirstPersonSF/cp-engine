@@ -147,7 +147,7 @@ _COMPANY = {"code": "GGL", "name": "Google", "kind": "client"}
 
 def _project_row(pid, number, full, name, *, parent=None, deal_stage=None, **kw):
     return {"id": pid, "number": number, "full_job_name": full, "name": name,
-            "mc_status": "Open", "account_manager": "Drew", "is_internal": False,
+            "mc_status": "Open", "account_manager": "Drew",
             "deal_stage": deal_stage, "budget": None, "dropbox_folder_url": None,
             "updated_at": "2026-09-20T00:00:00+00:00", "parent_id": parent,
             "company_id": CO_ID, "companies": dict(_COMPANY), "repos": [],

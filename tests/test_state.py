@@ -85,7 +85,6 @@ def _project_with(*, company_kind: str, company_name: str | None) -> ProjectStat
         company_code="DUM",
         company_name=company_name,
         status="Open",
-        is_internal=False,
         owner=None,
         last_touched=None,
         deadline=None,
@@ -318,7 +317,7 @@ def _ws(code, name, *, label=None, parent_code=None, has_agreement=False,
 
     return ProjectState(
         code=code, name=name, company_kind=company_kind, company_code="GGL",
-        company_name="Google", status="Open", is_internal=False, owner=None,
+        company_name="Google", status="Open", owner=None,
         last_touched=datetime(2026, 9, 24, tzinfo=timezone.utc), deadline=None,
         parent_code=parent_code, has_agreement=has_agreement, label=label,
     )

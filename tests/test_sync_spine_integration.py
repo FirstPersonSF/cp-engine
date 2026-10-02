@@ -74,7 +74,6 @@ def _make_engagement(code: str, mc2_id: str | None = "x") -> ProjectState:
         company_code="GGL",
         company_name="Google",
         status="Open",
-        is_internal=False,
         owner="drew",
         last_touched=datetime(2026, 6, 13, tzinfo=timezone.utc),
         deadline=None,

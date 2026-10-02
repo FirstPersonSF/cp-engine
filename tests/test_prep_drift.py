@@ -14,7 +14,7 @@ def _state(code="ggl-5168", has_agreement=True):
     return ProjectState(
         code=code, name=code, has_agreement=has_agreement, company_kind="client",
         company_code="GGL", company_name="Google", status="Open",
-        is_internal=False, owner="drew",
+        owner="drew",
         last_touched=datetime(2026, 6, 1, tzinfo=timezone.utc),
         deadline=None, one_line_summary=None,
     )

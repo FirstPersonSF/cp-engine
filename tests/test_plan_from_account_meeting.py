@@ -56,7 +56,6 @@ def make_project(
     company_code: str | None = "GGL",
     company_name: str | None = "Google",
     status: str = "Open",
-    is_internal: bool = False,
     summary: str | None = None,
     parent_code: str | None = None,
     label: str | None = None,
@@ -71,7 +70,6 @@ def make_project(
         company_code=company_code,
         company_name=company_name,
         status=status,
-        is_internal=is_internal,
         owner="Drew",
         last_touched=datetime(2026, 5, 12, tzinfo=timezone.utc),
         deadline=None,
@@ -265,7 +263,7 @@ def _population() -> list[ProjectState]:
         # `is_internal` gates nothing since #301: a client-company row that
         # carries the flag is a workstream like any other.
         make_project("ggl-9998", "Internal", parent_code="ggl-5216-google",
-                     status="Open", is_internal=True),
+                     status="Open"),
         make_project("ibx-5217-infoblox", "Infoblox", has_agreement=False, label="account",
                      company_code="IBX", company_name="Infoblox"),
         make_project("ibx-5153", "AI Campaign", company_code="IBX",
@@ -275,17 +273,17 @@ def _population() -> list[ProjectState]:
         make_project(
             "1pi-9005-mission-control", "Mission Control", has_agreement=False,
             company_kind="self-fpsf", company_code="1PI",
-            company_name="First Person", status="Open", is_internal=True,
+            company_name="First Person", status="Open",
         ),
         make_project(
             "1pi-9007-market-scorecard", "Market Scorecard", has_agreement=False,
             company_kind="self-fpsf", company_code="1PI",
-            company_name="First Person", status="Holding", is_internal=True,  # inactive
+            company_name="First Person", status="Holding",  # inactive
         ),
         make_project(
             "cnc-9004-storyos", "StoryOS", has_agreement=False,
             company_kind="self-canonic", company_code="CNC",
-            company_name="Canonic", status="Open", is_internal=True,
+            company_name="Canonic", status="Open",
         ),
     ]
 
@@ -569,7 +567,7 @@ def test_generate_sprint_planning_plan_stamps_the_scope(
             make_project(
                 "1pi-9005-mission-control", "Mission Control", has_agreement=False,
                 company_kind="self-fpsf", company_code="1PI",
-                company_name="First Person", status="Open", is_internal=True,
+                company_name="First Person", status="Open",
             )
         ],
         week_iso="2026-W20",

@@ -39,7 +39,7 @@ def _state(code: str = "ggl-5168-activation") -> ProjectState:
     return ProjectState(
         code=code, name=code, has_agreement=True, company_kind="client",
         company_code="GGL", company_name="Google", status="Open",
-        is_internal=False, owner="drew",
+        owner="drew",
         last_touched=datetime(2026, 6, 1, tzinfo=timezone.utc),
         deadline=None, one_line_summary=None,
     )
