@@ -10,9 +10,9 @@ resolved inputs, so a column or default added to one writer reaches both.
 """
 from __future__ import annotations
 
-from cp_engine.commitments import commitment_row
-
 from test_promote_uphill import CHILD, CHILD_ID, server, wired  # noqa: F401 — fixtures
+
+from cp_engine.commitments import commitment_row
 
 MEETING = "44444444-4444-4444-4444-444444444444"
 

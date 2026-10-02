@@ -583,7 +583,7 @@ def pull_source(
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _resolve_source_asset(client, owner_id: str, key: str):
+def _resolve_source_asset(client, owner_id: str, key: str, *, active_only: bool = True):
     """Resolve `key` (asset uuid or EXACT title) to ONE active asset.
 
     Owner-scoped across both owner columns (engagement `project_id` OR
@@ -591,6 +591,11 @@ def _resolve_source_asset(client, owner_id: str, key: str):
     one). Returns the asset row, or `{"candidates": [...]}` when an exact
     title matches several rows (recurring recordings share titles — the
     caller picks an id), or None when nothing matches.
+
+    The curation resolver — the hosted `rename_project_source` and
+    `set_source_status` use it too. `active_only=False` widens it to
+    archived/obsoleted rows, for annotating rather than retiring: an obsoleted
+    stub is exactly the row that most needs a caveat saying why.
     """
     from cp_engine.mc2_db import Tables, owner_filter
 
@@ -598,8 +603,9 @@ def _resolve_source_asset(client, owner_id: str, key: str):
         client.table(Tables.RAG_ASSETS)
         .select("id, title, source_type, status, created_at")
         .or_(owner_filter(client, owner_id))
-        .eq("status", "active")
     )
+    if active_only:
+        query = query.eq("status", "active")
     import re as _re
 
     if _re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", key.lower()):

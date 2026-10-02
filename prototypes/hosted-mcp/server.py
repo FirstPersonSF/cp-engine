@@ -1829,7 +1829,9 @@ def _compose_agreement_projection(
     """
     try:
         from cp_engine.agreement_projection import (
-            drift_warnings, render_engagement_block, sow_attach_nudge,
+            drift_warnings,
+            render_engagement_block,
+            sow_attach_nudge,
         )
         from cp_engine.estimate import fetch_estimate, fetch_schedule
         from cp_engine.project_sources import list_project_meetings, list_sources
@@ -2269,41 +2271,24 @@ _asset_ids_with_chunks = _engine_mc2_db.asset_ids_with_chunks
 def _resolve_source_asset(
     client, project_id: str, key: str, *, active_only: bool = True
 ) -> dict | None:
-    """One rag_asset for `key` (uuid or exact title, case-insensitive)
-    under either owner column. None = no match; {'candidates': [...]} =
-    ambiguous exact-title (pass an id). Mirrors the stdio resolver (#126).
+    """One rag_asset for `key` (uuid or EXACT title, case-sensitive): the
+    engine's curation resolver, `cp_engine.project_sources._resolve_source_asset`
+    (#126). None = no match; {'candidates': [...]} = ambiguous exact title
+    (pass an id); {'error': ...} = the read itself failed, which is not "no
+    match".
 
     `active_only=False` widens the search to archived/superseded/obsoleted
     rows. Curation verbs that RETIRE a doc want the default (you cannot archive
     what is already gone), but annotating one does not: an obsoleted stub is
     exactly the row that most needs a caveat explaining why it is obsolete."""
-    key = (key or "").strip()
-    if not key:
+    if not (key or "").strip():
         return None
-    hits: list[dict] = []
-    seen: set[str] = set()
-    for column in _owner_columns(client):
-        try:
-            q = (
-                client.table("rag_assets")
-                .select("id, title, status")
-                .eq(column, project_id)
-            )
-            if active_only:
-                q = q.eq("status", "active")
-            for r in q.execute().data or []:
-                if r["id"] in seen:
-                    continue
-                seen.add(r["id"])
-                if r["id"] == key or (r.get("title") or "").strip().lower() == key.lower():
-                    hits.append(r)
-        except Exception:  # noqa: BLE001 — a failed read is an empty read
-            continue
-    if not hits:
-        return None
-    if len(hits) > 1:
-        return {"candidates": [{"id": h["id"], "title": h["title"]} for h in hits]}
-    return hits[0]
+    try:
+        return _engine_project_sources._resolve_source_asset(
+            client, project_id, key, active_only=active_only,
+        )
+    except Exception as exc:  # noqa: BLE001 — reported, never read as a miss
+        return {"error": f"source lookup failed: {type(exc).__name__}: {str(exc)[:200]}"}
 
 
 @mcp_server.tool()
@@ -2356,6 +2341,8 @@ def set_source_status(
     )
     if resolved is None:
         return {"error": f"no source matching '{doc_title_or_id}' for this project"}
+    if "error" in resolved:
+        return resolved
     if "candidates" in resolved:
         return {
             "note": f"'{doc_title_or_id}' matches "
@@ -2414,6 +2401,8 @@ def rename_project_source(
     resolved = _resolve_source_asset(client, project_id, doc_title_or_id)
     if resolved is None:
         return {"error": f"no active source matching '{doc_title_or_id}' for this project"}
+    if "error" in resolved:
+        return resolved
     if "candidates" in resolved:
         return {
             "note": f"'{doc_title_or_id}' matches "
@@ -7102,8 +7091,10 @@ def add_spine_document(
     - `content` — the document text itself (a draft this conversation just
       produced, a pasted email, meeting notes). This is Phase 3's
       "read spine context -> draft -> write back" loop closing.
-    - `source_title` — an ALREADY-INGESTED source's title (resolved like
-      `list_project_sources`: exact match first, else unique substring). Its
+    - `source_title` — an ALREADY-INGESTED source's title, over the same
+      active sources `list_project_sources` shows (account-scoped included),
+      resolved like `add_element_source`: a uuid, else exact title, else a
+      unique substring; ambiguity returns the candidates. Its
       full text (assembled from chunks) becomes the element body, and the
       source is attached as a typed provenance link on the new element —
       "turn this ingested brief into a spine card."
@@ -7122,25 +7113,24 @@ def add_spine_document(
     sources_link: list[dict[str, Any]] | None = None
     if source_title:
         want = source_title.strip()
-        rows = (
-            client.table("rag_assets")
-            .select("id, title, status")
-            .eq("project_id", scope["id"])
-            .is_("archived_at", "null")
-            .execute()
-            .data
-            or []
-        )
-        exact = [r for r in rows if (r.get("title") or "").strip().lower() == want.lower()]
-        matches = exact or [r for r in rows if want.lower() in (r.get("title") or "").lower()]
-        if not matches:
-            return {"error": f"no ingested source matches {want!r} in {project_code!r}"}
-        if len(matches) > 1:
+        # The attach resolver (engine `pick_source` over the workstream's
+        # active sources plus its account's): this verb attaches the source,
+        # so it resolves exactly like `add_element_source`.
+        asset, note = _resolve_active_asset(client, scope["id"], want)
+        if asset is None:
+            note = note or {}
+            if note.get("candidates"):
+                return {
+                    "error": f"{want!r} matches {len(note['candidates'])} sources "
+                    "— be more specific, or pass one's id",
+                    "matches": [c.get("title") or "?" for c in note["candidates"]],
+                    "candidates": note["candidates"],
+                }
             return {
-                "error": f"{want!r} matches {len(matches)} sources — be more specific",
-                "matches": sorted((m.get("title") or "?") for m in matches)[:10],
+                "error": f"no ingested source matches {want!r} in {project_code!r}",
+                **({"account_sources_unread": True}
+                   if note.get("account_sources_unread") else {}),
             }
-        asset = matches[0]
         pulled = pull_project_source(asset_id=asset["id"])
         body_text = pulled.get("text") or pulled.get("body") or ""
         if not str(body_text).strip():

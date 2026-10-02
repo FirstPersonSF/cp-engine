@@ -13,7 +13,7 @@ import inspect
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import git_ops
@@ -429,7 +429,8 @@ def _stage_transcript(tenant_root: Path, meeting_id: str, text: str) -> Path:
     """Write transcript to tenant's transcripts/incoming/ for the prompt + audit."""
     incoming = tenant_root / "transcripts" / "incoming"
     incoming.mkdir(parents=True, exist_ok=True)
-    filename = f"auto-ingest-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}-{meeting_id[:8]}.txt"
+    stamp = datetime.now(UTC).strftime('%Y%m%d-%H%M%S')
+    filename = f"auto-ingest-{stamp}-{meeting_id[:8]}.txt"
     path = incoming / filename
     path.write_text(text, encoding="utf-8")
     return path

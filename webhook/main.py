@@ -68,7 +68,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime
+from datetime import UTC, datetime
 
 # tests patch `main.mc2_db.get_client` and the mutation reaches every module.
 import observability
@@ -176,7 +176,7 @@ def health() -> dict:
         "commit": commit[:12] if commit else "unknown",
         "branch": os.environ.get("RAILWAY_GIT_BRANCH") or "unknown",
         "deployment_id": os.environ.get("RAILWAY_DEPLOYMENT_ID") or "unknown",
-        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "timestamp": datetime.now(UTC).replace(tzinfo=None).isoformat() + "Z",
     }
 
 
