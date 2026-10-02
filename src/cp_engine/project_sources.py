@@ -243,7 +243,7 @@ def _empty_asset_matches(client, project_id: str, company_id: str | None,
     seen: set = set()
     matched = []
     for r in rows:
-        if r.get("id") in seen or not _title_matches(doc_title, r.get("title")):
+        if r.get("id") in seen or not _title_matches(doc_title.strip(), r.get("title")):
             continue
         seen.add(r.get("id"))
         matched.append(r)
@@ -293,29 +293,36 @@ def _title_matches(doc_title: str, row_title: str | None) -> bool:
     return doc_title.lower() in row_title.lower()
 
 
-def pick_source(rows: list[dict], source_title: str) -> tuple[dict | None, dict | None]:
-    """`source_title` -> ONE of `rows` (active rag_assets), or (None, note).
+def resolve_source(
+    rows: list[dict], source_title: str, *, mode: str = "lookup",
+) -> tuple[dict | None, dict | None]:
+    """THE source-title resolver: `source_title` -> ONE of `rows`, or
+    (None, note). Every path that turns a caller's title into a `rag_assets`
+    row goes through here (attach, curation writes, fetch, comments, pull).
 
-    The attach resolver's ladder (#344), shared by the stdio engine and the
-    hosted `add_element_source` / `remove_element_source` (vendored verbatim).
-    `rows` is the caller's candidate POOL — the workstream's own active assets
-    plus its company's account-scoped ones — so an id outside it never
+    `rows` is the caller's candidate POOL (for reads: the workstream's active
+    assets plus its company's account-scoped ones), so an id outside it never
     resolves. Rungs, first hit wins:
 
       0. a rag_asset UUID -> that asset, if it is in the pool. The one
          unambiguous handle when two titles collide.
       1. CASE-EXACT title (whitespace-trimmed).
-      2. case-insensitive exact title.
-      3. case-insensitive substring, query ⊆ stored title.
+      2. case-insensitive exact title.             (mode="lookup" only)
+      3. case-insensitive substring, query ⊆ title. (mode="lookup" only)
 
-    A rung with ONE match resolves; a rung with SEVERAL is genuine ambiguity
-    and returns the candidates (id + title) WITHOUT falling to a looser rung
-    and without guessing. Before #344 rungs 1 and 2 were one case-insensitive
-    rung, so `IBX 5192 Deck Review` vs `IBX 5192 Deck review` was reported as
-    ambiguous even though the caller typed one of them exactly.
+    `mode="strict"` is for WRITES (rename, archive, set_status): rungs 0–1
+    only, because a loose match there renamed the wrong document.
+    `mode="lookup"` is for READS, where people type approximate titles from
+    conversation ("the SOW", a partial name) and substring is a feature.
+
+    In both modes a rung with ONE match resolves; a rung with SEVERAL is
+    genuine ambiguity and returns the candidates (id + title) WITHOUT falling
+    to a looser rung and without guessing. Rows sharing an id count once.
     """
     import uuid as _uuid
 
+    if mode not in ("strict", "lookup"):
+        raise ValueError(f"resolve_source mode must be 'strict' or 'lookup', got {mode!r}")
     want = (source_title or "").strip()
     if not want:
         return None, {"note": "source_title is required"}
@@ -333,13 +340,25 @@ def pick_source(rows: list[dict], source_title: str) -> tuple[dict | None, dict 
     def _t(r: dict) -> str:
         return (r.get("title") or "").strip()
 
+    def _dedupe(matched: list[dict]) -> list[dict]:
+        seen: set = set()
+        out = []
+        for r in matched:
+            k = r.get("id") if r.get("id") is not None else ("title", _t(r))
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(r)
+        return out
+
     folded = want.casefold()
-    rungs = (
-        [r for r in rows if _t(r) == want],
-        [r for r in rows if _t(r).casefold() == folded],
-        [r for r in rows if folded in _t(r).casefold()],
-    )
-    for matched in rungs:
+    rungs = [[r for r in rows if _t(r) == want]]
+    if mode == "lookup":
+        rungs += [
+            [r for r in rows if _t(r).casefold() == folded],
+            [r for r in rows if folded in _t(r).casefold()],
+        ]
+    for matched in map(_dedupe, rungs):
         if len(matched) == 1:
             return matched[0], None
         if len(matched) > 1:
@@ -352,6 +371,15 @@ def pick_source(rows: list[dict], source_title: str) -> tuple[dict | None, dict 
                 "candidates": cands[:10],
             }
     return None, {"note": f"no active source titled {want!r}"}
+
+
+def pick_source(rows: list[dict], source_title: str) -> tuple[dict | None, dict | None]:
+    """The attach resolver (#344): `resolve_source(..., mode="lookup")`.
+
+    Kept as a name because the hosted `add_element_source` /
+    `remove_element_source` / `add_spine_document` import it.
+    """
+    return resolve_source(rows, source_title, mode="lookup")
 
 
 def pull_source(
@@ -384,8 +412,8 @@ def pull_source(
 
     Reads the project's scoped chunks (its own project-scoped assets + its
     company's account-scoped assets) via the `read_scoped_asset_chunks` RPC, then
-    filters to the rows whose `title` matches `doc_title` (case-insensitive
-    contains-or-equal — see `_title_matches`).
+    filters to the rows whose `title` contains `doc_title` (case-insensitive)
+    and resolves ONE title with `resolve_source(mode="lookup")`.
 
     `query` handling:
       - `query=None` (the primary path): chunks come back in recency order, all
@@ -397,21 +425,17 @@ def pull_source(
         lazily (runtime-only import, keeping this module transport-agnostic) and
         can be injected via `embedder` for tests.
 
-    Resolution to ONE document (never merge distinct docs):
+    Resolution to ONE document (never merge distinct docs): the matched
+    rows' DISTINCT titles go through `resolve_source(mode="lookup")` —
+    case-exact title, else case-insensitive exact, else a UNIQUE substring.
+    Several titles at the winning rung -> `{chunks: [], candidates, note:
+    "ambiguous: ..."}`. Case variants are distinct documents (before the
+    unified resolver they were grouped and their chunks MERGED). Residual:
+    the RPC returns no asset id, so two assets with the SAME exact title
+    still read as one document. No match -> `{chunks: [], note: "no
+    source named ..."}`.
 
-      1. Exact-title (the manifest's machine path): if any matched row's title
-         case-insensitively EQUALS `doc_title`, return ONLY that doc's chunks.
-         The manifest names docs by full title, so the MCP pull passes the exact
-         title — this is the common, correct, cheap path.
-      2. Single distinct title: exactly one document's title matched the
-         substring → return that doc's chunks.
-      3. Ambiguous (2+ distinct titles match, none exact): do NOT merge —
-         distinct titles must never collapse under one citation (provenance
-         corruption). Return `{title: doc_title, chunks: [], note: "ambiguous:
-         ... matched N sources: [...]"}` listing the candidate titles.
-      4. No match: `{title: doc_title, chunks: [], note: "no source named ..."}`.
-
-    For 1 and 2, title / citation_url / scope come from the first surviving row
+    On a resolve, title / citation_url / scope come from the first surviving row
     (all surviving rows are the same document), and `chunks` is every surviving
     row's text in returned order.
     """
@@ -442,7 +466,7 @@ def pull_source(
         limit=limit,
     )
 
-    matched = [r for r in rows if _title_matches(doc_title, r.get("title"))]
+    matched = [r for r in rows if _title_matches(doc_title.strip(), r.get("title"))]
     # A no-query document read widens when the window is SATURATED, not only
     # on a miss: a doc can be partly inside the window and partly beyond it,
     # and a partial read is worse than a miss because nothing flags it (#298).
@@ -471,7 +495,7 @@ def pull_source(
             query_embedding=query_embedding,
             limit=_MISS_RETRY_LIMIT,
         )
-        matched = [r for r in rows if _title_matches(doc_title, r.get("title"))]
+        matched = [r for r in rows if _title_matches(doc_title.strip(), r.get("title"))]
         # The widened window filled too: a corpus larger than the widest read.
         # We cannot prove the document is whole — say so rather than cap it.
         truncated = complete and query is None and len(rows) >= _MISS_RETRY_LIMIT
@@ -484,11 +508,21 @@ def pull_source(
         except Exception:  # noqa: BLE001 — cannot tell: say so, don't guess
             empty = None
         if empty:
-            first = next(
-                (r for r in empty
-                 if (r.get("title") or "").lower() == doc_title.lower()),
-                empty[0],
-            )
+            first, amb = resolve_source(empty, doc_title, mode="lookup")
+            if first is None:
+                cands = [c["title"] for c in (amb or {}).get("candidates") or []]
+                return {
+                    "title": doc_title,
+                    "chunks": [],
+                    "chunk_count": 0,
+                    "empty": True,
+                    "candidates": cands,
+                    "note": (
+                        f"ambiguous: '{doc_title}' matched {len(cands)} sources "
+                        f"that exist but have zero chunks: [{', '.join(cands)}]; "
+                        "pass a more specific title"
+                    ),
+                }
             out = {
                 "title": first.get("title"),
                 "asset_id": first.get("id"),
@@ -502,8 +536,6 @@ def pull_source(
                     "read the original via `fetch_project_source`, or re-ingest."
                 ),
             }
-            if len(empty) > 1:
-                out["candidates"] = [r.get("title") for r in empty]
             return out
         note = f"no source named '{doc_title}' found in this project's assets"
         if empty is None:
@@ -514,34 +546,28 @@ def pull_source(
             "note": note,
         }
 
-    # Resolve to a SINGLE document. Group matched rows by their (case-
-    # insensitive) title while preserving each title's original casing for
-    # output and the first-seen order for the ambiguity note.
-    distinct: dict[str, str] = {}
+    # Resolve to a SINGLE document with the one resolver (`resolve_source`,
+    # mode="lookup"). Chunk rows carry a title but no asset id, so the pool
+    # is the DISTINCT titles (exact spelling — case variants are different
+    # documents and must never merge under one citation).
+    distinct: dict[str, dict] = {}
     for r in matched:
-        title = r.get("title") or ""
-        key = title.lower()
-        if key not in distinct:
-            distinct[key] = title
-
-    target = doc_title.lower()
-    if target in distinct:
-        # 1. Exact-title preference (the manifest's machine path).
-        selected = [r for r in matched if (r.get("title") or "").lower() == target]
-    elif len(distinct) == 1:
-        # 2. Single distinct title matched — that one doc is unambiguous.
-        selected = matched
-    else:
-        # 3. Ambiguous: 2+ distinct titles, none exact. Never merge.
-        candidates = ", ".join(distinct.values())
+        title = (r.get("title") or "").strip()
+        distinct.setdefault(title, {"id": None, "title": r.get("title")})
+    picked, note = resolve_source(list(distinct.values()), doc_title, mode="lookup")
+    if picked is None:
+        cands = [c["title"] for c in (note or {}).get("candidates") or []]
         return {
             "title": doc_title,
             "chunks": [],
+            "candidates": cands,
             "note": (
-                f"ambiguous: '{doc_title}' matched {len(distinct)} sources: "
-                f"[{candidates}]; pass a more specific title"
+                f"ambiguous: '{doc_title}' matched {len(cands)} sources: "
+                f"[{', '.join(cands)}]; pass a more specific title"
             ),
         }
+    chosen = (picked.get("title") or "").strip()
+    selected = [r for r in matched if (r.get("title") or "").strip() == chosen]
 
     # Document order on the no-query path (#152): the RPC returns
     # meta.chunk_index (stamped at ingest since 1p-lib 6a0f2db) and meta.page;
@@ -608,20 +634,26 @@ def _resolve_source_asset(client, owner_id: str, key: str, *, active_only: bool 
         query = query.eq("status", "active")
     import re as _re
 
+    key = (key or "").strip()
     if _re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", key.lower()):
         rows = query.eq("id", key).limit(2).execute().data or []
     else:
+        # The DB `eq` narrows the pool (an index lookup, not the rule);
+        # `resolve_source(mode="strict")` is the rule.
         rows = query.eq("title", key).order("created_at", desc=True).execute().data or []
     if not rows:
         return None
-    if len(rows) > 1:
+    row, note = resolve_source(rows, key, mode="strict")
+    if row is not None:
+        return row
+    if note and note.get("candidates"):
         return {
             "candidates": [
-                {"id": r["id"], "title": r["title"], "created_at": r["created_at"]}
+                {"id": r["id"], "title": r["title"], "created_at": r.get("created_at")}
                 for r in rows
             ]
         }
-    return rows[0]
+    return None
 
 
 def archive_source(client, owner_id: str, key: str) -> dict:
@@ -1583,6 +1615,47 @@ def list_project_meetings(client, project_id: str) -> list[dict]:
 _REFETCH_COLUMNS = mc2_db.RAG_ASSET_REFETCH_COLUMNS
 
 
+def _readable_refetch_rows(client, project_id: str,
+                           company_id: str | None) -> list[dict]:
+    """The READ pool for resolving a source title to its original file: the
+    workstream's ACTIVE assets plus its company's active account-scoped ones
+    — the same readable set as `pull_source`'s chunk RPC and
+    `list_project_sources`. Archived/superseded copies left every active
+    read (#126); before the unified resolver this pool held the
+    workstream's rows of ANY status, so an archived `… v01` could be fetched
+    in place of the live `… v02`. Raises on a read error."""
+    rows = (
+        client.table(Tables.RAG_ASSETS)
+        .select(_REFETCH_COLUMNS)
+        .eq("project_id", project_id)
+        .eq("status", "active")
+        .execute()
+    ).data or []
+    if company_id:
+        own = {r.get("id") for r in rows}
+        rows += [
+            r for r in (
+                client.table(Tables.RAG_ASSETS)
+                .select(_REFETCH_COLUMNS)
+                .eq("company_id", company_id)
+                .eq("scope", "account")
+                .eq("status", "active")
+                .execute()
+            ).data or []
+            if r.get("id") not in own
+        ]
+    return rows
+
+
+def _resolve_miss(doc_title: str, note: dict | None) -> dict:
+    """`resolve_source`'s (None, note) as a read verb's structured error:
+    ambiguity carries the candidates so the caller can pass an id."""
+    note = note or {}
+    if note.get("candidates"):
+        return {"error": note["note"], "candidates": note["candidates"]}
+    return {"error": f"no source titled {doc_title!r} in project"}
+
+
 def fetch_source(client, project_id: str, doc_title: str, dest_dir,
                  company_id: str | None = None) -> dict:
     """Download an ingested source's ORIGINAL binary to `dest_dir`.
@@ -1590,9 +1663,11 @@ def fetch_source(client, project_id: str, doc_title: str, dest_dir,
     Looks up the asset's persisted re-fetch coords (`source_provider`,
     `source_file_id`, `source_path` — stamped on ingest), reconstructs a
     `FileRef`, and reuses `asset_ingest.download_file` to fetch the original from
-    Drive/Dropbox. Title resolution mirrors `pull_source`: case-insensitive
-    contains-or-equal match (`_title_matches`), with exact-title preferred over a
-    substring match.
+    Drive/Dropbox. Title resolution is `resolve_source(mode="lookup")` over
+    `_readable_refetch_rows` (active project rows + the company's account
+    docs): a uuid, else case-exact, case-insensitive exact, or a UNIQUE
+    substring; several matches at the winning rung return `{error,
+    candidates}` — never a silent first pick.
 
     Returns `{local_path, title, provider, url, source_path, source_file_id}`
     on success, or a structured `{error}` on any failure. `source_path` is the
@@ -1608,35 +1683,13 @@ def fetch_source(client, project_id: str, doc_title: str, dest_dir,
     the account node is fetchable from every sibling, not only pullable.
     """
     try:
-        rows = (
-            client.table(Tables.RAG_ASSETS)
-            .select(_REFETCH_COLUMNS)
-            .eq("project_id", project_id)
-            .execute()
-        ).data or []
-        if company_id:
-            own = {r.get("id") for r in rows}
-            rows += [
-                r for r in (
-                    client.table(Tables.RAG_ASSETS)
-                    .select(_REFETCH_COLUMNS)
-                    .eq("company_id", company_id)
-                    .eq("scope", "account")
-                    .eq("status", "active")
-                    .execute()
-                ).data or []
-                if r.get("id") not in own
-            ]
+        rows = _readable_refetch_rows(client, project_id, company_id)
     except Exception as exc:  # noqa: BLE001 — MCP tool boundary, never raise
         return {"error": f"lookup failed: {exc}"}
 
-    target = doc_title.strip().lower()
-    matched = [r for r in rows if _title_matches(doc_title, r.get("title"))]
-    exact = [r for r in matched if (r.get("title") or "").lower() == target]
-    selected = exact or matched
-    if not selected:
-        return {"error": f"no source titled {doc_title!r} in project"}
-    row = selected[0]
+    row, note = resolve_source(rows, doc_title, mode="lookup")
+    if row is None:
+        return _resolve_miss(doc_title, note)
 
     if not row.get("source_provider") or not row.get("source_file_id"):
         return {
@@ -1827,38 +1880,28 @@ def _drive_comments(file_id: str) -> list[dict]:
 
 
 def pull_document_comments(client, project_id: str, doc_title: str,
-                           dest_dir) -> dict:
+                           dest_dir, company_id: str | None = None) -> dict:
     """Read reviewer comments on an ingested document (#108).
 
     Comments/annotations are dropped by the ingest parsers, so this reads them
     live: for a Drive-hosted asset via the Drive API (covers Google Docs, whose
     comments exist nowhere else); otherwise by downloading the original Office
-    binary and parsing its comment XML (docx/pptx/xlsx). Title resolution mirrors
-    fetch_source. Returns {title, provider, comment_count, comments:[...]} where
+    binary and parsing its comment XML (docx/pptx/xlsx). Title resolution is
+    fetch_source's: `resolve_source(mode="lookup")` over the same readable
+    pool (active rows + the company's account docs when `company_id` is
+    given); ambiguity is an error with candidates. Returns {title, provider, comment_count, comments:[...]} where
     each comment is {author, date, anchored_text, comment, replies[]}, or a
     structured {note}/{error}. NEVER raises — MCP tool boundary."""
     from cp_engine.doc_comments import extract_comments
 
     try:
-        rows = (
-            client.table(Tables.RAG_ASSETS)
-            .select(_REFETCH_COLUMNS)
-            .eq("project_id", project_id)
-            .execute()
-        ).data or []
+        rows = _readable_refetch_rows(client, project_id, company_id)
     except Exception as exc:  # noqa: BLE001
         return {"error": f"lookup failed: {exc}"}
 
-    target = doc_title.strip().lower()
-    matched = [r for r in rows if _title_matches(doc_title, r.get("title"))]
-    exact = [r for r in matched if (r.get("title") or "").lower() == target]
-    selected = exact or matched
-    if not selected:
-        return {"error": f"no source titled {doc_title!r} in project"}
-    if len(selected) > 1 and not exact:
-        titles = sorted({r.get("title") or "" for r in selected})
-        return {"note": f"ambiguous: '{doc_title}' matched {len(titles)} sources: {titles}"}
-    row = selected[0]
+    row, note = resolve_source(rows, doc_title, mode="lookup")
+    if row is None:
+        return _resolve_miss(doc_title, note)
 
     provider = row.get("source_provider")
     file_id = row.get("source_file_id")

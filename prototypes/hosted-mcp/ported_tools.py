@@ -175,9 +175,10 @@ def fetch_project_source(
     Use when the extracted text is not enough — a .pptx's hidden slides, an
     image, the original layout — or when `list_project_sources` flags the
     source `empty` (zero chunks: the original is the only readable copy).
-    `doc_title` resolves like the stdio verb did: exact title preferred,
-    else a case-insensitive substring; the company's account-scoped docs are
-    included.
+    `doc_title` resolves with the engine's one resolver in lookup mode: a
+    source id, else the exact title, else a case-insensitive exact or UNIQUE
+    substring match over active sources and the company's account docs;
+    several matches return `candidates` (pass one's id).
 
     The file comes back to YOU, not to a path on this server:
 
@@ -325,8 +326,8 @@ def pull_document_comments(project_code: str, doc_title: str) -> dict[str, Any]:
     live file instead: a Google-Drive-hosted doc via the Drive API (the ONLY
     way to reach Google Docs comments, which exist in no export), otherwise by
     fetching the original .docx/.pptx/.xlsx and parsing its comment XML.
-    `doc_title` resolves like `fetch_project_source` (exact, else a unique
-    substring).
+    `doc_title` resolves like `fetch_project_source` (id, exact, else a
+    unique match; several return `candidates`).
 
     Returns {title, provider, comment_count, comments} where each comment is
     {author, date, anchored_text, comment, replies[]} — grouped by author it
@@ -342,10 +343,10 @@ def pull_document_comments(project_code: str, doc_title: str) -> dict[str, Any]:
     resolved = _resolve(client, project_code)
     if resolved is None:
         return _not_found(client, tool, project_code)
-    pid, _cid = resolved
+    pid, cid = resolved
     with tempfile.TemporaryDirectory(prefix="cp-comments-") as tmp:
         result = _srv._engine_project_sources.pull_document_comments(
-            client, pid, doc_title, tmp,
+            client, pid, doc_title, tmp, company_id=cid,
         )
     if result.get("error"):
         _srv.audit(client, tool, {"project_code": project_code,

@@ -206,21 +206,23 @@ def test_compare_names_the_side_that_failed(server, pt, caller, monkeypatch):
 def test_comments_delegate_with_the_callers_client(server, pt, caller, monkeypatch):
     seen = []
 
-    def fake(client, pid, title, dest):
-        seen.append((client, pid, title))
+    def fake(client, pid, title, dest, company_id=None):
+        seen.append((client, pid, title, company_id))
         return {"title": title, "provider": "drive", "comment_count": 2,
                 "comments": [{"author": "Scott"}, {"author": "Cricket"}]}
 
     monkeypatch.setattr(server._engine_project_sources, "pull_document_comments", fake)
     out = pt.pull_document_comments("ibx-5153", "Our AI Story")
     assert out["comment_count"] == 2
-    assert seen == [(caller.client, "p1", "Our AI Story")]
+    # the company id is passed so account-scoped docs resolve, as in fetch
+    assert [s[:3] for s in seen] == [(caller.client, "p1", "Our AI Story")]
+    assert seen[0][3] is not None
     assert caller.audit[-1][2] == 2
 
 
 def test_unreadable_comments_name_the_credential(server, pt, caller, monkeypatch):
     monkeypatch.setattr(server._engine_project_sources, "pull_document_comments",
-                        lambda *a: {"error": "could not read Drive comments for 'X' "
+                        lambda *a, **k: {"error": "could not read Drive comments for 'X' "
                                              "(ValueError: no creds)"})
     out = pt.pull_document_comments("ibx-5153", "X")
     assert "GOOGLE_SERVICE_ACCOUNT_JSON" in out["error"]
