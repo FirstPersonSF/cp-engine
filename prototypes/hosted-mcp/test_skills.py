@@ -9,6 +9,7 @@ clone, so a mocked filesystem would test nothing about the path that runs.
 """
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -68,7 +69,13 @@ def server(monkeypatch, tenant: Path):
     monkeypatch.setattr(mod, "user_client", lambda: object())
     monkeypatch.setattr(mod, "audit", lambda *a, **k: None)
     mod._TREE_STATE.clear()
-    return mod
+    yield mod
+    # tree_root() cloned into a fresh `mkdtemp(prefix="hosted-cp-tree-")`;
+    # remove it, or every test leaves one behind (see conftest.py).
+    root = mod._TREE_STATE.get("root")
+    mod._TREE_STATE.clear()
+    if root and Path(root).parent.name.startswith("hosted-cp-tree-"):
+        shutil.rmtree(Path(root).parent, ignore_errors=True)
 
 
 def test_list_names_only_real_skills(server):
