@@ -4,6 +4,14 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.131.4 — 2026-10-05
+
+**Health: the spine line counts people apart and ignores closed work.** Patch.
+`Spine unbound` now reads `<other> · <n> people · <n> floating`: stakeholder
+cards (a person serves no deliverable) are counted on their own, and
+important-but-floating elements on Closed or Archived workstreams no longer
+raise the warning. 10-05: `360 · 30 floating` → `236 · 124 people · 23 floating`.
+
 ## v0.131.3 — 2026-10-01
 
 **Workstream phase 6, engine side (#306), and one source-title resolver.** Patch.
