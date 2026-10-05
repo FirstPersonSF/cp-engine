@@ -260,12 +260,16 @@ class IngestPlanResult:
     warnings: list[str] = field(default_factory=list)
     # Step 4a: MC-2 commitment ids a close-ask resolved (the ask's truth).
     commitments_resolved: list[str] = field(default_factory=list)
+    # close-ask items whose commitment MC-2 already had closed (hash, else
+    # text) — a re-click is "already closed", not "no matching item".
+    commitments_already_closed: list[str] = field(default_factory=list)
     # Step 4b: stakeholder cards written (`created|updated <code>/<eid>`).
     stakeholder_cards: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
             "commitments_resolved": self.commitments_resolved,
+            "commitments_already_closed": self.commitments_already_closed,
             "stakeholder_cards": self.stakeholder_cards,
             "files_written": [str(p) for p in self.files_written],
             "skipped_duplicate": self.skipped_duplicate,
@@ -475,6 +479,11 @@ def execute_plan(
                     result.warnings.extend(f"{code}/{verb}: {w}" for w in outcome.warnings)
                     if outcome.resolved_id:
                         result.commitments_resolved.append(outcome.resolved_id)
+                    if outcome.already_closed:
+                        result.commitments_already_closed.append(
+                            _as_text(item.get("hash"))
+                            or _as_text(item.get("text") or item.get("match"))
+                        )
                     for p in outcome.paths:
                         if p not in result.files_written:
                             result.files_written.append(p)

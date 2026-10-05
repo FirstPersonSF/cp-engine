@@ -203,7 +203,7 @@ def test_slack_action_resolve_risk_acks_immediately_and_queues_work(
 
     update_calls = []
 
-    def fake_update(*, response_url, original_message, confirmation, clicked_action_id=""):
+    def fake_update(*, response_url, original_message, confirmation, clicked_action_id="", **_kw):
         update_calls.append({"url": response_url, "confirmation": confirmation})
 
     monkeypatch.setattr(slack_router, "_run_plan_for_one_item", fake_run)
