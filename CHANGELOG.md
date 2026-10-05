@@ -4,6 +4,17 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.131.6 — 2026-10-05
+
+**Slack Close no longer hangs on "⏳ Closing…".** Patch.
+
+Every Slack click clones the tenant under one write lock. On 10-05 a clone's
+SSH connection to GitHub went silent and ran with no timeout for 4m17s, so
+every click queued behind it sat on "Closing…". SSH now drops a silent
+connection in ~60 s (`ConnectTimeout`, `ServerAliveInterval`), the clone has
+a 120 s timeout (`CP_TENANT_CLONE_TIMEOUT_SEC`) and one retry, and its
+duration is logged.
+
 ## v0.131.5 — 2026-10-05
 
 **Slack Close buttons tell the truth, and canon members are not floating.** Patch.
