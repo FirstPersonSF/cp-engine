@@ -14,6 +14,7 @@ import logging
 import os
 from datetime import UTC
 
+import digest_message
 import git_ops
 import observability
 import pipeline
@@ -104,8 +105,15 @@ async def _handle_block_action(payload: dict) -> dict:
     # is one API call (~200-400ms); within budget. Run via asyncio.to_thread
     # so the sync slack_sdk call doesn't block the loop, but AWAIT before
     # returning (the modal must be open before we ack).
+    message_key = digest_message.message_key_of(payload)
+
     if verb.endswith("-pick"):
         underlying_verb = verb.replace("-pick", "")
+        # The submission arrives with no message; remember this one so the
+        # snooze can be spliced into it instead of replacing the digest.
+        st = digest_message.message_state(message_key)
+        if st is not None and st.last_blocks is None and original_message.get("blocks"):
+            st.last_blocks = list(original_message["blocks"])
         await asyncio.to_thread(
             _open_snooze_modal,
             trigger_id=trigger_id,
@@ -114,6 +122,8 @@ async def _handle_block_action(payload: dict) -> dict:
             cp_hash=cp_hash,
             response_url=response_url,
             week_iso=week_iso,
+            message_key=message_key,
+            action_id=action_id,
         )
         return {"ok": True}
 
@@ -128,14 +138,20 @@ async def _handle_block_action(payload: dict) -> dict:
             "slack_action_spawn code=%s verb=%s hash=%s action_id=%s user=%s",
             code, verb, cp_hash, action_id, user_id,
         )
+        await _ack_with_pending(
+            verb=verb, code=code, cp_hash=cp_hash, week_iso=week_iso,
+            response_url=response_url, original_message=original_message,
+            clicked_action_id=action_id, message_key=message_key,
+        )
         pipeline._spawn_background(_run_xproject_in_background(
             verb=verb, target_code=code, cp_hash=cp_hash,
             response_url=response_url, original_message=original_message,
-            clicked_action_id=action_id,
+            clicked_action_id=action_id, message_key=message_key,
         ))
         return {"ok": True, "queued": True}
 
     extras: dict = {"closed_by": "slack", "user": user_id}
+    clicked_verb = verb
 
     if verb in ("snooze-ask-7d", "snooze-risk-7d"):
         from datetime import timedelta
@@ -157,12 +173,98 @@ async def _handle_block_action(payload: dict) -> dict:
         "slack_action_spawn code=%s verb=%s hash=%s action_id=%s user=%s",
         code, verb, cp_hash, action_id, user_id,
     )
+    await _ack_with_pending(
+        verb=clicked_verb, code=code, cp_hash=cp_hash, week_iso=week_iso,
+        response_url=response_url, original_message=original_message,
+        clicked_action_id=action_id, message_key=message_key,
+    )
     pipeline._spawn_background(_run_action_in_background(
         verb=verb, code=code, cp_hash=cp_hash, extras=extras,
         response_url=response_url, original_message=original_message,
         clicked_action_id=action_id, week_iso=week_iso,
+        message_key=message_key,
     ))
     return {"ok": True, "queued": True}
+
+
+async def _ack_with_pending(
+    *, verb: str, code: str, cp_hash: str, week_iso: str | None,
+    response_url: str, original_message: dict, clicked_action_id: str,
+    message_key: str,
+) -> None:
+    """Inside the 3-second ack: turn the clicked item's buttons into
+    "⏳ Closing…" (or Resolving/Snoozing/Routing) so the click visibly took,
+    and so a second click on the same row is not possible while the first
+    runs. Best effort — a failure here is logged, never raised: the work
+    still runs and its final update still lands."""
+    try:
+        await asyncio.to_thread(
+            _post_pending_update,
+            verb=verb, code=code, cp_hash=cp_hash, week_iso=week_iso,
+            response_url=response_url, original_message=original_message,
+            clicked_action_id=clicked_action_id, message_key=message_key,
+        )
+    except Exception:  # noqa: BLE001 — never cost the ack
+        log.exception("slack-action pending update failed: %s/%s", code, cp_hash)
+
+
+# Ack-path budget: Slack gives 3 s for the whole request. Signature check
+# and parsing are ~ms; these bound the one extra call.
+_PENDING_LOCK_WAIT_S = 0.5
+_PENDING_POST_TIMEOUT_S = 1.5
+
+
+def _post_pending_update(
+    *, verb: str, code: str, cp_hash: str, week_iso: str | None,
+    response_url: str, original_message: dict, clicked_action_id: str,
+    message_key: str = "",
+) -> bool:
+    """POST the "⏳ Closing…" rewrite (use 1 of this click's 5
+    response_url uses; the final update is use 2). Returns whether a post
+    was made. No message blocks / clicked row not in them → nothing to
+    rewrite, no post."""
+    import requests as _req
+
+    blocks = original_message.get("blocks") or []
+    kind = digest_message.item_kind(verb)
+    if not blocks or not kind or not response_url:
+        return False
+    item = digest_message.Item(kind, code, cp_hash, week_iso or "")
+    pending = digest_message.state_block(
+        item, digest_message.PENDING,
+        digest_message.PENDING_LABEL.get(verb, "⏳ Working…"),
+    )
+    st = digest_message.message_state(message_key)
+    lock = st.lock if st is not None else None
+    locked = lock.acquire(timeout=_PENDING_LOCK_WAIT_S) if lock else False
+    try:
+        overlay = st.overlay if st is not None else {}
+        held = overlay.get(item.key)
+        if held is None or digest_message.item_of(held).state == digest_message.PENDING:
+            overlay[item.key] = pending
+        new_blocks, found = digest_message.render(
+            blocks, clicked=item, clicked_block=pending, overlay=overlay,
+            closed_hashes=set(), closed_text="✅ Closed",
+            clicked_action_id=clicked_action_id,
+        )
+        if not found:
+            return False
+        resp = _req.post(response_url, json={
+            "replace_original": True,
+            "blocks": new_blocks,
+            "text": pending["elements"][0]["text"],
+        }, timeout=_PENDING_POST_TIMEOUT_S)
+        if not resp.ok:
+            log.warning(
+                "pending response_url update returned %s: %s",
+                resp.status_code, resp.text[:200],
+            )
+        elif st is not None:
+            st.last_blocks = new_blocks
+        return True
+    finally:
+        if locked:
+            lock.release()
 
 
 async def _handle_view_submission(payload: dict) -> dict:
@@ -186,6 +288,8 @@ async def _handle_view_submission(payload: dict) -> dict:
     cp_hash = meta.get("hash")
     response_url = meta.get("response_url", "")
     week_iso = meta.get("week_iso")  # None for old modals; execute_plan defaults
+    message_key = meta.get("message_key") or ""
+    pick_action_id = meta.get("action_id") or ""
     # Schema-drift / replay guard: missing fields → inline modal error rather
     # than silently dispatching a nonsense plan (verb=None, code=None, …).
     if not (verb and code and cp_hash):
@@ -214,12 +318,21 @@ async def _handle_view_submission(payload: dict) -> dict:
         "source=view_submission until=%s",
         code, verb, cp_hash, "", until,
     )
+    # The submission carries no message. If the -pick click left us this
+    # message's blocks, splice the snooze into them; otherwise (restart, old
+    # modal) fall back to the legacy text-only replace.
+    st = digest_message.message_state(message_key)
+    original: dict = {}
+    if st is not None and st.last_blocks and pick_action_id:
+        original = {"blocks": list(st.last_blocks)}
     pipeline._spawn_background(_run_action_in_background(
         verb=verb, code=code, cp_hash=cp_hash,
         extras={"until": until},  # No closed_by — only meaningful for close/resolve verbs
         response_url=response_url,
-        original_message={},  # modal submission has no original to splice into
+        original_message=original,
+        clicked_action_id=pick_action_id if original else "",
         week_iso=week_iso,
+        message_key=message_key if original else "",
     ))
     return {"response_action": "clear"}
 
@@ -230,6 +343,7 @@ async def _run_action_in_background(
     response_url: str, original_message: dict,
     clicked_action_id: str = "",
     week_iso: str | None = None,
+    message_key: str = "",
 ) -> None:
     """Background coroutine: run the cp plan via to_thread, update Slack.
 
@@ -270,7 +384,11 @@ async def _run_action_in_background(
         len(result.get("errors") or []),
     )
 
-    confirmation = _confirmation_text(verb=verb, extras=extras, result=result)
+    state, confirmation = _confirmation(verb=verb, extras=extras, result=result)
+    closed = await asyncio.to_thread(
+        _closed_asks_in, original_message, exclude=cp_hash
+    )
+    kind = digest_message.item_kind(verb)
     slack_update_error = None
     try:
         await asyncio.to_thread(
@@ -279,6 +397,10 @@ async def _run_action_in_background(
             original_message=original_message,
             confirmation=confirmation,
             clicked_action_id=clicked_action_id,
+            message_key=message_key,
+            item=digest_message.Item(kind, code, cp_hash, week_iso or "") if kind else None,
+            state=state,
+            closed_hashes=closed,
         )
     except Exception as exc:  # noqa: BLE001
         log.exception(
@@ -341,12 +463,35 @@ def _run_plan_for_one_item(
                 "committed": True,
                 "commit_sha": commit_sha,
                 "errors": result.errors,
+                "commitments_resolved": list(result.commitments_resolved),
+                "commitments_already_closed": list(result.commitments_already_closed),
             }
         return {
             "committed": False,
             "commit_sha": None,
             "errors": result.errors,
+            "commitments_resolved": list(result.commitments_resolved),
+            "commitments_already_closed": list(result.commitments_already_closed),
         }
+
+
+def _closed_asks_in(original_message: dict, *, exclude: str = "") -> set[str]:
+    """MC-2 truth for every OTHER ask in the message: one batched read.
+    Best effort — on any failure the render falls back to what this process
+    knows (the overlay) and the click-time copy."""
+    hashes = [
+        h for h in digest_message.ask_hashes(original_message.get("blocks") or [])
+        if h != exclude
+    ]
+    if not hashes:
+        return set()
+    try:
+        return digest_message.closed_ask_hashes(
+            pipeline._create_supabase_client(), hashes
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("slack-action: MC-2 read for digest render failed: %s", exc)
+        return set()
 
 
 def _post_response_url_update(
@@ -355,6 +500,10 @@ def _post_response_url_update(
     original_message: dict,
     confirmation: str,
     clicked_action_id: str = "",
+    message_key: str = "",
+    item: digest_message.Item | None = None,
+    state: str = digest_message.DONE,
+    closed_hashes: set[str] | None = None,
 ) -> None:
     """POST to Slack's `response_url` to replace ONLY the clicked item's
     actions block with the confirmation context.
@@ -373,47 +522,73 @@ def _post_response_url_update(
     code path that doesn't have a single source block), fall through
     to the old replace-all behavior — modal submissions pass
     `original_message={}` anyway, so no blocks are touched.
+
+    2026-10-05: every OTHER item is re-decided too (digest_message.render):
+    `original_message` is the click-time copy, and a later click's copy can
+    still show an earlier item's buttons. `closed_hashes` (MC-2) and this
+    process's overlay for `message_key` keep a closed item closed.
     """
     import requests as _req
 
-    def _block_contains_action_id(block: dict, target_id: str) -> bool:
-        if not target_id or block.get("type") != "actions":
-            return False
-        for el in block.get("elements", []) or []:
-            if el.get("action_id") == target_id:
-                return True
-        return False
-
-    new_blocks: list[dict] = []
-    replaced = False
-    for block in original_message.get("blocks", []):
-        if _block_contains_action_id(block, clicked_action_id):
-            new_blocks.append({
-                "type": "context",
-                "elements": [{"type": "mrkdwn", "text": confirmation}],
-            })
-            replaced = True
-        elif block.get("type") == "actions" and not clicked_action_id:
-            # Backward-compat fallback: no clicked_action_id provided,
-            # collapse all actions blocks (legacy view_submission path).
-            new_blocks.append({
-                "type": "context",
-                "elements": [{"type": "mrkdwn", "text": confirmation}],
-            })
-            replaced = True
-        else:
-            new_blocks.append(block)
-
-    if not replaced and clicked_action_id:
-        # The action_id we were told to replace wasn't found in the
-        # message — e.g. message was edited mid-click, or Slack
-        # delivered a stale message blob. Log it; don't silently
-        # disappear the confirmation.
-        log.warning(
-            "response_url update: action_id %r not found in message blocks; "
-            "no in-place update applied",
-            clicked_action_id,
+    if clicked_action_id:
+        blocks = original_message.get("blocks") or []
+        if item is None:
+            item = next(
+                (digest_message.item_of(b) for b in blocks
+                 if digest_message.block_has_action_id(b, clicked_action_id)),
+                None,
+            )
+            if item is not None:
+                item = digest_message.Item(item.kind, item.code, item.hash, item.week)
+        clicked_block = (
+            digest_message.state_block(item, state, confirmation) if item else
+            {"type": "context", "elements": [{"type": "mrkdwn", "text": confirmation}]}
         )
+        st = digest_message.message_state(message_key)
+        lock = st.lock if st is not None else None
+        locked = lock.acquire(timeout=10) if lock else False
+        try:
+            overlay = st.overlay if st is not None else {}
+            if item is not None:
+                overlay[item.key] = clicked_block
+            new_blocks, found = digest_message.render(
+                blocks, clicked=item, clicked_block=clicked_block,
+                overlay=overlay, closed_hashes=closed_hashes or set(),
+                closed_text="✅ Closed", clicked_action_id=clicked_action_id,
+            )
+            if not found:
+                log.warning(
+                    "response_url update: action_id %r not found in message "
+                    "blocks; no in-place update applied",
+                    clicked_action_id,
+                )
+            resp = _req.post(response_url, json={
+                "replace_original": True,
+                "blocks": new_blocks,
+                "text": confirmation,
+            }, timeout=5)
+            if resp.ok and st is not None:
+                st.last_blocks = new_blocks
+        finally:
+            if locked:
+                lock.release()
+        if not resp.ok:
+            log.warning(
+                "response_url update returned %s: %s",
+                resp.status_code, resp.text[:200],
+            )
+            raise RuntimeError(
+                f"response_url update returned {resp.status_code}: {resp.text[:200]}"
+            )
+        return
+
+    # Legacy (no clicked_action_id): collapse every actions block. Only the
+    # old modal path reaches here, and it passes no blocks.
+    new_blocks = [
+        {"type": "context", "elements": [{"type": "mrkdwn", "text": confirmation}]}
+        if block.get("type") == "actions" else block
+        for block in original_message.get("blocks", [])
+    ]
 
     resp = _req.post(response_url, json={
         "replace_original": True,
@@ -437,6 +612,7 @@ async def _run_xproject_in_background(
     verb: str, target_code: str, cp_hash: str,
     response_url: str, original_message: dict,
     clicked_action_id: str = "",
+    message_key: str = "",
 ) -> None:
     """Background coroutine for cross-project proposal decisions (#88).
 
@@ -466,6 +642,8 @@ async def _run_xproject_in_background(
     confirmation = _xproject_confirmation_text(
         verb=verb, target_code=target_code, result=result
     )
+    closed = await asyncio.to_thread(_closed_asks_in, original_message)
+    failed = confirmation.startswith("⚠️")
     slack_update_error = None
     try:
         await asyncio.to_thread(
@@ -474,6 +652,10 @@ async def _run_xproject_in_background(
             original_message=original_message,
             confirmation=confirmation,
             clicked_action_id=clicked_action_id,
+            message_key=message_key,
+            item=digest_message.Item("xproj", target_code, cp_hash),
+            state=digest_message.FAILED if failed else digest_message.DONE,
+            closed_hashes=closed,
         )
     except Exception as exc:  # noqa: BLE001
         log.exception(
@@ -599,7 +781,17 @@ def _xproject_confirmation_text(*, verb: str, target_code: str, result: dict) ->
 
 
 def _confirmation_text(*, verb: str, extras: dict, result: dict) -> str:
-    """Human-readable confirmation rendered in the post-click message.
+    """Human-readable confirmation rendered in the post-click message."""
+    return _confirmation(verb=verb, extras=extras, result=result)[1]
+
+
+def _confirmation(*, verb: str, extras: dict, result: dict) -> tuple[str, str]:
+    """``(state, text)`` for the post-click message.
+
+    close-ask is labelled from MC-2 (the ask's truth), not from whether a
+    file changed: resolved now → Closed; already closed → Already closed;
+    no row and no file → No matching item. A close that changed MC-2 but no
+    file is still Closed (2026-10-05: it read "No matching item").
 
     Uses `%I` (zero-padded) rather than `%-I` (unpadded extension) for
     cross-platform consistency.
@@ -615,20 +807,31 @@ def _confirmation_text(*, verb: str, extras: dict, result: dict) -> str:
     sha = result.get("commit_sha")
     sha_str = f" · `{sha[:8]}`" if sha else ""
     errors = result.get("errors") or []
+    if verb == "close-ask":
+        if result.get("commitments_resolved"):
+            return digest_message.CLOSED, f"✅ Closed · {now_str}{sha_str}"
+        if result.get("commitments_already_closed"):
+            return digest_message.CLOSED, f"✅ Already closed · {now_str}{sha_str}"
+        if errors:  # the MC-2 half did not land; a file edit is not a close
+            return digest_message.FAILED, f"⚠️ Action failed: {errors[0][:120]}"
     if errors and not sha:
-        return f"⚠️ Action failed: {errors[0][:120]}"
+        return digest_message.FAILED, f"⚠️ Action failed: {errors[0][:120]}"
     # Silent dedupe: hash not in current sprint file (item already resolved
     # on a previous click, or rolled forward to a different sprint). The
     # resolve-risk / snooze-* writers treat this as a no-op (per Task 1.1
     # / 1.2 patterns). Surface to the user so the message isn't misleading.
     if not result.get("committed"):
-        return f"ℹ️ No matching item (already resolved or moved sprint) · {now_str}"
-    return f"{label} · {now_str}{sha_str}"
+        return (
+            digest_message.NO_MATCH,
+            f"ℹ️ No matching item (already resolved or moved sprint) · {now_str}",
+        )
+    state = digest_message.CLOSED if verb == "close-ask" else digest_message.DONE
+    return state, f"{label} · {now_str}{sha_str}"
 
 
 def _open_snooze_modal(
     *, trigger_id: str, verb: str, code: str, cp_hash: str, response_url: str,
-    week_iso: str | None = None,
+    week_iso: str | None = None, message_key: str = "", action_id: str = "",
 ) -> None:
     """Open a Slack modal with a date picker; the actual snooze happens
     on the subsequent view_submission callback.
@@ -651,6 +854,10 @@ def _open_snooze_modal(
         # snoozed item resolves against the right sprint file (see
         # fix/slack-close-week-context). None for old buttons.
         "week_iso": week_iso,
+        # So the submission can splice the snooze into THIS digest message
+        # (from this process's copy of it) instead of replacing it.
+        "message_key": message_key,
+        "action_id": action_id,
     })
     client.views_open(trigger_id=trigger_id, view={
         "type": "modal",
