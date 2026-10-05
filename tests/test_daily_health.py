@@ -137,8 +137,34 @@ def test_unbound_flags_only_floating():
         {"project_id": "p", "est_item_id": "c", "important": True, "serves": ["x"]},
     ]
     c = dh.check_unbound(_Client({"spine_substance": rows}))
-    assert c.detail == {"unbound": 3, "floating": 1} and not c.ok
+    assert c.detail == {"unbound": 3, "people": 0, "floating": 1,
+                        "floating_closed": 0} and not c.ok
     assert dh.check_unbound(_Client({"spine_substance": rows[:1]})).ok
+
+
+def test_unbound_skips_closed_workstreams_and_counts_people_apart():
+    rows = [
+        {"project_id": "open", "est_item_id": "a", "important": True, "serves": []},
+        {"project_id": "shut", "est_item_id": "b", "important": True, "serves": []},
+        {"project_id": "open", "est_item_id": "p1", "important": False, "serves": [],
+         "layer": "Stakeholders"},
+        {"project_id": "open", "est_item_id": "p2", "important": False, "serves": [],
+         "layer": "Stakeholders"},
+    ]
+    projects = [{"id": "shut", "mc_status": "Closed"}]
+    c = dh.check_unbound(_Client({"spine_substance": rows, "projects": projects}))
+    assert c.detail == {"unbound": 4, "people": 2, "floating": 1, "floating_closed": 1}
+    assert c.text == "2 · 2 people · 1 floating" and not c.ok
+    # Only the closed workstream's element floating: nothing to act on.
+    only_closed = _Client({"spine_substance": rows[1:], "projects": projects})
+    assert dh.check_unbound(only_closed).ok
+
+
+def test_unbound_status_read_failure_keeps_every_floating_element():
+    rows = [{"project_id": "shut", "est_item_id": "b", "important": True, "serves": []}]
+    c = dh.check_unbound(_Client({"spine_substance": rows,
+                                  "projects": RuntimeError("projects 503")}))
+    assert c.detail["floating"] == 1 and not c.ok
 
 
 def test_stale_summaries_counts_what_sync_rendered(tmp_path: Path):

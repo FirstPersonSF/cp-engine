@@ -403,26 +403,47 @@ def check_webhook(client, now: datetime) -> Check:
 
 def check_unbound(client) -> Check:
     """Live spine elements left unbound, and the important-but-floating subset
-    (the `spine_lint` finding: important, unbound, serves nothing)."""
+    (the `spine_lint` finding: important, unbound, serves nothing).
+
+    Stakeholder cards are counted apart: a person serves no deliverable, so an
+    unbound card is the normal state (step 4b made ~125 of them). Floating
+    elements on Closed or Archived workstreams are not a finding — nothing can
+    act on them — so they are left out of the warning (2026-10-05)."""
     label = "Spine unbound"
     if client is None:
         return _unreadable(label, _NO_CLIENT, "no client")
     try:
         rows = (client.table(Tables.SPINE_SUBSTANCE)
-                .select("project_id, est_item_id, important, serves")
+                .select("project_id, est_item_id, important, serves, layer")
                 .eq("binding", "unbound").eq("status", "live").eq("archived", False)
                 .limit(5000).execute().data) or []
     except Exception as exc:  # noqa: BLE001
         return _unreadable(label, exc)
+    # A failed status read keeps every floating element in the warning: a
+    # finding over-reported is better than one hidden by an outage.
+    try:
+        closed = {r.get("id") for r in (client.table(Tables.PROJECTS)
+                  .select("id, mc_status").in_("mc_status", ["Closed", "Archived"])
+                  .limit(5000).execute().data or [])
+                  if r.get("mc_status") in ("Closed", "Archived")}
+    except Exception:  # noqa: BLE001
+        closed = set()
     elements = {(r.get("project_id"), r.get("est_item_id")) for r in rows}
-    floating = {(r.get("project_id"), r.get("est_item_id")) for r in rows
-                if r.get("important") and not (r.get("serves") or [])}
-    text = f"{len(elements)}"
+    people = {(r.get("project_id"), r.get("est_item_id")) for r in rows
+              if r.get("layer") == "Stakeholders"}
+    floating_all = {(r.get("project_id"), r.get("est_item_id")) for r in rows
+                    if r.get("important") and not (r.get("serves") or [])}
+    floating = {k for k in floating_all if k[0] not in closed}
+    text = f"{len(elements) - len(people)}"
+    if people:
+        text += f" · {len(people)} people"
     if floating:
         text += f" · {len(floating)} floating"
     # Unbound context is normal; only important-and-floating is a finding.
     return Check(label, not floating, text,
-                 {"unbound": len(elements), "floating": len(floating)})
+                 {"unbound": len(elements), "people": len(people),
+                  "floating": len(floating),
+                  "floating_closed": len(floating_all) - len(floating)})
 
 
 # ── tenant tree ───────────────────────────────────────────────────────────
