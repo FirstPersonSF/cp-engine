@@ -4,6 +4,23 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.131.5 — 2026-10-05
+
+**Slack Close buttons tell the truth, and canon members are not floating.** Patch.
+
+*Digest buttons.* Clicking Close (or snooze, resolve, accept/dismiss) shows
+"⏳ Closing…" inside the 3-second ack, and the final update re-decides every
+item instead of trusting the copy taken at click time — so a later click can
+no longer bring an earlier item's buttons back (`webhook/digest_message.py`;
+asks already closed in MC-2 always render closed). Labels come from MC-2:
+"✅ Closed", "✅ Already closed" on a re-click, "No matching item" only when no
+commitment matches, "⚠️ Action failed" when the MC-2 write failed. The writes
+were always correct; on 10-05 every click had closed its row. The "Snooze
+until…" modal now changes only its own row instead of replacing the digest.
+
+*Canon members are bound to their brief,* so spine-lint and the health line no
+longer report them as important-but-floating.
+
 ## v0.131.4 — 2026-10-05
 
 **Health: the spine line counts people apart and ignores closed work.** Patch.
