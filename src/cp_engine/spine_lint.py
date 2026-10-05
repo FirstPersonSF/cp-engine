@@ -33,12 +33,15 @@ _ATTACH_INSTRUCTION_RE = re.compile(r"attach(?:ed)?\s+as\s+(?:a\s+)?source",
                                     re.IGNORECASE)
 
 
-def lint_spine_rows(rows: list[dict]) -> list[str]:
+def lint_spine_rows(rows: list[dict], canon_ids=frozenset()) -> list[str]:
     """Checks 1 + 2 over live spine rows.
 
     `rows` need `est_item_id, framing, layer, binding, serves, important,
-    body, sources` (the SPINE_LINT_COLUMNS shape). Returns one display-ready
-    warning per finding; [] when clean.
+    body, sources` (the SPINE_LINT_COLUMNS shape). `canon_ids` are the
+    members of the standing brief (active `canon_of` edges): a canon member
+    is bound to the brief, the workstream's current truth, so it is never
+    floating even though it serves no single deliverable (2026-10-05).
+    Returns one display-ready warning per finding; [] when clean.
     """
     out: list[str] = []
     for row in rows:
@@ -46,6 +49,7 @@ def lint_spine_rows(rows: list[dict]) -> list[str]:
         title = row.get("framing") or eid
         serves = row.get("serves") or []
         if (bool(row.get("important"))
+                and eid not in canon_ids
                 and (row.get("binding") or "") == "unbound"
                 and len(serves) == 0):
             # #319: the remedy names only moves that clear the predicate. The
@@ -769,11 +773,13 @@ def run_all_lints(
     if not rows:
         return source_warnings
 
-    warnings: list[str] = list(lint_spine_rows(rows))
-
     # Relations are optional: a read failure degrades the lifecycle and
-    # archived-referrer checks rather than failing the pass.
+    # archived-referrer checks rather than failing the pass — and with no
+    # canon set every important unbound element still warns (over-report,
+    # never hide).
     relations_all: list[dict] = []
+    relations_ok = True
+    relation_warning: str | None = None
     try:
         relations_all = (
             client.table(mc2_db.Tables.SPINE_RELATIONS)
@@ -783,13 +789,20 @@ def run_all_lints(
             .execute()
             .data
         ) or []
-        warnings.extend(lint_lifecycle(rows, relations_all))
     except Exception as exc:  # noqa: BLE001 — advisory pass, never fail the lint
+        relations_ok = False
         # Degrade, but never let "could not check" read as "clean" (step 3).
-        warnings.append(
+        relation_warning = (
             "lint incomplete: spine relations unreadable — lifecycle and "
             f"archived-referrer checks did NOT run ({type(exc).__name__}: {exc})"
         )
+    canon_ids = frozenset(e.get("from_item_id") for e in relations_all
+                          if e.get("kind") == "canon_of")
+    warnings: list[str] = list(lint_spine_rows(rows, canon_ids))
+    if relations_ok:
+        warnings.extend(lint_lifecycle(rows, relations_all))
+    else:
+        warnings.append(relation_warning)
 
     warnings.extend(
         lint_curation(rows, today=today,

@@ -535,3 +535,10 @@ def test_post_channel_surfaces_slack_error_code() -> None:
 
     with pytest.raises(slack_mod.SlackError, match=r"\[slack error: channel_not_found\]"):
         slack_mod.post_channel(FakeClient(), channel_id="C123", text="hi")
+
+
+def test_unbound_canon_member_is_not_floating():
+    rows = [{"project_id": "p", "est_item_id": "rule", "important": True, "serves": []}]
+    canon = [{"project_id": "p", "from_item_id": "rule", "kind": "canon_of"}]
+    c = dh.check_unbound(_Client({"spine_substance": rows, "spine_relations": canon}))
+    assert c.ok and c.detail["floating"] == 0

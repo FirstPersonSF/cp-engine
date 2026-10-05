@@ -408,7 +408,8 @@ def check_unbound(client) -> Check:
     Stakeholder cards are counted apart: a person serves no deliverable, so an
     unbound card is the normal state (step 4b made ~125 of them). Floating
     elements on Closed or Archived workstreams are not a finding — nothing can
-    act on them — so they are left out of the warning (2026-10-05)."""
+    act on them — and canon members are bound to their brief, so both are
+    left out of the warning (2026-10-05)."""
     label = "Spine unbound"
     if client is None:
         return _unreadable(label, _NO_CLIENT, "no client")
@@ -433,7 +434,18 @@ def check_unbound(client) -> Check:
               if r.get("layer") == "Stakeholders"}
     floating_all = {(r.get("project_id"), r.get("est_item_id")) for r in rows
                     if r.get("important") and not (r.get("serves") or [])}
-    floating = {k for k in floating_all if k[0] not in closed}
+    # A canon member is bound to its workstream's standing brief, so it is
+    # never floating. A failed read keeps it in the warning (over-report).
+    try:
+        canon = {(r.get("project_id"), r.get("from_item_id")) for r in
+                 (client.table(Tables.SPINE_RELATIONS)
+                  .select("project_id, from_item_id, kind")
+                  .eq("kind", "canon_of").eq("status", "active")
+                  .limit(5000).execute().data or [])
+                 if r.get("kind") == "canon_of"}
+    except Exception:  # noqa: BLE001
+        canon = set()
+    floating = {k for k in floating_all if k[0] not in closed and k not in canon}
     text = f"{len(elements) - len(people)}"
     if people:
         text += f" · {len(people)} people"

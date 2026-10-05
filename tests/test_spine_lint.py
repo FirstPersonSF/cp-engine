@@ -715,3 +715,26 @@ def test_a_job_and_a_failed_lookup_keep_the_brief_check():
     assert _brief_warned(job)
     # No project row resolves: unknown, so the check stays on.
     assert _brief_warned({"projects": []})
+
+
+def test_canon_member_is_not_floating():
+    """A canon member is bound to the standing brief (2026-10-05)."""
+    row = _row("_authored/rule", important=True, binding="unbound", serves=())
+    assert lint_spine_rows([row], frozenset({"_authored/rule"})) == []
+    assert lint_spine_rows([row])  # not canon: still floating
+
+
+def test_run_all_lints_reads_canon_from_relations():
+    from cp_engine.spine_lint import run_all_lints
+
+    rule = {"est_item_id": "_authored/rule", "framing": "Golden Rule",
+            "layer": "Decisions", "binding": "unbound", "serves": [],
+            "important": True, "body": "b", "sources": ["s"], "status": "live",
+            "archived": False, "project_id": "p1", "version_label": "v1",
+            "version_date": "2026-09-03"}
+    edge = {"kind": "canon_of", "from_item_id": "_authored/rule",
+            "to_item_id": "_authored/inputs-briefing", "status": "active"}
+    db = {"spine_substance": [rule], "spine_relations": [edge],
+          "projects": _projects_db()["projects"]}
+    assert not any("important-but-floating" in w
+                   for w in run_all_lints(_Client(db), ["x"]))
