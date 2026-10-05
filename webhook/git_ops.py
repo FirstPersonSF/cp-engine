@@ -134,6 +134,47 @@ def _cloned_tenant(sparse_paths: list[str] | None = None):
             yield root
 
 
+# Bounds on one network git call. SSH keepalives kill a connection that
+# goes silent (~60 s); the subprocess timeout catches anything else.
+_SSH_CONNECT_TIMEOUT_S = 15
+_SSH_ALIVE_INTERVAL_S = 15
+_SSH_ALIVE_COUNT_MAX = 4
+_CLONE_TIMEOUT_S = float(os.environ.get("CP_TENANT_CLONE_TIMEOUT_SEC", "120"))
+_CLONE_ATTEMPTS = 2
+
+
+def _run_clone(clone_cmd: list[str], *, env: dict, dest: Path) -> None:
+    """`git clone` with a timeout and one retry. Logs how long it took — the
+    clone was the one silent step, so a stall there left no trace."""
+    for attempt in range(1, _CLONE_ATTEMPTS + 1):
+        started = time.monotonic()
+        try:
+            subprocess.run(
+                clone_cmd,
+                check=True,
+                env=env,
+                capture_output=True,
+                timeout=_CLONE_TIMEOUT_S,
+            )
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as exc:
+            elapsed = time.monotonic() - started
+            stderr = getattr(exc, "stderr", b"") or b""
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode("utf-8", "replace")
+            log.warning(
+                "tenant clone attempt %d/%d failed after %.1fs: %s %s",
+                attempt, _CLONE_ATTEMPTS, elapsed, type(exc).__name__,
+                stderr.strip()[-300:],
+            )
+            shutil.rmtree(dest, ignore_errors=True)
+            if attempt == _CLONE_ATTEMPTS:
+                raise
+            continue
+        log.info("tenant clone ok in %.1fs (attempt %d)",
+                 time.monotonic() - started, attempt)
+        return
+
+
 @contextmanager
 def _clone_into_tmp(repo_url: str, sparse_paths: list[str] | None):
     tmp = Path(tempfile.mkdtemp(prefix="cp-webhook-"))
@@ -143,12 +184,7 @@ def _clone_into_tmp(repo_url: str, sparse_paths: list[str] | None):
         if sparse_paths:
             clone_cmd += ["--filter=blob:none", "--sparse"]
         clone_cmd += [repo_url, str(tmp / "cp")]
-        subprocess.run(
-            clone_cmd,
-            check=True,
-            env=env,
-            capture_output=True,
-        )
+        _run_clone(clone_cmd, env=env, dest=tmp / "cp")
         if sparse_paths:
             subprocess.run(
                 ["git", "sparse-checkout", "set", *sparse_paths],
@@ -301,6 +337,12 @@ def _ssh_env() -> dict:
     key_path.chmod(0o600)
     env["GIT_SSH_COMMAND"] = (
         f"ssh -i {key_path} -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes"
+        # A connection GitHub stops answering must DIE, not hang: every
+        # tenant write runs under one lock, so one silent clone froze every
+        # Slack click queued behind it (2026-10-05: 4m17s, zero bytes in).
+        f" -o ConnectTimeout={_SSH_CONNECT_TIMEOUT_S}"
+        f" -o ServerAliveInterval={_SSH_ALIVE_INTERVAL_S}"
+        f" -o ServerAliveCountMax={_SSH_ALIVE_COUNT_MAX}"
     )
     return env
 
