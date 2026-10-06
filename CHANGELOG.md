@@ -4,6 +4,16 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.131.7 — 2026-10-06
+
+**A deliverable is never floating.** Patch.
+
+The floating rule (`important` and serving nothing) always matched an
+important Deliverables element, because a deliverable is the work others
+serve. On 10-06 a deliverable created to bind a floating element replaced that
+element in the health line's count. `spine-lint` (CLI and hosted) and the
+health line's `Spine unbound` now skip the Deliverables layer.
+
 ## v0.131.6 — 2026-10-05
 
 **Slack Close no longer hangs on "⏳ Closing…".** Patch.
