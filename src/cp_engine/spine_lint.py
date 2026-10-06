@@ -33,6 +33,14 @@ _ATTACH_INSTRUCTION_RE = re.compile(r"attach(?:ed)?\s+as\s+(?:a\s+)?source",
                                     re.IGNORECASE)
 
 
+def is_deliverable(layer: str | None) -> bool:
+    """A Deliverables element is the work others serve: it serves nothing
+    itself, so `important AND serves=[]` is its normal state, never a
+    floating finding (2026-10-06 — a new important deliverable replaced the
+    element it was created to bind in the health line's floating count)."""
+    return (layer or "").strip().lower() in ("deliverables", "deliverable")
+
+
 def lint_spine_rows(rows: list[dict], canon_ids=frozenset()) -> list[str]:
     """Checks 1 + 2 over live spine rows.
 
@@ -41,6 +49,7 @@ def lint_spine_rows(rows: list[dict], canon_ids=frozenset()) -> list[str]:
     members of the standing brief (active `canon_of` edges): a canon member
     is bound to the brief, the workstream's current truth, so it is never
     floating even though it serves no single deliverable (2026-10-05).
+    A deliverable is never floating either (`is_deliverable`).
     Returns one display-ready warning per finding; [] when clean.
     """
     out: list[str] = []
@@ -50,6 +59,7 @@ def lint_spine_rows(rows: list[dict], canon_ids=frozenset()) -> list[str]:
         serves = row.get("serves") or []
         if (bool(row.get("important"))
                 and eid not in canon_ids
+                and not is_deliverable(row.get("layer"))
                 and (row.get("binding") or "") == "unbound"
                 and len(serves) == 0):
             # #319: the remedy names only moves that clear the predicate. The
