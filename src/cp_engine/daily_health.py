@@ -44,6 +44,7 @@ from typing import Any
 
 from cp_engine.clock import tenant_now, tenant_timezone
 from cp_engine.mc2_db import Tables
+from cp_engine.spine_lint import is_deliverable
 
 log = logging.getLogger(__name__)
 
@@ -409,7 +410,8 @@ def check_unbound(client) -> Check:
     unbound card is the normal state (step 4b made ~125 of them). Floating
     elements on Closed or Archived workstreams are not a finding — nothing can
     act on them — and canon members are bound to their brief, so both are
-    left out of the warning (2026-10-05)."""
+    left out of the warning (2026-10-05). A deliverable is the work others
+    serve, so it is never floating (2026-10-06)."""
     label = "Spine unbound"
     if client is None:
         return _unreadable(label, _NO_CLIENT, "no client")
@@ -433,7 +435,8 @@ def check_unbound(client) -> Check:
     people = {(r.get("project_id"), r.get("est_item_id")) for r in rows
               if r.get("layer") == "Stakeholders"}
     floating_all = {(r.get("project_id"), r.get("est_item_id")) for r in rows
-                    if r.get("important") and not (r.get("serves") or [])}
+                    if r.get("important") and not (r.get("serves") or [])
+                    and not is_deliverable(r.get("layer"))}
     # A canon member is bound to its workstream's standing brief, so it is
     # never floating. A failed read keeps it in the warning (over-report).
     try:

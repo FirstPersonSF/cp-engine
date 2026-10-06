@@ -542,3 +542,15 @@ def test_unbound_canon_member_is_not_floating():
     canon = [{"project_id": "p", "from_item_id": "rule", "kind": "canon_of"}]
     c = dh.check_unbound(_Client({"spine_substance": rows, "spine_relations": canon}))
     assert c.ok and c.detail["floating"] == 0
+
+
+def test_unbound_deliverable_is_not_floating():
+    """A deliverable is the work others serve (2026-10-06): an important one
+    serving nothing is its normal state, not a floating finding."""
+    rows = [{"project_id": "p", "est_item_id": "story-flow", "important": True,
+             "serves": [], "layer": "Deliverables"},
+            {"project_id": "p", "est_item_id": "note", "important": True,
+             "serves": [], "layer": "Synthesis"}]
+    c = dh.check_unbound(_Client({"spine_substance": rows}))
+    assert c.detail["floating"] == 1 and c.text == "2 · 1 floating"
+    assert dh.check_unbound(_Client({"spine_substance": rows[:1]})).ok

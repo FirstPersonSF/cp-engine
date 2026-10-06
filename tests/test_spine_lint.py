@@ -738,3 +738,11 @@ def test_run_all_lints_reads_canon_from_relations():
           "projects": _projects_db()["projects"]}
     assert not any("important-but-floating" in w
                    for w in run_all_lints(_Client(db), ["x"]))
+
+
+def test_deliverable_is_not_floating():
+    """A deliverable serves nothing by definition (2026-10-06)."""
+    row = _row("_authored/story-flow", layer="Deliverables", important=True,
+               binding="unbound", serves=())
+    assert lint_spine_rows([row]) == []
+    assert lint_spine_rows([{**row, "layer": "Synthesis"}])  # still floats
