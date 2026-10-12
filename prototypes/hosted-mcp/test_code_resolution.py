@@ -178,7 +178,8 @@ def _sent_code(posts: list[dict], path: str) -> str:
 def test_capture_project_state_forwards_the_full_code(server, tree, upstream):
     """THE #345 CONTROL — the 2026-09-30 call, in shape."""
     server.capture_project_state(SHORT, status="In build", objective="Keep calendars",
-                                 where_it_stands=["a"], next_up=["b"], blockers=["None"])
+                                 where_it_stands=["Calendar sync live on dev"],
+                                 next_up=["Ship to prod"], blockers=["None"])
     assert _sent_code(upstream, "/api/project-state/capture") == FULL
 
 

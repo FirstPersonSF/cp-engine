@@ -87,6 +87,85 @@ class ExecSummaryMergeError(Exception):
     """The merge could not be applied; the file is left untouched."""
 
 
+# ── placeholder refusal (#353 item 4) ────────────────────────────────
+#
+# 2026-09-15: a smoke test of hosted `capture_project_state` wrote the literal
+# `probe` over Mission Control's Status paragraph (tenant commit 07198f39), and
+# the next render carried it into `master-cp.md`. The write path worked
+# perfectly; that was the problem — there is no sandbox, so the value that
+# proves the path works is the value that destroys the field.
+#
+# The check lives HERE, in the one function every writer reaches (the webhook
+# route that mc-2 and the hosted verb call, the weekly drafter), so no caller
+# can route around it. The hosted server imports this same predicate for its
+# pre-flight refusal, so there is one definition of junk, not two.
+#
+# THE RULE: after trimming whitespace, case and wrapping punctuation, the value
+# is refused when it is
+#   1. a whole-value match for a known junk word (`_PLACEHOLDER_VALUES`), or
+#   2. EMPTY (it was only punctuation: `.`, `-`, `?`, `---`), or
+#   3. a single character (`x`, `q`, `1`).
+# Deliberately NOT a general length or word-count floor: Status is "one
+# phrase" by design, and "OK", "Shipped", "On hold", "Live" are real one- and
+# two-word statuses. Two characters is the shortest real status anyone writes
+# ("OK", "v2"), so the floor sits below it. `none` / `n/a` are absent on
+# purpose — "None" is an honest Blockers bullet — and so is `testing`, a real
+# phase ("Testing" = in user testing). Err toward refusing only obvious junk.
+_PLACEHOLDER_VALUES = frozenset({
+    "probe", "test", "test test", "todo", "to do", "tbd",
+    "tbc", "x", "xx", "xxx", "placeholder", "dummy", "foo", "bar", "foobar",
+    "asdf", "lorem ipsum",
+})
+
+_WRAPPING_PUNCT = "\"'`*_.!?:;()[]<>{}-—–,/\\|#~"
+
+
+def placeholder_value(value: object) -> bool:
+    """True when `value` is a placeholder, not Exec Summary content.
+
+    Non-strings and the empty / whitespace-only string are NOT placeholders —
+    `None` means "field omitted" and an empty value is refused by its own,
+    clearer rule (or dropped, for a bullet). This answers only "is there text
+    here that is plainly junk"."""
+    if not isinstance(value, str) or not value.strip():
+        return False
+    norm = " ".join(value.strip().strip(_WRAPPING_PUNCT).lower().split())
+    return (
+        len(norm) < 2
+        or norm in _PLACEHOLDER_VALUES
+        or norm.startswith("lorem ipsum")
+    )
+
+
+def first_placeholder(
+    fields: dict[str, object],
+) -> tuple[str, int | None, str] | None:
+    """`(field, bullet index or None, value)` for the first placeholder among
+    `fields` (inline values and each bullet of a list), or None."""
+    for name, value in fields.items():
+        if isinstance(value, list):
+            for i, item in enumerate(value):
+                if placeholder_value(item):
+                    return name, i, item
+        elif placeholder_value(value):
+            return name, None, value  # type: ignore[return-value]
+    return None
+
+
+def _refuse_placeholders(fields: dict[str, object]) -> None:
+    hit = first_placeholder(fields)
+    if hit is None:
+        return
+    name, index, value = hit
+    where = f"{name}[{index}]" if index is not None else name
+    raise ExecSummaryMergeError(
+        f"{where} is a placeholder ({value!r}), not Exec Summary content — "
+        "refused before writing (#353). This writes the real summary; there is "
+        "no sandbox. Pass the field's actual text, or omit it to leave it "
+        "unchanged."
+    )
+
+
 def merge_exec_summary_fields(
     cp_md_text: str,
     fields: dict[str, str | list[str]],
@@ -123,6 +202,7 @@ def merge_exec_summary_fields(
         )
     if not fields:
         return cp_md_text, ()
+    _refuse_placeholders(fields)
 
     new_region, changed = _apply_fields(region, fields)
     if not changed:
@@ -506,6 +586,7 @@ def append_update_entry(
             "an empty Updates entry would advance the freshness stamp while "
             "saying nothing"
         )
+    _refuse_placeholders({"Updates": entry})
 
     start = cp_md_text.find(EXEC_SUMMARY_START)
     end = cp_md_text.find(EXEC_SUMMARY_END, start) if start != -1 else -1

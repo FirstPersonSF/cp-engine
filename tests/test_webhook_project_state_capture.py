@@ -286,3 +286,47 @@ class TestTheRollOffIsReported:
         """The old path returned changed=True while writing nothing (#294)."""
         r = _post(client, {**GOOD, "fields": {}, "updates_append": "Nowhere for this to go."})
         assert r.status_code == 400, r.text
+
+
+class TestPlaceholderRefusal:
+    """#353 (item 4). On 2026-09-15 a smoke test of `capture_project_state`
+    wrote the literal `probe` over Mission Control's Status paragraph, and the
+    next render carried it into master-cp.md. The hosted verb refuses
+    placeholders, but this route is the writer every caller reaches — mc-2,
+    a script, a future verb — so the refusal has to hold HERE, not only in one
+    caller. Refused means: 400 naming the field, file untouched, no commit."""
+
+    def _head(self, tenant):
+        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=tenant,
+                              check=True, capture_output=True, text=True).stdout
+
+    def test_a_probe_status_over_prose_is_refused_and_nothing_is_written(self, client, tenant):
+        before, head = _cp_text(tenant), self._head(tenant)
+        r = _post(client, {**GOOD, "fields": {"Status": "probe"}})
+        assert r.status_code == 400, r.text
+        assert "Status" in r.text and "probe" in r.text and "placeholder" in r.text
+        assert _cp_text(tenant) == before
+        assert self._head(tenant) == head
+        assert "**Status:** Per-pillar status from Joe's doc dump." in before
+
+    def test_a_junk_next_up_bullet_is_refused(self, client, tenant):
+        before = _cp_text(tenant)
+        r = _post(client, {**GOOD, "fields": {
+            "Status": "On hold.", "Next up": ["Send pillar four to Hinkle", "TBD"],
+        }})
+        assert r.status_code == 400, r.text
+        assert "Next up" in r.text and "TBD" in r.text
+        assert _cp_text(tenant) == before
+
+    def test_a_junk_updates_append_is_refused(self, client, tenant):
+        before = _cp_text(tenant)
+        r = _post(client, {**GOOD, "fields": {}, "updates_append": "test"})
+        assert r.status_code == 400, r.text
+        assert "Updates" in r.text
+        assert _cp_text(tenant) == before
+
+    @pytest.mark.parametrize("status", ["On hold.", "Shipped v2", "Testing", "Paused"])
+    def test_real_short_statuses_still_land(self, client, tenant, status):
+        r = _post(client, {**GOOD, "fields": {"Status": status}})
+        assert r.status_code == 200, r.text
+        assert f"**Status:** {status}" in _cp_text(tenant)
