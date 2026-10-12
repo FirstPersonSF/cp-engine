@@ -4,6 +4,18 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.131.8 — 2026-10-12
+
+**Docs: three stale or misleading lines from the improvements log.** Patch.
+
+`/cp-tools` said hosted `pull_spine_element` does not compose an Agreement's
+live engagement block; it has since v0.131.2. It also said the retired dates
+loop ratifies commitments; the daily sync expires undated ones now. The edge
+vocabulary now states the direction of the feeding kinds (`from_key` is the
+input, `to_key` what was built from it); 18 edges were once wired backwards on
+sap-5174 from the old wording. `/cp-wrapup` step 9: stage by path, never
+`git add -A`, because a whole-tree add commits another session's work.
+
 ## v0.131.7 — 2026-10-06
 
 **A deliverable is never floating.** Patch.

@@ -186,7 +186,12 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   (est_item_id or distinct title substring). Idempotent. Edge vocab: responds_to
   = their voice reacting to ours; derives_from = built from named inputs;
   supersedes = a genuine fork (rare); informs = shaped but didn't generate;
-  contradicts = conflicting claim.
+  contradicts = conflicting claim. **Direction for the feeding kinds
+  (derives_from / informs / responds_to): `from_key` is the INPUT, `to_key` is
+  the thing built from it** — `source --serves--> activity
+  --derives_from--> deliverable`. The verb accepts either direction silently;
+  a backwards edge shows up only as `seal-sweep` reporting the deliverable
+  BLIND. Check with `list_spine_relations` after wiring.
 - `retire_spine_relation(project_code, kind, from_key, to_key)` — delete one edge
   (fix a mis-recorded relation). Tolerates a dead endpoint: pass raw est_item_ids
   to clean an orphaned edge left by an older retire.
@@ -268,13 +273,14 @@ with fixed shapes:
 - **SOW** (Agreement) stores ONLY the human side — distilled terms,
   exclusions, change orders as dated versions, with the signed doc attached
   as a source. Deliverables, dates, and pricing live in the estimate (MC-2's
-  estimator). Never retype estimator facts into the element. (The retired
-  stdio `pull_spine_element` composed the live engagement shape into the body;
-  the hosted verb does not yet — read the estimate in MC-2.)
+  estimator). Never retype estimator facts into the element. Hosted
+  `pull_spine_element` appends the live engagement shape (phases,
+  deliverables, dates) to an Agreement's body, and names a failed read in
+  `warnings` rather than passing the stored terms off as composed.
 
 **3 — Commitments** (MC-2's dated-obligations store — who owes what by when;
-the same store meeting auto-ingest proposes into, the weekly dates loop
-ratifies, and the Monday partners digest reads). **Asks live here (step 4a).**
+the same store meeting auto-ingest proposes into, the daily sync expires
+undated rows from, and the Monday partners digest reads). **Asks live here (step 4a).**
 A sprint file's `### Open asks` is RENDERED from this store at sync (the
 `open-asks` region); a bullet typed under it is imported here on the next
 sync, matched first against every status so a closed ask never comes back.

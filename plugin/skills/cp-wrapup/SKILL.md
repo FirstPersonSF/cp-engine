@@ -199,6 +199,12 @@ GitHub issues. Never delete entries.
 Commit the entire `sprints/<YYYY-W##>/` directory alongside the master
 roll-up and each touched project's `cp.md`. Then push.
 
+**Stage by path, never `git add -A`.** Another session may be editing in the
+same tree; a whole-tree add commits its half-finished files under your
+message, and `git log` then names the wrong session for them (`53d61fdc`,
+2026-10-01). Stage the touched projects' directories, `sprints/`, and the
+generated roll-ups.
+
 The auto-ingest webhook pushes to the same remote while you work, so the
 push usually needs a merge first: `git fetch`, then `git merge origin/main`
 (not a rebase — `--ours`/`--theirs` swap meaning mid-rebase). `cxp sync`
