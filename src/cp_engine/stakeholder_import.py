@@ -440,7 +440,9 @@ def apply_plan(client: Any, plan: Plan, *, project_company: Mapping[str, str | N
         cid = project_company.get(person.home_id or (card.project_id if card else ""), None)
         details = person.details
         if details is not None and cid and not details.company:
-            details = replace(details, company=company_names.get(cid, ""))
+            # Only where a group header names the client — never a default (#355).
+            details = replace(details, company=sh.explicit_company(
+                person.mentions, company_names.get(cid, "")))
         if card is not None and card.row is not None:
             w = sh.update_card_details(client, card, details, today=today,
                                        note="Step 4b migration: details from markdown",
