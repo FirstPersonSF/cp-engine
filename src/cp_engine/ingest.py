@@ -1897,13 +1897,15 @@ def _write_stakeholder_cards(
             email=_sanitize_inline_text(item.get("email") or ""),
             source=f"meeting ingest {today.isoformat()}",
             code=code,
+            # Only a company the item states; the workstream's client is
+            # never a default — interviewees and vendors work elsewhere (#355).
+            company=_sanitize_inline_text(item.get("company") or ""),
         )
-        item_company = _sanitize_inline_text(item.get("company") or "") or company
         try:
             write = sh.ensure_card(
                 supabase, mention, cards=cards, project_id=entry.mc2_id,
                 project_code=code, roster=roster, today=today,
-                company=item_company, aliases=aliases,
+                company=company, aliases=aliases,
                 provenance="from a meeting ingest",
             )
         except Exception as exc:  # noqa: BLE001 — one person never blocks the rest

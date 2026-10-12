@@ -201,7 +201,9 @@ def test_ingest_writes_a_card_not_a_sprint_bullet(tmp_path):
 
     d = sh.parse_details(row["body"])
     assert d.name == "Laurie Kellogg" and d.role == "Creative Director"
-    assert d.side == "client" and d.company == "Google"
+    # No company was stated, so none is written — the workstream's client is
+    # never a default (#355; this line used to assert "Google").
+    assert d.side == "client" and d.company == ""
     assert [s["title"] for s in client.store["spine_steps"]] == [
         "Created Laurie Kellogg — Creative Director"]
     # A re-ingest of the same person is matched, never a twin.

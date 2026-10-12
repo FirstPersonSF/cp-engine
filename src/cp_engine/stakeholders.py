@@ -544,6 +544,9 @@ class Mention:
     email: str = ""
     group: str = ""
     aliases: tuple[str, ...] = ()
+    #: A company the source stated outright (an ingest item's ``company``
+    #: field) — never inferred from prose or from the workstream (#355).
+    company: str = ""
     source: str = ""          # "cp.md" | "sprint 2026-W39"
     code: str = ""
     raw: str = ""
@@ -801,6 +804,44 @@ def company_name_for(client: Any, project_id: str) -> str:
     return company_of(client, project_id)[1]
 
 
+def explicit_company(mentions: Iterable[Mention], client_company: str = "") -> str:
+    """The company a person's sources state outright, or ``""`` (#355).
+
+    Never defaulted to the workstream's client: an interviewee, customer or
+    vendor on a client project works somewhere else (slt-5196's Adelle
+    Bonavire, PTC, was stamped "Salesloft"). Two explicit signals count —
+    a mention's own ``company`` (an ingest item's field), then a markdown
+    group header that names the client (``**Google (client)**``,
+    ``**Client**``), which is the author saying so. Prose is not read."""
+    mentions = list(mentions)
+    for m in mentions:
+        if m.company.strip():
+            return m.company.strip()
+    if client_company:
+        words = {w for w in norm_name(client_company).split() if len(w) > 2}
+        for m in mentions:
+            g = norm_name(m.group)
+            if not g or _EXTERNAL_GROUP_RE.search(g):
+                continue
+            if "client" in g.split() or (words and words <= set(g.split())):
+                return client_company
+    return ""
+
+
+_BODY_COMPANY_RE = re.compile(
+    r"^[ \t]*(?:[-*][ \t]+)?\*{0,2}Company:\*{0,2}[ \t]*(?P<v>[^\n*]+?)[ \t]*$",
+    re.M | re.I,
+)
+
+
+def body_company(body: str | None) -> str:
+    """A ``Company:`` / ``**Company:**`` line a person wrote in a card's
+    prose (outside the details block), or ``""``. A field the author typed,
+    not an extraction from sentences."""
+    m = _BODY_COMPANY_RE.search(strip_details(body))
+    return m.group("v").strip() if m else ""
+
+
 def side_for(m: Mention, *, default: str = "client") -> str:
     if m.group and _EXTERNAL_GROUP_RE.search(m.group):
         return "external"
@@ -917,7 +958,10 @@ def update_card_details(client: Any, card: Card, details: Details, *, today: dat
     from cp_engine.authored_element import build_version_rows
     from cp_engine.mc2_db import Tables
 
-    merged = merge_details(card.details, details)
+    old = card.details
+    if not (old and old.company) and (stated := body_company(card.body)):
+        old = replace(old or Details(), company=stated)
+    merged = merge_details(old, details)
     if card.details == merged:
         return CardWrite(action="matched", name=card.name, est_item_id=card.est_item_id,
                          project_code=card.project_code, scope=card.scope)
@@ -961,7 +1005,12 @@ def ensure_card(client: Any, mention: Mention, *, cards: list[Card], project_id:
     """The one writer behind ingest and the sync import: ``mention`` becomes
     a card, or fills a matched card's details — never a second card for a
     person already known. Internal people and non-people are skipped.
-    ``cards`` is updated in place with anything created."""
+    ``cards`` is updated in place with anything created.
+
+    ``company`` is the WORKSTREAM's client company: it screens out an entry
+    that is the company itself, and fills the card's ``Company`` only when
+    the mention says the person is the client's (:func:`explicit_company`)
+    — never as a default (#355)."""
     name = apply_aliases(mention.name, aliases)
     if not is_person_name(name) or (company and norm_name(name) == norm_name(company)):
         return CardWrite(action="skipped", name=mention.name, reason="not a person")
@@ -976,7 +1025,8 @@ def ensure_card(client: Any, mention: Mention, *, cards: list[Card], project_id:
         return CardWrite(action="skipped", name=name, reason="internal (first name)")
     extra_aliases = tuple(a for a in (mention.name, *mention.aliases)
                           if norm_name(a) != norm_name(found.name if found else name))
-    details = Details(name=name, role=_clip(mention.role, 160), company=company,
+    details = Details(name=name, role=_clip(mention.role, 160),
+                      company=explicit_company([mention], company),
                       email=mention.email, side=side_for(mention),
                       aliases=extra_aliases)
     if found is not None:
