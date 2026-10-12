@@ -319,6 +319,15 @@ with fresh state. Safe to re-run after a `cxp sync`, after a meeting auto-ingest
 or anytime new content lands (including after adding/closing milestones
 in the MC-2 schedule or commitments in MC-2).
 
+## After the meeting
+
+Tag the Fathom recording in the dashboard as
+`sprint_planning_scope='1p' | 'fpsf' | 'canonic' | 'storyos-mc'`. The
+auto-ingest webhook routes per-project bullets and writes the tenant-wide
+summary to `sprints/<W##>/_week.md`'s `## Sprint planning summaries`
+(unsettled decisions: its `## Open questions`). Don't hand-write
+per-project bullets when auto-ingest is available.
+
 ## What good looks like
 
 - The doc is a **synthesized, prioritized plan**, not an inventory. The

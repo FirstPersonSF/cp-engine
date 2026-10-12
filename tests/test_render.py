@@ -386,19 +386,25 @@ def test_claude_md_omits_per_verb_catalog() -> None:
 
 
 def test_claude_md_word_count_budget() -> None:
-    """Splitting the verb catalog (and the on-demand /cp-prep and journey-step
-    detail) out of the generated file brought it from ~4,600 to the ~2,800-word
-    acceptance target (fixtures: ~2,740 for 1p, ~2,800 for canonic). The assert
-    sits at 2,900 — ~100 words of slack for per-tenant render variation (real
-    tenants aren't the fixture tenants) without letting reference content creep
-    back. Growth here is context every session pays for: move on-demand
-    reference material into a plugin command instead of raising the budget."""
+    """Growth here is context every session pays for, so the count is watched —
+    but it WARNS, it does not fail (Drew, 2026-10-12). As a hard 2,900 cap it
+    rationed correctness: on 08-08 fixing a wrong diagram cost 44 words against
+    3 of slack, and unrelated passages were cut to make room. The test for a
+    section is whether it has a trigger that loads it on demand (a skill or
+    command the session reaches when it needs it); if it does, move it there.
+    If it doesn't — a rule every session must see, or something a hosted-only
+    session (no plugin) needs — it stays, whatever the count. A correction
+    never trades against this number."""
+    import warnings
+
     for name in ("1p", "canonic"):
-        out = render_claude_md(make_tenant(name=name))
-        assert len(out.split()) <= 2900, (
-            f"CLAUDE.md for tenant {name!r} is {len(out.split())} words; "
-            "move on-demand reference content into a plugin command instead"
-        )
+        n = len(render_claude_md(make_tenant(name=name)).split())
+        if n > 2900:
+            warnings.warn(
+                f"CLAUDE.md for tenant {name!r} is {n} words (watch line 2,900): "
+                "move only sections that have an on-demand trigger",
+                stacklevel=1,
+            )
 
 
 def test_claude_md_restart_note_covers_credentials() -> None:
@@ -1185,3 +1191,19 @@ def test_migration_bullet_re_matches_syncs_output():
         if EXEC_SUMMARY_MIGRATION_BULLET_RE.match(line)
     ]
     assert len(matches) == 1
+
+
+def test_gitignore_tracks_spreadsheets_but_not_office_binaries() -> None:
+    """Client trackers (.xlsx/.xls) are versioned in the tenant; decks and docs
+    stay in Dropbox. A spreadsheet pattern creeping back would leave v01 of a
+    client tracker on one laptop with nothing to diff v02 against."""
+    from cp_engine.render import render_gitignore
+
+    patterns = {
+        line.strip()
+        for line in render_gitignore().splitlines()
+        if line.strip() and not line.startswith("#")
+    }
+    assert "*.xlsx" not in patterns
+    assert "*.xls" not in patterns
+    assert {"*.pptx", "*.docx", "*.pdf"} <= patterns

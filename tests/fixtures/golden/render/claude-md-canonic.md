@@ -306,20 +306,9 @@ Deliberations land in the sprint file's `### Open questions`, beside
 
 When the user asks to prep an agenda for sprint planning ("run weekly
 sprint planning", "prep sprint planning agenda", or similar), run
-`/cp-prep`. The engine emits a
-**bundle** (`cxp prep-planning --bundle`) — every active project's full
-Exec Summary plus deterministic metrics — and **you synthesize**
-`sprints/<W##>/_planning.md` from it in-session. The command itself
-carries the full six-section contract and the every-active-project-
-appears-exactly-once invariant. Ad-hoc scoped prep (e.g. one client
-meeting): `/cp-prep <code> [<code> ...]`.
-
-After the meeting, tag the Fathom recording in the dashboard as
-`sprint_planning_scope='1p' | 'fpsf' | 'canonic' | 'storyos-mc'` — the
-auto-ingest webhook handles per-project routing + the tenant-wide
-summary in `sprints/<W##>/_week.md`'s `## Sprint planning summaries`
-(unsettled decisions: its `## Open questions`).
-Don't hand-write per-project bullets when auto-ingest is available.
+`/cp-prep` — it carries the synthesis contract and the post-meeting
+Fathom tagging step. Ad-hoc scoped prep (e.g. one client meeting):
+`/cp-prep <code> [<code> ...]`.
 
 ## Deepening from transcript
 

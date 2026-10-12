@@ -798,11 +798,12 @@ _GITIGNORE_BODY = """\
 *.ppt
 *.docx
 *.doc
-*.xlsx
-*.xls
 *.zip
 *.tar
 *.tar.gz
+
+# Spreadsheets (.xlsx/.xls) are tracked: a client tracker needs its v01
+# committed so v02 has something to diff against (2026-10-12).
 
 # OS
 .DS_Store

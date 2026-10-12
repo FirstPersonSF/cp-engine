@@ -4,6 +4,24 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.131.9 — 2026-10-12
+
+**Tenants track spreadsheets; CLAUDE.md's word count warns instead of failing.**
+Patch.
+
+*Spreadsheets.* The generated `.gitignore` no longer drops `*.xlsx` / `*.xls`.
+A client tracker (Salesloft's roster) could not be committed, so v01 lived on
+one laptop and v02 had nothing to diff against. Decks, docs and PDFs still go
+to Dropbox.
+
+*CLAUDE.md budget.* The 2,900-word assert is now a warning. As a hard cap it
+rationed corrections: fixing a wrong diagram once meant cutting unrelated
+passages. The rule for moving a section out is whether it has an on-demand
+trigger. The post-meeting Fathom tagging step moved into `/cp-prep`; the
+hosted wrap-up ritual and deepening-from-transcript stay, because a
+hosted-only session cannot load plugin skills and deepening has no command
+of its own.
+
 ## v0.131.8 — 2026-10-12
 
 **Docs: three stale or misleading lines from the improvements log.** Patch.
