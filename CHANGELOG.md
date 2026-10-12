@@ -4,6 +4,30 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.131.10 — 2026-10-12
+
+**Four quick fixes from the improvements sweep.** Patch.
+
+*Canon on old workstreams (#351).* `promote_to_canon` no longer refuses when a
+workstream has no `_authored/inputs-briefing` anchor: it scaffolds the standard
+brief (same body MC-2 seeds), promotes, and says so (`scaffolded_anchor: true`
+with a note to author the six sections).
+
+*Junk never overwrites an Exec Summary (#353 item 4).* The placeholder check
+moved from the hosted verb into the shared merge, so the webhook route and the
+weekly drafter refuse it too. `probe`, `test`, `tbd`, a lone character or bare
+punctuation is refused with the field named and nothing written; real short
+statuses ("OK", "On hold", "Testing") still pass.
+
+*Stakeholder company (#355 item 1).* Cards no longer inherit the project's
+client as `**Company:**`. Company comes from an explicit field, an author's
+`Company:` line on the card, or a group header naming the client; otherwise
+the line is omitted.
+
+*Checks that check (#357).* A root conftest refuses a run whose `cp_engine`
+imports from outside the checkout (worktrees ran main's code), and
+`stub-sweep`'s uuid filter is now tested through the command itself.
+
 ## v0.131.9 — 2026-10-12
 
 **Tenants track spreadsheets; CLAUDE.md's word count warns instead of failing.**
