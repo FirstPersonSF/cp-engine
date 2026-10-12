@@ -115,6 +115,11 @@ testpaths = ["tests", "prototypes/hosted-mcp"]
 # from the main clone, so without this a suite run from a git worktree
 # silently tested main's code — green runs and failing controls alike
 # proved nothing about the branch (2026-09-30).
+# The root conftest.py refuses to run if cp_engine still resolves elsewhere
+# (#357). `webhook` is deliberately NOT listed: its tests put it on sys.path
+# relative to their own file (already this checkout), and listing it globally
+# would let `webhook/observability.py` shadow the hosted server's module of
+# the same name (see prototypes/hosted-mcp/server.py).
 pythonpath = ["src"]
 # No `-q` in addopts (#316): it stacked with the `pytest -q` everyone types,
 # and at `-qq` pytest drops the `N passed` summary line — a run killed at 50%
