@@ -3158,10 +3158,85 @@ def resolve_element_versions(
 
     Scoped by project UUID, not by code string, because the caller's code form
     and the row's stored `project_code` routinely differ (slug drift).
+
+    Scope ladder (#225, #356): when nothing on the project matches, the
+    company's ACCOUNT-scoped elements are tried with the same three key forms.
+    `list_spine_elements` lists them under every sibling project and `/cp-tools`
+    says they can be versioned from any of them; resolving on `project_id`
+    alone made `add_spine_version` from a sibling fail with "no authored
+    element" (three Google cards via ggl-5136, 2026-10-09). The returned rows
+    keep their own `project_id`, so a write lands on the owning project.
     """
     key = (key or "").strip()
     if not key:
         return None, [], {"error": "an element key is required"}
+
+    est_item_id, versions, err = _resolve_element_versions_on_project(
+        client, project_id, key
+    )
+    if est_item_id is not None or err is not None:
+        return est_item_id, versions, err
+    company_id = resolve_company_id(client, project_id)
+    if not company_id:
+        return None, [], None
+    return _resolve_account_element_versions(client, company_id, key)
+
+
+def _resolve_account_element_versions(
+    client, company_id: str, key: str
+) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
+    """The account arm of `resolve_element_versions`: the same three key forms
+    over the company's `scope='account'` rows, then every version of the one
+    element found (versions share the owning project's `project_id`). Two
+    projects' account elements sharing a key is ambiguous — an error, never a
+    pick."""
+    def account_rows(q):
+        return (
+            q.eq("company_id", company_id).eq("scope", "account").execute().data
+            or []
+        )
+
+    found: list[dict[str, Any]] = []
+    candidates = [key] if key.startswith("_authored/") else [f"_authored/{slugify(key)}", key]
+    for cand in candidates:
+        found = account_rows(
+            client.table("spine_substance")
+            .select(_ELEMENT_RESOLVE_COLUMNS)
+            .eq("est_item_id", cand)
+        )
+        if found:
+            break
+    if not found:
+        found = account_rows(
+            client.table("spine_substance")
+            .select(_ELEMENT_RESOLVE_COLUMNS)
+            .ilike("framing", f"%{key}%")
+        )
+    owners = {(r.get("project_id"), r.get("est_item_id")) for r in found}
+    if not owners:
+        return None, [], None
+    if len(owners) > 1:
+        return None, [], {
+            "error": f"{key!r} matches {len(owners)} account elements — be more specific",
+            "matches": sorted({o[1] for o in owners})[:10],
+        }
+    owner_project_id, est_item_id = next(iter(owners))
+    versions = (
+        client.table("spine_substance")
+        .select(_ELEMENT_RESOLVE_COLUMNS)
+        .eq("project_id", owner_project_id)
+        .eq("est_item_id", est_item_id)
+        .execute()
+        .data
+        or []
+    )
+    return est_item_id, versions or found, None
+
+
+def _resolve_element_versions_on_project(
+    client, project_id: str, key: str
+) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
+    """The project arm of `resolve_element_versions` — its original body."""
 
     candidates = [key] if key.startswith("_authored/") else [f"_authored/{slugify(key)}", key]
     for cand in candidates:
@@ -9973,24 +10048,20 @@ def _find_cp_md_text(project_code: str) -> str | None:
     a caller reaches a tool that uses this. Returns None rather than raising:
     the spine checks are the substance of the lint and must run without it.
 
-    Globbed rather than constructed, because an engagement's directory is
-    company-nested and its slug is longer than its code — the path cannot be
-    derived from the code alone.
+    Resolved by `find_project_dir` — the engine's resolvers (paths.json,
+    then the unique `<code>-` prefix) — because an engagement's directory is
+    company-nested and its slug is longer than its code. The old exact-name
+    glob missed every short code (`ggl-5136` lives in
+    `ggl-5136-go-safety-website/`), so word_count_check reported "no cp.md"
+    on an Open project get_project_state had just read (#356).
     """
-    try:
-        root = tree_root().resolve()
-    except Exception:  # noqa: BLE001 — no clone in this environment
+    wd = _find_workstream_dir(project_code)
+    if wd is None:
         return None
-    for scope in ("1p", "firstpersonsf", "canonic"):
-        base = root / scope
-        if not base.is_dir():
-            continue
-        for candidate in base.glob(f"**/{project_code}/cp.md"):
-            try:
-                return candidate.read_text(encoding="utf-8")
-            except OSError:
-                return None
-    return None
+    try:
+        return (wd / "cp.md").read_text(encoding="utf-8")
+    except OSError:
+        return None
 
 
 def _find_workstream_dir(project_code: str):
@@ -10001,13 +10072,10 @@ def _find_workstream_dir(project_code: str):
         root = tree_root().resolve()
     except Exception:  # noqa: BLE001 — no clone in this environment
         return None
-    for scope in ("1p", "firstpersonsf", "canonic"):
-        base = root / scope
-        if not base.is_dir():
-            continue
-        for candidate in base.glob(f"**/{project_code}/cp.md"):
-            return candidate.parent
-    return None
+    try:
+        return find_project_dir(root, project_code)
+    except Exception:  # noqa: BLE001 — best-effort, read-only
+        return None
 
 
 # `({relpath: text}, {file names})` for ONE workstream directory, stopping at

@@ -1060,3 +1060,19 @@ def test_every_spelling_of_a_project_is_in_its_code_set(server, monkeypatch):
     codes = server._project_codes_for_lint(_C(), "ibx-5153")
     assert set(codes) == {"ibx-5153", "ibx-5153-ai-campaign", "IBX-ai-campaign",
                           "11111111-1111-1111-1111-111111111111"}
+
+
+def test_cp_md_resolves_from_a_short_code(server, monkeypatch, tmp_path):
+    """#356: `word_count_check ggl-5136` said "no cp.md resolves" on an Open
+    project, because the lookup globbed for a directory named exactly the code
+    and the directory is `ggl-5136-go-safety-website`. It now resolves the way
+    every other tree read does (`find_project_dir`): exact, else the unique
+    `<code>-` prefix, nested under the account."""
+    wd = tmp_path / "1p" / "google" / "ggl-5136-go-safety-website"
+    wd.mkdir(parents=True)
+    (wd / "cp.md").write_text("## Current Work\nhello\n", encoding="utf-8")
+    monkeypatch.setattr(server, "tree_root", lambda: tmp_path)
+    assert server._find_cp_md_text("ggl-5136") == "## Current Work\nhello\n"
+    assert server._find_cp_md_text("ggl-5136-go-safety-website") is not None
+    assert server._find_workstream_dir("ggl-5136") == wd.resolve()
+    assert server._find_cp_md_text("ggl-513") is None

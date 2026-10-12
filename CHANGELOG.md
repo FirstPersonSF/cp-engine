@@ -4,6 +4,24 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.131.11 — 2026-10-12
+
+**Hosted: account elements version from any sibling; word count finds short
+codes (#356).** Patch.
+
+*Account-scoped elements.* The shared element resolver behind
+`add_spine_version` (and the relation and step verbs) looked only at the
+calling project's rows, so a Google account card listed under ggl-5136 refused
+a new version from ggl-5136. It now falls back to the company's account-scoped
+elements with the same three key forms, as the read verbs have since #225.
+The new version lands on the owning project; two account elements matching
+one key is an error, never a pick.
+
+*`word_count_check` and short codes.* The `cp.md` lookup globbed for a
+directory named exactly the code, so `ggl-5136` (dir
+`ggl-5136-go-safety-website`) reported "no cp.md resolves". It now uses
+`find_project_dir`, the resolver every other tree read uses.
+
 ## v0.131.10 — 2026-10-12
 
 **Four quick fixes from the improvements sweep.** Patch.
