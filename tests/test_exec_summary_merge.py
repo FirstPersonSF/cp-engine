@@ -66,7 +66,9 @@ def test_untouched_fields_survive():
 
 
 def test_content_outside_the_region_is_untouched():
-    out, _ = merge_exec_summary_fields(_cp(FULL), {"Status": "x"}, today=TODAY)
+    out, _ = merge_exec_summary_fields(
+        _cp(FULL), {"Status": "Pillars four and five drafted."}, today=TODAY
+    )
     assert "## Facts\n| a | b |" in out
     assert "Hand-written prose that must not move." in out
 
@@ -140,7 +142,7 @@ def test_unknown_field_raises():
 def test_missing_region_raises():
     no_region = "---\nProject: Test\n---\n\n## Current Work\n\nprose\n"
     with pytest.raises(ExecSummaryMergeError, match="no exec-summary region"):
-        merge_exec_summary_fields(no_region, {"Status": "x"}, today=TODAY)
+        merge_exec_summary_fields(no_region, {"Status": "On hold."}, today=TODAY)
 
 
 def test_a_typo_never_reports_success():
@@ -312,3 +314,46 @@ def test_prose_starting_with_a_label_word_is_not_a_field():
     assert changed == ("Status",)
     assert "**Status:** New status." in out
     assert "**Status quo:** old deck runs" in out
+
+
+# ── placeholder refusal (#353 item 4) ────────────────────────────────
+
+
+@pytest.mark.parametrize("fields,label", [
+    ({"Status": "probe"}, "Status"),                       # the 09-15 value
+    ({"Status": " TBD. "}, "Status"),
+    ({"Status": "."}, "Status"),                           # punctuation only
+    ({"Status": "-"}, "Status"),
+    ({"Objective": "?"}, "Objective"),
+    ({"Status": "q"}, "Status"),                           # one character
+    ({"Next up": ["Medium-effort integrations.", "todo"]}, "Next up"),
+    ({"Where it stands": ["asdf"]}, "Where it stands"),
+    ({"Blockers": ["x"]}, "Blockers"),
+])
+def test_a_placeholder_is_refused_and_the_text_is_untouched(fields, label):
+    from cp_engine.exec_summary_merge import placeholder_value
+
+    with pytest.raises(ExecSummaryMergeError, match="placeholder") as exc:
+        merge_exec_summary_fields(_cp(FULL), fields, today=TODAY)
+    assert label in str(exc.value)
+    # The predicate is the single source the hosted server imports too.
+    value = fields[label]
+    items = value if isinstance(value, list) else [value]
+    assert any(placeholder_value(v) for v in items)
+
+
+@pytest.mark.parametrize("status", [
+    "On hold.", "Shipped v2", "Shipped", "Testing", "OK", "Live", "None.",
+    "SOW signed; kickoff 10-02",
+])
+def test_real_short_statuses_are_not_placeholders(status):
+    out, changed = merge_exec_summary_fields(_cp(FULL), {"Status": status}, today=TODAY)
+    assert changed == ("Status",)
+    assert f"**Status:** {status}" in out
+
+
+def test_a_placeholder_updates_entry_is_refused():
+    from cp_engine.exec_summary_merge import append_update_entry
+
+    with pytest.raises(ExecSummaryMergeError, match="placeholder"):
+        append_update_entry(_cp(FULL), "probe", today=TODAY)

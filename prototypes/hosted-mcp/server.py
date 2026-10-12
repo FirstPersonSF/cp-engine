@@ -127,6 +127,7 @@ from cp_engine.commitments import commitment_row as _engine_commitment_row  # no
 from cp_engine.asks import ask_hash as _engine_ask_hash  # noqa: E402
 from cp_engine.asks import resolve_canonical_code as _engine_resolve_canonical_code  # noqa: E402
 from cp_engine import exec_summary_draft as _engine_exec_summary_draft  # noqa: E402
+from cp_engine.exec_summary_merge import placeholder_value as _is_placeholder  # noqa: E402
 from cp_engine import render as _engine_render  # noqa: E402
 # The one "which sprint week" rule (architecture plan step 1a).
 from cp_engine.sprints import current_sprint_week_iso as _engine_sprint_week_iso  # noqa: E402
@@ -8609,32 +8610,16 @@ def capture_session(
     return result
 
 
-# Values that are never Exec Summary content (improvements.md 2026-09-15): a
-# `capture_project_state` probe wrote the literal `probe` over Mission
-# Control's Status paragraph, and the next render carried it into
-# `master-cp.md` beside eleven real statuses. The write path worked perfectly;
-# that was the problem — there is no sandbox, so the value that proves the path
-# works is the value that destroys the field.
-#
-# WHOLE-VALUE matches only, after trimming case, whitespace and wrapping
-# punctuation. Deliberately NOT a length or word-count rule: Status is "one
-# phrase" by design, and "Shipped", "On hold", "Paused" are real one- and
-# two-word Statuses a length floor would refuse. `none` / `n/a` are absent on
-# purpose too — "None" is an honest Blockers bullet — and so is `testing`,
-# which is a real phase ("Testing" = in user testing).
-_PLACEHOLDER_VALUES = frozenset({
-    "probe", "test", "test test", "todo", "to do", "tbd",
-    "tbc", "x", "xx", "xxx", "placeholder", "dummy", "foo", "bar", "foobar",
-    "asdf", "lorem ipsum",
-})
-
-
-def _is_placeholder(value: Any) -> bool:
-    if not isinstance(value, str):
-        return False
-    norm = " ".join(value.strip().strip("\"'`*_.!?:;()[]<>{}-").lower().split())
-    return norm in _PLACEHOLDER_VALUES or norm.startswith("lorem ipsum")
-
+# Values that are never Exec Summary content (improvements.md 2026-09-15; #353
+# item 4): a `capture_project_state` probe wrote the literal `probe` over
+# Mission Control's Status paragraph, and the next render carried it into
+# `master-cp.md`. The rule — whole-value junk words, punctuation-only, or a
+# single character; never a general length floor, so "OK" and "On hold" pass —
+# lives in the engine (`exec_summary_merge.placeholder_value`), where the
+# webhook merge every caller reaches enforces it too. This server imports it
+# rather than keeping a second definition of junk, and checks it BEFORE any
+# read or write so a probe never even resolves a project (imported at the top
+# as `_is_placeholder`).
 
 # The five fields `capture_project_state` replaces, by parameter name. `Updates`
 # appends, so it is never "left stale" by omission.
@@ -8828,10 +8813,11 @@ def capture_project_state(
     `changed` names the fields that actually moved — empty when your content
     already matched. Never raises.
 
-    A placeholder value (`probe`, `test`, `todo`, `tbd`, `x`, `lorem ipsum`...)
-    is refused, naming the field: this verb has no sandbox, so a smoke test
-    writes a real Exec Summary. Real short phrases ("On hold", "Shipped")
-    pass — the guard matches whole placeholder values, not length.
+    A placeholder value (`probe`, `test`, `todo`, `tbd`, `x`, `lorem ipsum`,
+    punctuation only like `.` or `-`, or any single character) is refused,
+    naming the field: this verb has no sandbox, so a smoke test writes a real
+    Exec Summary. Real short phrases ("OK", "On hold", "Shipped v2") pass —
+    the guard matches whole placeholder values, not length (#353 item 4).
     """
     # Before any read or write: a probe must not even resolve a project.
     placeholder = _placeholder_exec_field(

@@ -130,6 +130,9 @@ def test_the_stamp_advances_only_on_a_real_append() -> None:
 
 # --- #294: roll-off report, whole-block dedupe, byte-identical round-trip ----
 
+# Real text, not a dummy: a probe-shaped entry is now refused (#353 item 4).
+_ENTRY = "Pillar four sent to Hinkle."
+
 _REALISTIC = """# Project
 
 <!-- cp-engine:start exec-summary -->
@@ -173,20 +176,23 @@ def test_round_trip_is_byte_identical_except_for_the_inserted_line() -> None:
     was lost, but a verb that rewrites lines it did not touch is one the
     next reader cannot trust. The new line is spliced in; everything else
     is left exactly where it was."""
-    out, changed = append_update_entry(_REALISTIC, "Probe.", today=date(2026, 9, 17))
+    out, changed = append_update_entry(_REALISTIC, _ENTRY, today=date(2026, 9, 17))
     assert changed is True
-    assert "**Updates:**\n- 2026-09-17 — Probe.\n- 2026-09-01 — Entry one.\n" in out
-    assert _without_probe(out, "- 2026-09-17 — Probe.") == _REALISTIC
+    assert (
+        "**Updates:**\n- 2026-09-17 — Pillar four sent to Hinkle.\n"
+        "- 2026-09-01 — Entry one.\n"
+    ) in out
+    assert _without_probe(out, "- 2026-09-17 — " + _ENTRY) == _REALISTIC
 
 
 def test_a_nested_bullet_keeps_its_indent() -> None:
-    out, _ = append_update_entry(_REALISTIC, "Probe.", today=date(2026, 9, 17))
+    out, _ = append_update_entry(_REALISTIC, _ENTRY, today=date(2026, 9, 17))
     assert "\n  - nested sub-bullet under one\n" in out
     assert "\n- nested sub-bullet under one\n" not in out
 
 
 def test_the_blank_before_the_end_marker_survives() -> None:
-    out, _ = append_update_entry(_REALISTIC, "Probe.", today=date(2026, 9, 17))
+    out, _ = append_update_entry(_REALISTIC, _ENTRY, today=date(2026, 9, 17))
     assert "- 2026-06-26 — Entry six after blank.\n\n<!-- cp-engine:end exec-summary -->" in out
 
 
@@ -241,7 +247,7 @@ def test_roll_off_is_reported_by_count_and_dates_and_nothing_is_deleted() -> Non
     It now shapes an advisory: how many entries are older than the
     threshold, and which. It is still never a licence to delete."""
     result = append_update_entry(
-        _REALISTIC, "Probe.", today=date(2026, 9, 17), roll_off_after_days=28
+        _REALISTIC, _ENTRY, today=date(2026, 9, 17), roll_off_after_days=28
     )
     assert result.roll_off.threshold == date(2026, 8, 20)
     # 07-20, 07-01 and 06-26 are over-age; 08-28..09-01 are within 28 days.
@@ -263,7 +269,7 @@ def test_roll_off_threshold_is_exclusive_and_undated_entries_are_skipped() -> No
     text = _REALISTIC.replace(
         "- 2026-08-28 — Entry four.", "- No date on this one.\n- 2026-08-20 — Exactly 28 days."
     )
-    result = append_update_entry(text, "Probe.", today=date(2026, 9, 17), roll_off_after_days=28)
+    result = append_update_entry(text, _ENTRY, today=date(2026, 9, 17), roll_off_after_days=28)
     assert date(2026, 8, 20) not in result.roll_off.dates
     assert result.roll_off.count == 3
 
@@ -271,7 +277,7 @@ def test_roll_off_threshold_is_exclusive_and_undated_entries_are_skipped() -> No
 def test_the_result_still_unpacks_as_a_two_tuple() -> None:
     """The webhook caller destructures `text, changed = append_update_entry(...)`;
     the report rides as an attribute so that contract does not move."""
-    result = append_update_entry(_REALISTIC, "Probe.", today=date(2026, 9, 17))
+    result = append_update_entry(_REALISTIC, _ENTRY, today=date(2026, 9, 17))
     text, changed = result
     assert text == result.text and changed == result.changed is True
     assert hasattr(result, "roll_off")
@@ -296,4 +302,4 @@ def test_a_region_without_an_updates_field_is_refused_not_faked() -> None:
         "- 2026-09-01 — First entry.\n- 2026-08-15 — Older entry.\n", ""
     )
     with pytest.raises(ExecSummaryMergeError, match="Updates"):
-        append_update_entry(no_field, "Probe.", today=date(2026, 9, 17))
+        append_update_entry(no_field, _ENTRY, today=date(2026, 9, 17))

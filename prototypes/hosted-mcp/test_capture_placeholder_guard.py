@@ -65,6 +65,12 @@ def sent(server, monkeypatch):
     ({"where_it_stands": ["Deck shipped 09-20", "placeholder"]}, "where_it_stands"),
     ({"blockers": ["tbd"]}, "blockers"),
     ({"updates_append": "test"}, "updates_append"),
+    # #353 item 4: punctuation-only and single-character values are junk too.
+    ({"status": "."}, "status"),
+    ({"status": "-"}, "status"),
+    ({"status": "?"}, "status"),
+    ({"objective": "q"}, "objective"),
+    ({"next_up": ["Send the deck", "asdf"]}, "next_up"),
 ])
 def test_a_placeholder_is_refused_naming_the_field_and_nothing_is_sent(server, sent, kwargs, field):
     out = server.capture_project_state("mission-control", **kwargs)
@@ -84,7 +90,7 @@ def test_a_real_status_beside_a_placeholder_bullet_is_still_refused(server, sent
 
 @pytest.mark.parametrize("status", [
     "On hold", "Shipped", "Paused", "Testing", "Live", "Done", "Blocked on legal",
-    "SOW signed; kickoff 10-02",
+    "SOW signed; kickoff 10-02", "On hold.", "Shipped v2", "OK",
 ])
 def test_real_short_statuses_pass(server, sent, status):
     out = server.capture_project_state("mission-control", status=status)
@@ -96,3 +102,11 @@ def test_none_is_an_honest_blocker_and_empty_clears(server, sent):
     assert server.capture_project_state("mission-control", blockers=["None"]).get("ok")
     assert server.capture_project_state("mission-control", blockers=[]).get("ok")
     assert [c[1] for c in sent] == [{"Blockers": ["None"]}, {"Blockers": []}]
+
+
+def test_hosted_and_engine_share_one_predicate(server):
+    """#353 item 4: the hosted pre-check and the engine merge (which every
+    caller of the webhook reaches) must not drift into two definitions of junk."""
+    from cp_engine import exec_summary_merge
+
+    assert server._is_placeholder is exec_summary_merge.placeholder_value

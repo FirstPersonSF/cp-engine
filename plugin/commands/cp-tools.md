@@ -322,6 +322,10 @@ hash recipe everywhere: `cp_engine.asks.ask_hash(<co>-<number>,
 
 Engagements and initiatives can own commitments; standalone repos cannot.
 
+**Exec Summary** (the `cp.md` region every index reads):
+- `capture_project_state(project_code, status?, objective?, where_it_stands?, next_up?, blockers?, updates_append?, still_current?)` — replaces only the fields you pass (bulleted ones take a list); `updates_append` adds one dated entry.
+  Refuses, writing nothing and naming the field, a placeholder in any field or bullet — `probe`, `test`, `tbd`, `todo`, `x`, punctuation only, any single character (#353) — there is no sandbox, so probe with real text; "OK" and "On hold" pass.
+
 To find an email or note you authored into a project's (or initiative's) spine,
 `list_spine_elements(project_code)` then `pull_spine_element(project_code, <key>)` — don't grep
 the `spine/` mirror, which may lag the live MC-2 row.
