@@ -203,7 +203,11 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   (membership = active `canon_of` edge member → brief). Deliberate and
   DISPLACING: with `replaces_key` it also writes `supersedes` (new → old) and
   removes the old member's canon edge. Warns past 7 members — displace, don't
-  accrete. Journals one review-gated step on the brief. Authority ordering:
+  accrete. Journals one review-gated step on the brief. **No brief yet?** The
+  verb creates the anchor (`_authored/inputs-briefing`, the six-section
+  scaffold below) and promotes; the result says `scaffolded_anchor: true` —
+  author the brief's sections next with `add_spine_version`. A brief that
+  exists with no live version still refuses. Authority ordering:
   canon outranks delivered artifacts and stakeholder signals; only a live
   partner directive outranks canon.
 - `seal_to_deliverable(project_code, deliverable_key, absorbed_keys[], note?)` —

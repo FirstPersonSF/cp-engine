@@ -2964,6 +2964,28 @@ _RELATION_KINDS = frozenset(
 # The per-project canon anchor: the standing Inputs & Briefing element
 # (spec v04 §2). Canon membership = an active `canon_of` edge member -> brief.
 BRIEF_ITEM_ID = "_authored/inputs-briefing"
+BRIEF_FRAMING = "Inputs & Briefing"
+
+# The standing brief's scaffold body (#351) — VERBATIM from mc-2's
+# `_STANDING_ELEMENTS` (backend/src/routers/spine_capture.py), which seeds it
+# when a spine is created. Mirrored, not invented: a spine that predates that
+# seed gets the same six-section contract (cp-tools "Standing-element
+# contracts") when `promote_to_canon` has to create the anchor. Keep in step
+# with mc-2 if the contract's headings ever change.
+BRIEF_SCAFFOLD_BODY = (
+    "_Standing element — the working brief. Author prose under each "
+    "heading; keep the headings stable. Attach source docs; version "
+    "as understanding evolves._\n\n"
+    "## Objective\n_What the client is buying, in one paragraph._\n\n"
+    "## Audience\n_Who the work must move._\n\n"
+    "## The problem\n_The tension or opportunity behind the ask._\n\n"
+    "## Constraints\n_Mandatories, exclusions, politics, sanctioned "
+    "language._\n\n"
+    "## Inputs\n_The handed-over corpus, each item named (attach as "
+    "sources where ingested)._\n\n"
+    "## Key dates\n_The brief's own calendar — workshops, reviews, "
+    "deadlines._"
+)
 
 # Canon size target (spec v04): promotion past this succeeds but warns —
 # scarcity is the feature; the warn mirrors spine-lint's posture, not a block.
@@ -4085,6 +4107,15 @@ def promote_to_canon(
     The move is auto-journaled as ONE review-gated step on the BRIEF element
     (the canon's trail lives on its anchor). Journaling is non-fatal.
 
+    A MISSING ANCHOR IS CREATED, NOT REFUSED (#351). When the workstream has
+    no `_authored/inputs-briefing` element at all, this verb creates it —
+    live v1, the standing six-section scaffold (Objective / Audience / The
+    problem / Constraints / Inputs / Key dates) MC-2 seeds at spine creation —
+    and then promotes. The result carries `scaffolded_anchor: true` and an
+    `anchor_note`: the brief is headings only until someone authors it
+    (`add_spine_version`). An anchor that exists but has no live version is
+    still an error — that is a retired brief, not a missing one.
+
     Args:
         project_code: engagement, initiative, or standalone-repo code.
         key: the element to promote (est_item_id or unique framing substring).
@@ -4102,21 +4133,39 @@ def promote_to_canon(
 
     brief_eid, err = resolve_live_element_id(client, scope["id"], BRIEF_ITEM_ID)
     if err is not None:
+        # The element exists but nothing is live — a retired brief. Genuine.
         return err
-    if brief_eid is None:
-        return {
-            "error": f"no live standing Inputs & Briefing element "
-            f"({BRIEF_ITEM_ID!r}) in {project_code!r} — the canon anchors on the "
-            "brief; scaffold/author it first."
-        }
 
+    # Resolve the member BEFORE scaffolding a missing anchor, so a bad key
+    # never leaves a stray brief behind.
     member_eid, err = resolve_live_element_id(client, scope["id"], key)
     if err is not None:
         return err
     if member_eid is None:
         return {"note": f"no single live element matching key {key!r}"}
-    if member_eid == brief_eid:
+    if member_eid == (brief_eid or BRIEF_ITEM_ID):
         return {"error": "the brief anchors the canon; it cannot be a member of itself"}
+
+    scaffolded = False
+    if brief_eid is None:
+        # #351: no anchor at all — create the standing brief, then promote.
+        # Through create_spine_element: the same INSERT, collision guard,
+        # canonical project_code and caller attribution as any authored write.
+        made = create_spine_element(
+            project_code=project_code,
+            framing=BRIEF_FRAMING,
+            body=BRIEF_SCAFFOLD_BODY,
+            layer="brief",
+            slug=BRIEF_ITEM_ID.removeprefix("_authored/"),
+        )
+        if "error" in made:
+            return {
+                "error": f"no live standing {BRIEF_FRAMING} element "
+                f"({BRIEF_ITEM_ID!r}) in {project_code!r}, and creating it "
+                f"failed: {made['error']}"
+            }
+        brief_eid = made.get("element_id") or BRIEF_ITEM_ID
+        scaffolded = True
 
     audit_args = {"project_code": project_code, "key": key, "replaces_key": replaces_key}
     edge = _insert_lifecycle_edge(
@@ -4134,6 +4183,15 @@ def promote_to_canon(
         **({"already": True} if edge.get("already") else {}),
         "caller": caller_subject(),
     }
+    if scaffolded:
+        out["scaffolded_anchor"] = True
+        out["anchor_note"] = (
+            f"This workstream had no {BRIEF_FRAMING} element, so it was created "
+            f"({BRIEF_ITEM_ID}) as the canon anchor with the standing scaffold — "
+            "headings only. Author the brief's six sections (Objective, "
+            "Audience, The problem, Constraints, Inputs, Key dates) with "
+            "add_spine_version."
+        )
 
     if replaces_key:
         # Live first, raw est_item_id fallback — the displaced member may
