@@ -26,10 +26,10 @@ dependencies = [
     # first-class capability of ours, not an artifact of someone else's extra.
     # An undeclared transitive dep vanishes the day that extra is re-scoped.
     "python-docx>=1.1",
-    "document-ingest[llm,docx,pptx,pdf,spreadsheet,supabase,web,voyage] @ git+https://github.com/FirstPersonSF/1p-component-library.git@491fa2f#subdirectory=starters/document-ingest",
-    "cloud-storage[all] @ git+https://github.com/FirstPersonSF/1p-component-library.git@491fa2f#subdirectory=integrations/cloud-storage",
+    "document-ingest[llm,docx,pptx,pdf,spreadsheet,supabase,web,voyage] @ git+https://github.com/FirstPersonSF/1p-component-library.git@224e546#subdirectory=starters/document-ingest",
+    "cloud-storage[all] @ git+https://github.com/FirstPersonSF/1p-component-library.git@224e546#subdirectory=integrations/cloud-storage",
     "resilience @ git+https://github.com/FirstPersonSF/1p-component-library.git@94eb35a#subdirectory=patterns/resilience",
-    "visual-document-capture @ git+https://github.com/FirstPersonSF/1p-component-library.git@491fa2f#subdirectory=processors/visual-document-capture",
+    "visual-document-capture @ git+https://github.com/FirstPersonSF/1p-component-library.git@224e546#subdirectory=processors/visual-document-capture",
     "spine-authoring @ git+https://github.com/FirstPersonSF/1p-component-library.git@811781e#subdirectory=services/spine-authoring",
     "voyageai>=0.4",
     # Floor is 2.0 and the bound is deliberate: mcp 2.x renamed
@@ -68,7 +68,7 @@ build-backend = "hatchling.build"
 # (subdirectories, not yet on PyPI). Pinning rules — the resolver requires
 # IDENTICAL URLs for the same package, so:
 #   - document-ingest / cloud-storage / visual-document-capture: pin all
-#     to one SHA (currently 6009cfb = Drive export-suffix fix).
+#     to one SHA (currently 224e546 = extraction coverage + PPTX notes, #349).
 #   - resilience: its URL must BYTE-MATCH the resilience URL inside
 #     cloud-storage's own pyproject.toml at the pinned cloud-storage SHA
 #     (currently @94eb35a — content-identical to HEAD; resilience hasn't
