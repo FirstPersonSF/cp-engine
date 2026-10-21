@@ -18,7 +18,8 @@ convincing kind of wrong.
 """
 from __future__ import annotations
 
-from typing import Any, Callable, Iterable
+from collections.abc import Callable, Iterable
+from typing import Any
 
 ORDER_INDEXED = "chunk_index"
 ORDER_TIMED = "start_seconds"
@@ -76,7 +77,8 @@ def order_chunks(
         return rows, None
     positions = [chunk_position(r) for r in rows]
     if None not in positions and len(set(positions)) == len(positions):
-        return [r for _, r in sorted(zip(positions, rows), key=lambda p: p[0])], ORDER_INDEXED
+        ordered = sorted(zip(positions, rows, strict=True), key=lambda p: p[0])
+        return [r for _, r in ordered], ORDER_INDEXED
     if fallback_key is not None:
         rows = sorted(rows, key=fallback_key)
     if all(r.get("start_seconds") is not None for r in rows):
