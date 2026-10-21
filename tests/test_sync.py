@@ -2640,3 +2640,74 @@ def test_engagement_slug_dirs_still_match_their_code(tmp_path):
 
     assert d.is_dir(), "an engagement's slugged dir must not be reaped"
     assert moved == []
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  .gitignore hand-written lines survive sync (#359)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_gitignore_template_ignores_office_lock_files_and_pycache(
+    tmp_path: Path,
+) -> None:
+    """#359: `~$*` (Office lock files) and `__pycache__/` were hand-added to
+    the tenant twice and dropped by sync twice. They belong in the template."""
+    sync_tenant(make_config(tmp_path), backend_factory=lambda _: FakeBackend((make_state(),)))
+    patterns = {
+        line.strip()
+        for line in (tmp_path / ".gitignore").read_text().splitlines()
+        if line.strip() and not line.startswith("#")
+    }
+    assert "~$*" in patterns
+    assert "__pycache__/" in patterns
+
+
+def test_gitignore_first_sync_keeps_lines_from_a_markerless_file(
+    tmp_path: Path,
+) -> None:
+    """#359 migration: a tenant .gitignore written before the hand-written
+    block existed has no marker. Its hand-added lines must survive the first
+    sync after the fix — carried into the hand-written block — while lines
+    the template itself retired (`*.xlsx`, removed 2026-10-12) stay retired."""
+    from cp_engine.render import render_gitignore
+
+    legacy = (
+        "*.mp4\n*.xlsx\n*.xls\n.DS_Store\n"
+        "# clip pulls\n"
+        "clip-pulls/*.lock\n"
+        "scratch/\n"
+    )
+    (tmp_path / ".gitignore").write_text(legacy)
+    config = make_config(tmp_path)
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((make_state(),)))
+
+    body = (tmp_path / ".gitignore").read_text()
+    assert body.startswith(render_gitignore())
+    hand = body[len(render_gitignore()):]
+    assert "clip-pulls/*.lock" in hand
+    assert "scratch/" in hand
+    assert "*.xlsx" not in body.splitlines()
+    assert "*.xls" not in body.splitlines()
+    # Template lines are not duplicated into the hand-written block.
+    assert "*.mp4" not in hand.splitlines()
+
+    # Idempotent: a second sync changes nothing.
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((make_state(),)))
+    assert (tmp_path / ".gitignore").read_text() == body
+
+
+def test_gitignore_hand_written_block_survives_resync(tmp_path: Path) -> None:
+    """#359: lines a human adds below the hand-written marker are kept on
+    every sync, comments and blank lines included, in order."""
+    from cp_engine.render import render_gitignore
+
+    config = make_config(tmp_path)
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((make_state(),)))
+    path = tmp_path / ".gitignore"
+    hand_added = "# local renders\nrenders/\n\n*.tmp\n"
+    path.write_text(path.read_text() + hand_added)
+    expected = path.read_text()
+
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((make_state(),)))
+    assert path.read_text() == expected
+    assert path.read_text().startswith(render_gitignore())

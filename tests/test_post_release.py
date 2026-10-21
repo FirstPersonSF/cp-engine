@@ -285,6 +285,100 @@ def test_webhook_verify_polls_and_times_out():
         pr.step_webhook_verify(pr.Ctx(_opts(), stale))
 
 
+# #360: a late GitHub push event deployed a commit OLDER than the release over
+# it; webhook-verify waited out its 900 s and reported the old version.
+
+_TAG_SHA = "a" * 40
+
+
+def _webhook_git_env(http, *, ancestors=("old", "older")):
+    """`/health` answers from `http`; `git merge-base --is-ancestor <c> v0.131.0`
+    succeeds only for the commits in `ancestors`."""
+    def is_ancestor(cmd, cwd, env):
+        return _cp(cmd, 0 if cmd[-2] in ancestors else 1)
+    return _FakeEnv(
+        handlers=[
+            (_has("rev-parse"), lambda cmd, cwd, env: _cp(cmd, out=_TAG_SHA + "\n")),
+            (_has("merge-base", "--is-ancestor"), is_ancestor),
+        ],
+        http={pr.WEBHOOK_HEALTH: http},
+    )
+
+
+def _railway_redeploys(env):
+    return [a for a in env.argvs() if a[:2] == ["railway", "redeploy"]]
+
+
+@pytest.mark.parametrize(
+    "body, kw, want",
+    [
+        (None, {}, "wait"),
+        ({"cp_engine_version": "0.131.0", "commit": _TAG_SHA}, {}, "live"),
+        # Still on the previous release, Railway has had little time: wait.
+        ({"cp_engine_version": "0.130.0", "commit": "old"}, {}, "wait"),
+        # Previous release past the grace window: a build was lost or overwritten.
+        ({"cp_engine_version": "0.130.0", "commit": "old"}, {"elapsed": 300}, "redeploy"),
+        # A deploy LANDED mid-poll and it is older than the tag: the late push.
+        ({"cp_engine_version": "0.130.0", "commit": "older"}, {"first_commit": "old"}, "redeploy"),
+        # Not behind the tag (unknown, or ahead): never redeploy, just wait.
+        ({"cp_engine_version": "0.130.0", "commit": "x"},
+         {"behind_tag": False, "elapsed": 9999, "first_commit": "y"}, "wait"),
+        # One redeploy per run; after it, only waiting.
+        ({"cp_engine_version": "0.130.0", "commit": "old"},
+         {"elapsed": 9999, "redeployed": True}, "wait"),
+    ],
+)
+def test_webhook_next_decides_live_wait_or_redeploy(body, kw, want):
+    args = {"behind_tag": True, "first_commit": "old", "elapsed": 0.0,
+            "grace": 300.0, "redeployed": False}
+    args.update(kw)
+    assert pr.webhook_next(body, "0.131.0", **args) == want
+
+
+def test_webhook_verify_redeploys_from_source_when_health_reports_an_ancestor_of_the_tag():
+    env = _webhook_git_env([
+        {"cp_engine_version": "0.130.0", "commit": "old"},
+        {"cp_engine_version": "0.130.0", "commit": "old"},
+        {"cp_engine_version": "0.130.0", "commit": "old"},
+        {"cp_engine_version": "0.131.0", "commit": _TAG_SHA},
+    ])
+    opts = _opts(poll_timeout=30, poll_interval=10, webhook_redeploy_after=20)
+    detail = pr.step_webhook_verify(pr.Ctx(opts, env))
+    assert detail.startswith("live 0.131.0")
+    assert "redeployed" in detail
+    assert _railway_redeploys(env) == [
+        ["railway", "redeploy", "--service", "cp-engine", "--from-source", "--yes"]
+    ]
+
+
+def test_webhook_verify_redeploys_at_once_when_an_older_commit_lands_mid_poll():
+    env = _webhook_git_env([
+        {"cp_engine_version": "0.130.0", "commit": "old"},
+        {"cp_engine_version": "0.130.0", "commit": "older"},
+        {"cp_engine_version": "0.131.0", "commit": _TAG_SHA},
+    ])
+    opts = _opts(poll_timeout=30, poll_interval=10, webhook_redeploy_after=600)
+    assert pr.step_webhook_verify(pr.Ctx(opts, env)).startswith("live 0.131.0")
+    assert len(_railway_redeploys(env)) == 1
+
+
+def test_webhook_verify_does_not_redeploy_a_commit_that_is_not_behind_the_tag():
+    env = _webhook_git_env([{"cp_engine_version": "0.130.0", "commit": "elsewhere"}])
+    opts = _opts(poll_timeout=30, poll_interval=10, webhook_redeploy_after=0)
+    with pytest.raises(pr.StepFailed, match="0.130.0"):
+        pr.step_webhook_verify(pr.Ctx(opts, env))
+    assert _railway_redeploys(env) == []
+
+
+def test_webhook_verify_reports_a_failed_redeploy_with_the_manual_command():
+    env = _webhook_git_env([{"cp_engine_version": "0.130.0", "commit": "old"}])
+    env.handlers.insert(0, (_has("railway"), lambda cmd, cwd, env: _cp(cmd, 1, err="Unauthorized")))
+    opts = _opts(poll_timeout=30, poll_interval=10, webhook_redeploy_after=0)
+    with pytest.raises(pr.StepFailed, match="redeploy") as e:
+        pr.step_webhook_verify(pr.Ctx(opts, env))
+    assert "railway redeploy --service cp-engine --from-source" in e.value.manual
+
+
 # ── tenant-pin ────────────────────────────────────────────────────────────
 
 _TENANT_TOML = '[tenant]\nname = "cp"\n\n[engine]\nversion = "~= 0.130"  # floor\n'
