@@ -25,6 +25,12 @@ wrap-up re-keyed each id into its own resolve call. `suggested_resolutions`
 picks the row to keep in each duplicate cluster and returns the exact
 `resolve_commitments` argument object for the rest. Still read-only: the
 payload is a proposal to review and send, never an action taken.
+
+#358: meeting ingest flags a commitment that reads as another workstream's
+with `[off-project? → <code>]` (it stays where the meeting was tagged).
+`suggested_routes` turns each flag into the exact `route_commitment`
+argument object; `--misfiled` (CLI) additionally scores UNFLAGGED open rows
+with `commitment_routing` — a read-only backfill report.
 """
 
 from __future__ import annotations
@@ -171,6 +177,20 @@ def _row(c: dict, today: date) -> SweepRow:
     )
 
 
+def canonical_codes(client: Any) -> dict[str, str]:
+    """`projects.code` (the sweep's group key, e.g. `IBX-ai-campaign`) → the
+    tree slug (`ibx-5153-ai-campaign`). Explicit columns."""
+    from cp_engine.asks import canonical_code
+
+    out: dict[str, str] = {}
+    rows = client.table(Tables.PROJECTS).select("code, full_job_name").execute().data or []
+    for r in rows:
+        slug = canonical_code(r.get("full_job_name"))
+        if r.get("code") and slug:
+            out[r["code"]] = slug
+    return out
+
+
 def _owner_codes(client: Any) -> dict[str, str]:
     """id → code across every workstream (one read of `projects`)."""
     codes: dict[str, str] = {}
@@ -254,7 +274,7 @@ _STOP = frozenset(
 )
 # Annotations the ingest writers append — provenance, not the obligation.
 _ANNOTATION = re.compile(
-    r"\[(?:confidence|routed from|off-project\?|owner unresolved)[^\]]*\]",
+    r"\[(?:confidence|routed from|off-project\?|cross-project\?|owner unresolved)[^\]]*\]",
     re.IGNORECASE,
 )
 # `(from Tara Haney (SAP Concur))` — only as the TRAILING attribution; a
@@ -394,12 +414,42 @@ def suggested_resolutions(groups: dict[str, list[SweepRow]]) -> dict[str, list[d
     return {"redundant": redundant, "resolve_commitments": calls}
 
 
+def suggested_routes(
+    groups: dict[str, list[SweepRow]], canonical: dict[str, str] | None = None
+) -> list[dict]:
+    """The ready-to-send `route_commitment` call for every open row the
+    ingest flagged `[off-project? → <code>]` (#358) — the verb's argument
+    object as-is: `{project_code, key, target_code}`. A flag naming the
+    row's OWN workstream (an old short-form-tag bug) proposes nothing.
+    `canonical` maps the group key to its slug for that check. Read-only."""
+    from cp_engine.commitment_routing import flag_target
+    from cp_engine.ingest_routing import same_project
+
+    canonical = canonical or {}
+    out: list[dict] = []
+    for code, rows in groups.items():
+        here = canonical.get(code, code)
+        for r in rows:
+            target = flag_target(r.description)
+            if not target or same_project(target, here) or target == here.lower():
+                continue
+            out.append({"project_code": code, "key": r.id, "target_code": target})
+    return out
+
+
 def _clip(text: str, n: int = 70) -> str:
     return text if len(text) <= n else text[: n - 1] + "…"
 
 
-def render_sweep(groups: dict[str, list[SweepRow]], *, today: date) -> str:
-    """The review surface: one block per project, decision fields inline."""
+def render_sweep(
+    groups: dict[str, list[SweepRow]],
+    *,
+    today: date,
+    canonical: dict[str, str] | None = None,
+    misfiled: list[dict] | None = None,
+) -> str:
+    """The review surface: one block per project, decision fields inline.
+    `misfiled` is the optional `--misfiled` backfill report (#358)."""
     if not groups:
         return "No open commitments match."
     out: list[str] = []
@@ -442,12 +492,37 @@ def render_sweep(groups: dict[str, list[SweepRow]], *, today: date) -> str:
                     f'    resolve_commitments(project_code="{code}", '
                     f'keys=[{keys}], outcome="{call["outcome"]}")'
                 )
+        # #358: rows the ingest flagged as another workstream's.
+        routes = suggested_routes({code: rows}, canonical)
+        unflagged = [m for m in misfiled or [] if m["project_code"] == code]
+        if routes or unflagged:
+            out.append("")
+            out.append(
+                f"  → {len(routes) + len(unflagged)} row(s) read as another "
+                "workstream's — route after review:"
+            )
+            for e in routes:
+                out.append(
+                    f'    route_commitment(project_code="{code}", key="{e["key"]}", '
+                    f'target_code="{e["target_code"]}")'
+                )
+            for m in unflagged:
+                ev = ", ".join(m.get("evidence") or [])
+                out.append(f"      {_clip(m['description'])}  (scored: {ev})")
+                out.append(
+                    f'    route_commitment(project_code="{code}", key="{m["key"]}", '
+                    f'target_code="{m["target_code"]}")'
+                )
         out.append("")
     total = sum(len(rs) for rs in groups.values())
     stale = sum(1 for rs in groups.values() for r in rs if r.stale)
     ndup = sum(len(likely_duplicates(rs)) for rs in groups.values())
-    out.append(
+    nroute = len(suggested_routes(groups, canonical)) + len(misfiled or [])
+    footer = (
         f"{total} open across {len(groups)} project(s) · {stale} stale "
         f"(undated ≥{STALE_DAYS}d) · {ndup} likely duplicate pair(s)"
     )
+    if nroute:
+        footer += f" · {nroute} to route"
+    out.append(footer)
     return "\n".join(out)

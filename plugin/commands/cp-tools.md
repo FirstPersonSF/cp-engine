@@ -322,7 +322,11 @@ hash recipe everywhere: `cp_engine.asks.ask_hash(<co>-<number>,
   <code>]` appended, owner/dates/ratification/meeting linkage preserved),
   and only after that insert succeeds does the source close as `routed` — a first-class terminal state (mc-2 mig 132), distinct from dropped. The action
   behind the ingest's `[off-project? → <code>]` flag — never auto-fired;
-  a human (or agent at wrap-up) invokes it per row.
+  a human (or agent at wrap-up) invokes it per row. Ingest sets the flag on
+  an explicit code or name, or when the item's people, product or vendor
+  recur on another workstream's record and rarely on the tagged one (#358);
+  `commitments_sweep`'s `suggested_actions.route_commitment` lists every
+  flagged open row as this verb's `{project_code, key, target_code}`.
 
 Engagements and initiatives can own commitments; standalone repos cannot.
 

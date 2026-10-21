@@ -538,6 +538,12 @@ def _fetch_pending_cross_project() -> list[dict]:
 @click.option("--older-than", type=int, default=None, metavar="DAYS", help="Only rows at least DAYS old.")
 @click.option("--stale", is_flag=True, help="Undated AND ≥14d old — the \"is this still real?\" bucket.")
 @click.option(
+    "--misfiled",
+    is_flag=True,
+    help="Also score UNFLAGGED rows against every workstream's vocabulary and "
+    "list likely mis-filings (read-only backfill, #358).",
+)
+@click.option(
     "--today",
     type=click.DateTime(formats=["%Y-%m-%d"]),
     default=None,
@@ -545,7 +551,7 @@ def _fetch_pending_cross_project() -> list[dict]:
 )
 def commitments_sweep_cmd(
     code: str | None, sweep_all: bool, undated: bool,
-    older_than: int | None, stale: bool, today,
+    older_than: int | None, stale: bool, misfiled: bool, today,
 ) -> None:
     """Surface stale/undated open commitments for review (read-only).
 
@@ -554,11 +560,14 @@ def commitments_sweep_cmd(
     fields that drive a keep/close decision. Undated rows at or near
     the 14-day TTL (#136) are flagged. Closing stays a deliberate act
     via resolve_commitment; this just makes the decision cheap — likely
-    duplicates come with a ready `resolve_commitments(...)` line (#354).
+    duplicates come with a ready `resolve_commitments(...)` line (#354);
+    rows the ingest flagged `[off-project? → <code>]` come with a ready
+    `route_commitment(...)` line (#358). `--misfiled` scores the unflagged
+    rows too — it reads MC-2 and the tree and writes nothing.
     """
 
     from cp_engine import mc2_db
-    from cp_engine.commitments_sweep import render_sweep, sweep
+    from cp_engine.commitments_sweep import canonical_codes, render_sweep, sweep
 
     if bool(code) == sweep_all:
         click.echo("Error: pass a project CODE or --all (exactly one).", err=True)
@@ -583,7 +592,15 @@ def commitments_sweep_cmd(
     except ValueError as exc:
         click.echo(f"Error: {exc}", err=True)
         raise SystemExit(1)
-    click.echo(render_sweep(groups, today=today_d))
+    canonical = canonical_codes(client)
+    report = None
+    if misfiled:
+        from cp_engine.commitment_routing import build_routing_index, score_open_commitments
+        from cp_engine.plan_from_account_meeting import list_active_all
+
+        index = build_routing_index(list_active_all(config), client=client, tenant_root=config.root)
+        report = score_open_commitments(index, groups, canonical) if index else []
+    click.echo(render_sweep(groups, today=today_d, canonical=canonical, misfiled=report))
 
 
 @click.command("draft-summaries")

@@ -10476,11 +10476,20 @@ def commitments_sweep(project_code: str = "", undated_only: bool = False) -> dic
     object as-is — `{project_code, keys, outcome}`. Nothing is resolved here:
     review the pairs, prune `keys` if a pair is not the same obligation, then
     call `resolve_commitments(**entry)`.
+
+    `suggested_actions.route_commitment` (#358) lists every open row meeting
+    ingest flagged `[off-project? → <code>]` — an item that reads as another
+    workstream's (its people, product or vendor) but was filed where the
+    meeting was tagged. Each entry is `route_commitment`'s argument object
+    as-is — `{project_code, key, target_code}`. The flag is a heuristic:
+    read the row, then call `route_commitment(**entry)` or leave it.
     """
     client = user_client()
     from cp_engine.commitments_sweep import (
+        canonical_codes,
         likely_duplicates,
         suggested_resolutions,
+        suggested_routes,
         sweep,
     )
 
@@ -10518,6 +10527,11 @@ def commitments_sweep(project_code: str = "", undated_only: bool = False) -> dic
         for k, v in result.items()
     }
     duplicates = {k: v for k, v in duplicates.items() if v}
+    try:
+        canonical = canonical_codes(client)
+    except Exception:  # noqa: BLE001 — the self-flag check degrades, routes still list
+        canonical = {}
+    routes = suggested_routes(result, canonical)
     # Audited so `wrap_status` can see the step ran; an unaudited step is
     # one it can only ever report as missing. Success only — an error
     # return means the check did not run.
@@ -10534,7 +10548,10 @@ def commitments_sweep(project_code: str = "", undated_only: bool = False) -> dic
         "total": sum(len(v) for v in buckets.values()),
         "likely_duplicates": duplicates,
         "likely_duplicate_pairs": sum(len(v) for v in duplicates.values()),
-        "suggested_actions": suggested_resolutions(result),
+        "suggested_actions": {
+            **suggested_resolutions(result),
+            "route_commitment": routes,
+        },
     }
 
 

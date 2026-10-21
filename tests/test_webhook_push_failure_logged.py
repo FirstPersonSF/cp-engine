@@ -106,7 +106,7 @@ def _wire_pipeline(
     # Downstream best-effort blocks — not under test.
     monkeypatch.setattr(pipeline, "_persist_transcript", lambda *a, **k: None)
     monkeypatch.setattr(
-        pipeline, "propose_commitments", lambda mid, c, roster=None: {}
+        pipeline, "propose_commitments", lambda mid, c, roster=None, **_kw: {}
     )
     monkeypatch.setattr(pipeline, "_generate_meeting_artifacts", lambda **kw: {})
     monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: None)

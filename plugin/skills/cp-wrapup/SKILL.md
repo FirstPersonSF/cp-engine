@@ -116,6 +116,11 @@ who]` bullet under `### Open asks` that the next sync imports.
   (typically your hand-logged row and the one auto-ingest wrote for the same
   meeting), resolve the redundant one — the sweep prints the
   `resolve_commitments(...)` call; prune keys that are not true pairs
+- read the `→ route after review` rows: meeting ingest flagged them
+  `[off-project? → <code>]` (another workstream's people, product or
+  vendor); the sweep prints each `route_commitment(...)` call — send it
+  for the rows that really belong there. `--misfiled` also scores the
+  unflagged rows (read-only)
 
 ## 4 — Spine checks
 
@@ -294,7 +299,9 @@ session completed (`resolve_commitment`), drop what it made moot, and question u
 rows ≥2 weeks old. An undated meeting-ingest commitment expires at 14 days — the
 daily sync closes it (`ttl` = `expire`; `warn` from day 7) — so date it or drop it here. The likely-duplicate pairs name
 rows that read as one obligation; `suggested_actions.resolve_commitments` is the
-ready `resolve_commitments` payload for the redundant rows — review, prune, send.
+ready `resolve_commitments` payload for the redundant rows — review, prune, send. Rows ingest
+flagged `[off-project? → <code>]` come back in `suggested_actions.route_commitment`,
+each a ready `route_commitment` payload — read the row, send it if it belongs there.
 
 ### h4 — Canon agreement check
 

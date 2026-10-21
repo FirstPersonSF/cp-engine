@@ -40,6 +40,7 @@ from cp_engine import mc2_db
 from cp_engine.asks import ask_hash
 from cp_engine.commitments import resolve_commitment_owner, write_commitment
 from cp_engine.ingest import _content_hash
+from cp_engine.ingest_routing import same_project
 from cp_engine.mc2_db import Tables
 
 import observability
@@ -173,18 +174,20 @@ def screen_off_project(
     if not roster or not text:
         return None
     t = text.lower()
-    ingest = {str(c or "").strip().lower() for c in ingest_codes}
+    ingest = [str(c or "").strip().lower() for c in ingest_codes]
+
+    def _tagged(p) -> bool:
+        # #358: a meeting tagged `ibx-5153` IS `ibx-5153-ai-campaign`. An
+        # exact-string test flagged rows as off-project to their own home.
+        code = (p.code or "").strip().lower()
+        return any(code == c or same_project(code, c) for c in ingest)
 
     own_companies = {
-        (p.company_name or "").strip().lower()
-        for p in roster
-        if (p.code or "").strip().lower() in ingest
+        (p.company_name or "").strip().lower() for p in roster if _tagged(p)
     }
     own_companies.discard("")
 
-    candidates = [
-        p for p in roster if (p.code or "").strip().lower() not in ingest
-    ]
+    candidates = [p for p in roster if not _tagged(p)]
 
     # 1 — explicit code mention.
     for p in candidates:
@@ -213,7 +216,10 @@ def screen_off_project(
 
 
 def propose_commitments(
-    meeting_id: str, project_codes: list[str], roster: list | None = None
+    meeting_id: str,
+    project_codes: list[str],
+    roster: list | None = None,
+    routing_index=None,
 ) -> dict:
     """Insert ``proposed`` commitments for a meeting's Fathom action items.
 
@@ -229,6 +235,12 @@ def propose_commitments(
     diarization-label owners are resolved against the meeting's
     ``participants`` (see module docstring).
 
+    ``routing_index`` (#358, a ``commitment_routing.RoutingIndex``) scores
+    an item the name screen let through against every workstream's
+    vocabulary — a product, vendor or person that recurs on another
+    workstream and rarely here. A hit gets the same ``[off-project? →
+    <code>]`` flag; nothing moves. None skips the scoring pass.
+
     The ``cp_hash`` recipe is ``asks.ask_hash(canonical_code,
     description)`` — EXACTLY the sprint-file ask recipe, computed on the
     CLEAN description (annotations excluded), so a commitment and its
@@ -237,7 +249,8 @@ def propose_commitments(
 
     Returns a summary dict for observability:
         {"proposed": int, "skipped_duplicate": int, "unresolved": [codes],
-         "owner_unresolved": int, "off_project_flagged": int}
+         "owner_unresolved": int, "off_project_flagged": int,
+         "scored_flagged": int}  (scored ⊆ off_project_flagged)
 
     Never raises.
     """
@@ -247,6 +260,7 @@ def propose_commitments(
         "unresolved": [],
         "owner_unresolved": 0,
         "off_project_flagged": 0,
+        "scored_flagged": 0,
     }
     try:
         client = mc2_db.get_client(required=False)
@@ -300,6 +314,17 @@ def propose_commitments(
             off_code = screen_off_project(
                 description, ingest_codes=project_codes, roster=roster
             )
+            if off_code is None and routing_index is not None:
+                try:
+                    hit = routing_index.suggest(
+                        description, [owner.get("canonical_code") or owner["code"], *project_codes]
+                    )
+                except Exception:  # noqa: BLE001 — scoring must never cost a row
+                    log.warning("commitment routing score failed", exc_info=True)
+                    hit = None
+                if hit is not None:
+                    off_code = hit.target_code
+                    summary["scored_flagged"] += 1
 
             # Annotations are display-only; the hash stays on the clean
             # description so idempotency + sprint-ask identity hold.

@@ -807,8 +807,28 @@ def _perform_auto_ingest(
             # whether the transcript produced cp bullets; best-effort, never
             # raises. The #88 roster (fetched once above) powers off-project
             # flagging (#114); roster=None just turns the screen off.
+            # #358: the vocabulary index scores what the name screen misses
+            # (a vendor, a product, another account's people). Best-effort —
+            # a failed read only turns the scoring pass off.
+            routing_index = None
+            if roster:
+                try:
+                    from cp_engine import mc2_db as _mc2
+                    from cp_engine.commitment_routing import build_routing_index
+
+                    routing_index = build_routing_index(
+                        roster,
+                        client=_mc2.get_client(required=False),
+                        tenant_root=getattr(config, "root", None),
+                    )
+                except Exception as exc:  # noqa: BLE001 — never break ingest
+                    log.warning("commitment routing index failed", exc_info=True)
+                    warnings.append(
+                        f"commitment routing index failed (scoring off this run): "
+                        f"{type(exc).__name__}: {exc}"
+                    )
             commitments_summary = propose_commitments(
-                meeting_id, project_codes, roster=roster
+                meeting_id, project_codes, roster=roster, routing_index=routing_index
             )
             if isinstance(commitments_summary, dict) and commitments_summary.get("error"):
                 warnings.append(f"commitments proposal failed: {commitments_summary['error']}")
