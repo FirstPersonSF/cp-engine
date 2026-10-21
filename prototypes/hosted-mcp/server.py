@@ -118,6 +118,7 @@ from cp_engine.promote_uphill import level_for as _engine_level_for  # noqa: E40
 from cp_engine.state import slug_full_job_name as _engine_slug_full_job_name  # noqa: E402
 # Exec Summary region, markers, stamp and stale threshold (step 1c).
 from cp_engine import project_sources as _engine_project_sources  # noqa: E402
+from cp_engine import chunk_order as _engine_chunk_order  # noqa: E402
 from cp_engine import authored_element as _engine_authored_element  # noqa: E402
 from cp_engine import mc2_db as _engine_mc2_db  # noqa: E402
 from cp_engine import spine as _engine_spine  # noqa: E402
@@ -1174,11 +1175,14 @@ FATHOM_LIST_COLUMNS = (
     "id, title, meeting_date, project_tags, duration_minutes, meeting_type"
 )
 
-# `asset_chunks` — `text` is the extracted content. There is NO `chunk_index`
-# column (verified live); the keys are `id`, `asset_id`, `start_seconds`,
-# `end_seconds`, `text`, `meta`, `content_hash`. `embedding` lives in a separate
-# table and is never selected here.
+# `asset_chunks` — `text` is the extracted content. The keys are `id`,
+# `asset_id`, `start_seconds`, `end_seconds`, `text`, `meta`, `content_hash`,
+# and (mc-2 migration 200, #349) `chunk_index`. `embedding` lives in a separate
+# table and is never selected here. A chunk's position is read from the column
+# AND from the `meta.chunk_index` stamp (projected, never the whole `meta`), so
+# order holds before the migration's backfill and before it is applied at all.
 ASSET_CHUNK_COLUMNS = "id, asset_id, start_seconds, end_seconds, text"
+ASSET_CHUNK_ORDER_COLUMNS = f", chunk_index, {_engine_chunk_order.META_CHUNK_INDEX_SELECT}"
 
 TEAM_EMPTY_HINT = (
     "0 rows. Read policies on this table are TEAM-KEYED via `public.is_team_member()` "
@@ -2441,12 +2445,15 @@ def pull_project_source(asset_id: str, max_chars: int = 40000) -> dict[str, Any]
     author_id. The text lives ONLY in `asset_chunks.text`, so this
     tool concatenates the asset's chunks.
 
-    Chunk ORDER is a real caveat: `asset_chunks` has no `chunk_index` column.
-    Its ordering signals are `start_seconds` (populated for time-based media,
-    NULL for documents) and the row `id`. Chunks are ordered by `start_seconds`
-    where present, and otherwise returned in the table's natural insertion
-    order, which is the order the ingest pipeline wrote them. That is right in
-    practice for documents but is NOT a guarantee the schema makes.
+    Chunk ORDER (#349): the row `id` is a random uuid and the table returns
+    rows in no particular order, so chunks are sorted by their recorded
+    position — the `chunk_index` column (mc-2 mig 200), else the
+    `meta.chunk_index` stamp — when every chunk has one: `order:
+    "chunk_index"`. A legacy (pre-stamp) ingest falls back to `start_seconds`
+    where present and store order otherwise, and says so: `order:
+    "start_seconds"` for fully time-coded media, else `order: "unknown"` plus
+    an `order_note`. (A 2026-10-19 transcript stamped 0..41 came back
+    shuffled because this tool read neither.)
 
     Args:
         asset_id: `rag_assets.id` (from `list_project_sources`).
@@ -2472,16 +2479,11 @@ def pull_project_source(asset_id: str, max_chars: int = 40000) -> dict[str, Any]
         }
     asset = asset_rows[0]
 
-    chunks = (
-        client.table("asset_chunks")
-        .select(ASSET_CHUNK_COLUMNS)
-        .eq("asset_id", asset_id)
-        .execute()
-        .data
-        or []
+    chunks, order = _engine_chunk_order.order_chunks(
+        _read_asset_chunks(client, asset_id),
+        # Legacy fallback, unchanged: time-coded chunks by start, else as stored.
+        fallback_key=lambda c: (c.get("start_seconds") is None, c.get("start_seconds") or 0),
     )
-    if any(c.get("start_seconds") is not None for c in chunks):
-        chunks.sort(key=lambda c: (c.get("start_seconds") is None, c.get("start_seconds") or 0))
 
     text = "\n\n".join((c.get("text") or "") for c in chunks)
     text, truncated, comments_kept = _truncate_keeping_comments(text, max_chars)
@@ -2505,12 +2507,39 @@ def pull_project_source(asset_id: str, max_chars: int = 40000) -> dict[str, Any]
            if not chunks else {}),
         **({"status_note": asset["status_note"]} if asset.get("status_note") else {}),
         **({"scope": asset["scope"]} if asset.get("scope") else {}),
+        **_engine_chunk_order.order_fields(order),
         "truncated": truncated,
         **({"comment_count": _comment_count(asset)} if _comment_count(asset) else {}),
         **({"note": "body truncated; the trailing `## Comments` block was kept in full"}
            if comments_kept else {}),
         "text": text,
     }
+
+
+def _read_asset_chunks(client, asset_id: str) -> list[dict[str, Any]]:
+    """One asset's chunks with their position (#349).
+
+    Selects the mig-200 `chunk_index` column; against a database without it
+    (PostgREST 42703 — the migration is not applied yet) re-reads with the
+    `meta.chunk_index` projection alone, which every stamped row carries. Any
+    other error propagates.
+    """
+    def _read(cols: str) -> list[dict[str, Any]]:
+        return (
+            client.table("asset_chunks")
+            .select(cols)
+            .eq("asset_id", asset_id)
+            .execute()
+            .data
+            or []
+        )
+
+    try:
+        return _read(ASSET_CHUNK_COLUMNS + ASSET_CHUNK_ORDER_COLUMNS)
+    except Exception as exc:  # noqa: BLE001 — narrowed below; anything else re-raises
+        if not _engine_chunk_order.is_missing_column(exc):
+            raise
+        return _read(f"{ASSET_CHUNK_COLUMNS}, {_engine_chunk_order.META_CHUNK_INDEX_SELECT}")
 
 
 def _truncate_keeping_comments(text: str, max_chars: int) -> tuple[str, bool, bool]:

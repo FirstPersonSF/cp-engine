@@ -21,6 +21,7 @@ import re
 from pathlib import Path
 
 from cp_engine.asset_ingest import FileRef, download_file, read_scoped_chunks
+from cp_engine.chunk_order import order_chunks, order_fields
 from cp_engine.spine_done import derive_done, fetch_project_done_map
 from cp_engine import mc2_db
 from cp_engine.mc2_db import RagAssetRow, Tables
@@ -569,18 +570,19 @@ def pull_source(
     chosen = (picked.get("title") or "").strip()
     selected = [r for r in matched if (r.get("title") or "").strip() == chosen]
 
-    # Document order on the no-query path (#152): the RPC returns
-    # meta.chunk_index (stamped at ingest since 1p-lib 6a0f2db) and meta.page;
-    # pre-stamp rows have neither and keep their RPC order (stable sort).
-    # A query ranks by relevance — leave that order alone.
+    # Document order on the no-query path (#152, #349): the RPC returns the
+    # chunk's position (the mig-200 column, else meta.chunk_index — stamped at
+    # ingest since 1p-lib 6a0f2db) and meta.page. A fully positioned doc sorts
+    # by position; a pre-stamp doc keeps the old fallback (page, then RPC
+    # order — a stable sort) and is flagged `order: "unknown"`, because a page
+    # orders pages, not the chunks within one. A query ranks by relevance —
+    # leave that order alone.
+    order_label = "relevance"
     if query is None:
-        def _doc_order(r: dict) -> tuple:
-            ci, page = r.get("chunk_index"), r.get("page")
-            return (
-                0 if ci is not None else 1, ci if ci is not None else 0,
-                0 if page is not None else 1, page if page is not None else 0,
-            )
-        selected = sorted(selected, key=_doc_order)
+        def _legacy_order(r: dict) -> tuple:
+            page = r.get("page")
+            return (0 if page is not None else 1, page if page is not None else 0)
+        selected, order_label = order_chunks(selected, fallback_key=_legacy_order)
 
     first = selected[0]
     # A complete no-query read returns the WHOLE document (that is the
@@ -593,6 +595,7 @@ def pull_source(
         "scope": first.get("scope"),
         "chunks": chunks,
         "chunk_count": len(chunks),
+        **order_fields(order_label),
     }
     if truncated:
         out["truncated"] = True

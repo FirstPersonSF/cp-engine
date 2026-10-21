@@ -2237,7 +2237,8 @@ def read_scoped_chunks(
             citation_url text,
             title        text,
             scope        text,
-            chunk_index  integer,   -- meta.chunk_index (null pre-stamp)
+            chunk_index  integer,   -- the mig-200 column, else meta.chunk_index
+                                    -- (null pre-stamp; mc-2 mig 200, #349)
             page         numeric    -- meta.page (PDF ingests; else null)
         )
 
