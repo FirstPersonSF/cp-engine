@@ -4,6 +4,33 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.131.13 — 2026-10-21
+
+**Wave 2: say what a source is missing, and where a commitment belongs.** Patch.
+
+*Extraction coverage and speaker notes (#349 items 1, 3).* document-ingest
+7492bdd records `rag_assets.meta.coverage` for PPTX (slides total / with text /
+image-only / title-only / with notes) and PDF (pages total / with text). PPTX
+ingest now keeps each slide's speaker notes under `Speaker notes:` and reads
+text inside grouped shapes and table cells. `pull_project_source` (hosted and
+stdio) returns `coverage` and a plain `coverage_warning` when part of a file
+yielded no text ("12 slides, 4 with text — 8 image-only: 3,5,6,…");
+`list_project_sources` adds `coverage_flag`. Rows ingested before this carry
+no coverage and report none — never implied complete. Takes effect for files
+ingested after the webhook redeploys; existing decks need a forced re-ingest.
+
+*Commitments that belong elsewhere are flagged at ingest (#358).* Meeting
+action items are scored against every active workstream's own vocabulary
+(commitment rows, `cp.md`, meeting history; lines copied across workstreams
+count for nobody). Another company wins only on strong evidence — its name, or
+a capitalised name that recurs almost only in its record — and must out-score
+the tagged one. A flagged item stays where it was, suffixed
+`[off-project? → <code>]`; `commitments_sweep` returns a ready
+`route_commitment` call per flag (`suggested_actions.route_commitment`
+hosted). `cxp commitments-sweep --misfiled` scores unflagged open rows too and
+writes nothing. The #114 screen no longer flags a row as off-project to its
+own workstream when the meeting used the short code.
+
 ## v0.131.12 — 2026-10-21
 
 **Wave 1 from the 10-21 improvements sweep: sources in document order, safer
