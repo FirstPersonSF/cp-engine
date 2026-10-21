@@ -53,7 +53,7 @@ from cp_engine.render import (
     render_claude_md,
     render_dropbox_md,
     render_exceptions_readme,
-    render_gitignore,
+    merge_gitignore,
     render_master_cp,
     render_project_cp,
     render_linked_repo_md,
@@ -403,12 +403,18 @@ def _sync_tenant_inner(
     if _write_if_changed(claude_path, new_claude, splice_regions=(), dry_run=dry_run):
         files_written.append(claude_path)
 
-    # .gitignore — generated, idempotent. Tenants shouldn't hand-edit;
-    # exceptions can layer in per-scope or per-project .gitignore files
-    # if real cases emerge (see v0.3 design doc).
+    # .gitignore — generated above the hand-written marker, idempotent.
+    # Lines below the marker are the tenant's and survive every sync; a
+    # marker-less file migrates its hand-added patterns below it (#359).
     gitignore_path = config.root / ".gitignore"
+    existing_gitignore = (
+        gitignore_path.read_text() if gitignore_path.exists() else None
+    )
     if _write_if_changed(
-        gitignore_path, render_gitignore(), splice_regions=(), dry_run=dry_run
+        gitignore_path,
+        merge_gitignore(existing_gitignore),
+        splice_regions=(),
+        dry_run=dry_run,
     ):
         files_written.append(gitignore_path)
 

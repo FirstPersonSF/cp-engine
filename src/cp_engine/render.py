@@ -780,6 +780,12 @@ def _as_float(value) -> float:
         return 0.0
 
 
+#: The line that closes the generated `.gitignore` body. Sync owns every line
+#: above it and keeps every line below it verbatim (#359).
+GITIGNORE_HAND_WRITTEN_MARKER = (
+    "# cp-engine:hand-written — sync keeps every line below this one."
+)
+
 _GITIGNORE_BODY = """\
 # Media — Dropbox is the convention for these
 *.mp4
@@ -809,6 +815,9 @@ _GITIGNORE_BODY = """\
 .DS_Store
 Thumbs.db
 
+# Office lock files (`~$tracker.xlsx`) — created while a file is open (#359).
+~$*
+
 # Editors
 *.swp
 *.swo
@@ -825,18 +834,73 @@ Thumbs.db
 .cp-engine/*
 !.cp-engine/paths.json
 
-# Bytecode cache from the engine-managed .claude/ hook script.
-.claude/hooks/__pycache__/
-"""
+# Python bytecode — the engine-managed .claude/ hook script and any tenant
+# scripts (#359).
+__pycache__/
+""" + "\n" + GITIGNORE_HAND_WRITTEN_MARKER + "\n"
+
+#: Patterns an earlier template carried and later dropped. A marker-less
+#: `.gitignore` (written before #359) still holds them; migration must not
+#: mistake them for hand-added lines and resurrect them.
+_RETIRED_GITIGNORE_PATTERNS = frozenset({
+    "*.xlsx",                       # spreadsheets tracked since 2026-10-12
+    "*.xls",
+    ".cp-engine/",                  # narrowed to `.cp-engine/*` (#302)
+    ".claude/hooks/__pycache__/",   # widened to `__pycache__/` (#359)
+})
 
 
 def render_gitignore() -> str:
     """Return the static `.gitignore` body for a v0.3 tenant.
 
     Pure static content — no template variables. Lives next to the other
-    renderers so all generated files are reachable from one module.
+    renderers so all generated files are reachable from one module. Ends
+    with `GITIGNORE_HAND_WRITTEN_MARKER`; see `merge_gitignore`.
     """
     return _GITIGNORE_BODY
+
+
+def merge_gitignore(existing: str | None) -> str:
+    """Return the `.gitignore` sync should write, given the file on disk.
+
+    The generated body is replaced wholesale; the hand-written block below
+    `GITIGNORE_HAND_WRITTEN_MARKER` is carried over verbatim (#359 — `~$*`
+    was hand-added and silently dropped by sync twice).
+
+    A file with no marker predates the block. Migration carries each of its
+    pattern lines that the template neither renders nor retired into the
+    block, in order, so the first sync after the upgrade loses nothing a
+    human added. Its comments are not carried: a marker-less file's comments
+    are the old template's, and there is no telling them apart.
+    """
+    generated = render_gitignore()
+    if not existing:
+        return generated
+    marker_at = existing.find(GITIGNORE_HAND_WRITTEN_MARKER)
+    if marker_at != -1:
+        tail = existing[marker_at + len(GITIGNORE_HAND_WRITTEN_MARKER):]
+        # Drop the marker line's own newline; keep everything after it as-is.
+        if tail.startswith("\n"):
+            tail = tail[1:]
+        return generated + tail
+    template_patterns = {
+        line.strip() for line in generated.splitlines() if line.strip()
+    }
+    carried: list[str] = []
+    for line in existing.splitlines():
+        pattern = line.strip()
+        if (
+            not pattern
+            or pattern.startswith("#")
+            or pattern in template_patterns
+            or pattern in _RETIRED_GITIGNORE_PATTERNS
+            or pattern in carried
+        ):
+            continue
+        carried.append(pattern)
+    if not carried:
+        return generated
+    return generated + "".join(f"{p}\n" for p in carried)
 
 
 def render_dropbox_md(project: ProjectState) -> str | None:
