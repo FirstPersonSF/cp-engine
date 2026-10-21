@@ -30,6 +30,8 @@ names the exact manual command that finishes it:
                     in installed_plugins.json (user + project scopes); verify versions
     hosted-deploy   prototypes/hosted-mcp/deploy.sh; poll /health for hosted-cp/<v>
     webhook-verify  the webhook deploys itself from main; poll /health for <v>
+                    (a commit behind the tag on /health → `railway redeploy
+                    --from-source` once, then re-poll — #360)
     tenant-pin      MINOR bumps only: `[engine] version = "~= X.Y"` in each tenant,
                     commit, push with rebase (the tenant's push-with-rebase.sh)
     mc2-pin         bump mc-2's cp-engine pin (+ shared 1p-component-library pins to
@@ -76,6 +78,7 @@ DEPENDS: dict[str, tuple[str, ...]] = {
 
 HOSTED_HEALTH = "https://cp.mc-2.1p.is/health"
 WEBHOOK_HEALTH = "https://cp-engine-production.up.railway.app/health"
+WEBHOOK_SERVICE = "cp-engine"
 MC2_DEV_VERSION = "https://api-dev-9400.up.railway.app/api/version"
 MC2_WORKFLOW = ".github/workflows/backend-tests.yml"
 MC2_REQUIREMENTS = "backend/requirements.txt"
@@ -146,6 +149,9 @@ class Options:
     mc2_python: Path | None = None
     poll_timeout: float = 900.0
     poll_interval: float = 15.0
+    # webhook-verify: how long /health may keep reporting a commit behind the
+    # release tag before Railway is told to redeploy from source (#360).
+    webhook_redeploy_after: float = 300.0
     installed_plugins: Path = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
     hosted_health: str = HOSTED_HEALTH
     webhook_health: str = WEBHOOK_HEALTH
@@ -338,19 +344,109 @@ def step_hosted_deploy(ctx: Ctx) -> str:
 # ── webhook-verify ────────────────────────────────────────────────────────
 
 
+def webhook_next(
+    body: dict | None,
+    version: str,
+    *,
+    behind_tag: bool,
+    first_commit: str | None,
+    elapsed: float,
+    grace: float,
+    redeployed: bool,
+) -> str:
+    """One poll of the webhook's /health, decided: `live`, `wait` or `redeploy`.
+
+    WHY (#360). The webhook deploys itself on every push to main, in whatever
+    order Railway receives the push events. On v0.131.11 a push event for an
+    earlier commit arrived after the release's: Railway built the release, then
+    built the older commit over it, and this step waited out its 900 s watching
+    the previous version. The fix by hand was `railway redeploy --from-source`.
+
+    `redeploy` only when /health reports a commit that is BEHIND the release tag
+    (an ancestor of it) — never one that is unknown or ahead — and either:
+      - that commit is not the one first seen: a deploy LANDED during the poll
+        and it is older than the release, which is the late push event; or
+      - `grace` seconds have passed: the release build was lost or overwritten
+        before the poll began.
+    The previous release reporting for a while is the normal build window, so
+    an ancestor alone is not enough. One redeploy per run; after it, only wait.
+    """
+    if body is None:
+        return "wait"
+    if body.get("cp_engine_version") == version:
+        return "live"
+    if redeployed or not behind_tag:
+        return "wait"
+    commit = str(body.get("commit") or "")
+    if first_commit and commit != first_commit:
+        return "redeploy"
+    if elapsed >= grace:
+        return "redeploy"
+    return "wait"
+
+
+def _behind_tag(ctx: Ctx, commit: str, tag: str) -> bool:
+    """True iff `commit` is a strict ancestor of `tag` in the releasing clone."""
+    root = ctx.opts.repo_root
+    tag_sha = ctx.git(root, "rev-parse", f"{tag}^{{commit}}")
+    if tag_sha.returncode != 0 or tag_sha.stdout.strip().startswith(commit):
+        return False
+    return ctx.git(root, "merge-base", "--is-ancestor", commit, tag).returncode == 0
+
+
 def step_webhook_verify(ctx: Ctx) -> str:
     v = ctx.opts.version
     url = ctx.opts.webhook_health
-    ok, last = ctx.poll(url, lambda b: b.get("cp_engine_version") == v)
-    if not ok:
-        seen = (last or {}).get("cp_engine_version", "unreachable")
-        raise StepFailed(
-            f"/health reports {seen} after {int(ctx.opts.poll_timeout)}s "
-            "(the webhook deploys itself from cp-engine main)",
-            f"curl -s {url}   # until cp_engine_version == {v}; else check the "
-            "webhook service's deploys in Railway",
-        )
-    return f"live {v} ({last.get('commit', '?')})"
+    redeploy = ["railway", "redeploy", "--service", WEBHOOK_SERVICE, "--from-source", "--yes"]
+    watch = f"curl -s {url}   # until cp_engine_version == {v}"
+    behind: dict[str, bool] = {}
+    start = ctx.env.now()
+    deadline = start + ctx.opts.poll_timeout
+    first_commit: str | None = None
+    redeployed = False
+    last = None
+    while True:
+        body = ctx.env.get_json(url)
+        if body is not None:
+            last = body
+            commit = str(body.get("commit") or "")
+            if commit and first_commit is None:
+                first_commit = commit
+            if commit and body.get("cp_engine_version") != v and commit not in behind:
+                behind[commit] = _behind_tag(ctx, commit, f"v{v}")
+            action = webhook_next(
+                body, v,
+                behind_tag=behind.get(commit, False),
+                first_commit=first_commit,
+                elapsed=ctx.env.now() - start,
+                grace=ctx.opts.webhook_redeploy_after,
+                redeployed=redeployed,
+            )
+            if action == "live":
+                note = ", redeployed from source" if redeployed else ""
+                return f"live {v} ({body.get('commit', '?')}{note})"
+            if action == "redeploy":
+                out = ctx.run(redeploy, cwd=ctx.opts.repo_root)
+                if out.returncode != 0:
+                    raise StepFailed(
+                        f"/health reports {commit[:7]}, behind v{v}; "
+                        f"railway redeploy exited {out.returncode}: "
+                        f"{_tail(out.stderr or out.stdout, 2)}",
+                        f"{shlex.join(redeploy)} && {watch}",
+                    )
+                redeployed = True
+                # The rebuild needs its own window, not what is left of the first.
+                deadline = ctx.env.now() + ctx.opts.poll_timeout
+        if ctx.env.now() >= deadline:
+            seen = (last or {}).get("cp_engine_version", "unreachable")
+            after = " (redeployed from source once)" if redeployed else ""
+            raise StepFailed(
+                f"/health reports {seen} after {int(ctx.opts.poll_timeout)}s{after} "
+                "(the webhook deploys itself from cp-engine main)",
+                f"{watch}; else check the webhook service's deploys in Railway, "
+                f"or {shlex.join(redeploy)}",
+            )
+        ctx.env.sleep(ctx.opts.poll_interval)
 
 
 # ── tenant-pin ────────────────────────────────────────────────────────────

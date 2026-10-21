@@ -30,7 +30,7 @@ release unless a green run tested the code being released.
 | `local-install` | `uv tool install --force --reinstall --from <clone> cp-engine` | `cxp --version` |
 | `plugins` | `claude plugin marketplace update cp-engine`, then `claude plugin update` for **every** entry in `~/.claude/plugins/installed_plugins.json`: user scope, plus each project scope, run from inside its project | the registry lists the new version for every entry |
 | `hosted-deploy` | `prototypes/hosted-mcp/deploy.sh -m "cp-engine v<v>"` | `https://cp.mc-2.1p.is/health` → `server_version == hosted-cp/<v>` |
-| `webhook-verify` | nothing to run: the webhook deploys itself from main | `https://cp-engine-production.up.railway.app/health` → `cp_engine_version == <v>` |
+| `webhook-verify` | nothing to run: the webhook deploys itself from main. If `/health` reports a commit behind the tag — a late push event deployed an older commit over the release, or the build never landed within `webhook_redeploy_after` (300 s) — runs `railway redeploy --service cp-engine --from-source --yes` once and re-polls (#360) | `https://cp-engine-production.up.railway.app/health` → `cp_engine_version == <v>` |
 | `tenant-pin` | **minor bumps only**: sets `[engine] version = "~= X.Y"` in each tenant, commits just that file, and pushes with the tenant's `.github/scripts/push-with-rebase.sh` | origin already carries the pin (checked first) |
 | `mc2-pin` | bumps mc-2's cp-engine pin, plus every shared `1p-component-library` pin, to cp-engine's revisions at the tag (`test_shared_pin_parity`). Runs mc-2's backend gate the way `backend-tests.yml` does, then commits and pushes to mc-2 **main** (= DEV) | `https://api-dev-9400.up.railway.app/api/version` reports the pushed commit or a later one |
 
