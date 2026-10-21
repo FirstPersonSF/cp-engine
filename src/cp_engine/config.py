@@ -14,6 +14,7 @@ doesn't exist on disk raises `LocalPathNotFound`.
 from __future__ import annotations
 
 import logging
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,6 +29,9 @@ from cp_engine import __version__ as ENGINE_VERSION
 from cp_engine.clock import DEFAULT_TIMEZONE, set_tenant_timezone
 
 logger = logging.getLogger(__name__)
+
+# A one-word `[names] aliases` key: a capitalised first name (#355).
+_SINGLE_NAME_RE = re.compile(r"^[A-Z][A-Za-z'’À-ſ.-]*$")
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -208,7 +212,10 @@ class TenantConfig:
     team: tuple[str, ...] = ()
     # Known mis-hearings of people's names (#312): `[names] aliases =
     # {"Jeff Allman" = "Geoff Ahmann"}`. Auto-ingest rewrites each key to
-    # its value, on word boundaries, before anything is written.
+    # its value, on word boundaries, before anything is written. A one-word
+    # key ("Elin" = "Aoileann Banks", #355) is a bare first name: rewritten
+    # only where it stands alone, never on a workstream that knows another
+    # person by that first name.
     name_aliases: Mapping[str, str] = field(
         default_factory=lambda: MappingProxyType({})
     )
@@ -478,6 +485,17 @@ def _normalize_committed(data: dict, source: Path) -> dict:
             raise CommittedConfigInvalid(
                 f"{source}: [names].aliases must be a table of non-empty "
                 'strings, e.g. aliases = {"Jeff Allman" = "Geoff Ahmann"}'
+            )
+        # A one-word key is a bare first name (#355): it must be a proper
+        # noun, or a case-sensitive rewrite of "will" / "mark" would touch
+        # ordinary words. ``stakeholders.apply_aliases`` holds the rest of
+        # the rule (stand-alone occurrences only).
+        bad = sorted(k for k in aliases_raw
+                     if len(k.split()) == 1 and not _SINGLE_NAME_RE.match(k))
+        if bad:
+            raise CommittedConfigInvalid(
+                f"{source}: [names].aliases single-word key(s) {bad} must be a "
+                'capitalised first name, e.g. aliases = {"Elin" = "Aoileann Banks"}'
             )
         name_aliases = dict(aliases_raw)
 
