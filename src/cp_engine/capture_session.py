@@ -647,6 +647,37 @@ _SESSION_FILENAME_RE = re.compile(
 )
 
 
+def session_sort_key(path: Path) -> tuple[str, str, str, int]:
+    """Chronological order for session files (#353 item 1).
+
+    Sorting whole filenames is NOT chronological at the edges: a same-minute,
+    same-user collision is written `…-drew-2.md`, and `-` sorts before `.`,
+    so `drew-2.md` came out BEFORE `drew.md` — the earlier capture read as
+    the newest. The key parses the name: (date, HHMM, user slug, suffix n),
+    the base file counting as n=1. A same-minute tie across users has no
+    true order on disk; the user slug breaks it deterministically, which is
+    what convergence needs. Names that don't parse sort by stem alone.
+    """
+    m = _SESSION_FILENAME_RE.match(path.stem)
+    if not m:
+        return (path.stem, "", "", 0)
+    n = 1
+    tail = path.stem[m.end("user"):]
+    if tail.startswith("-") and tail[1:].isdigit():
+        n = int(tail[1:])
+    return (m.group("date"), m.group("time"), m.group("user"), n)
+
+
+def newest_session_file(working_dir: Path) -> Path | None:
+    """The newest file under <working_dir>/sessions/ by `session_sort_key`,
+    or None when there is none."""
+    sessions_dir = working_dir / "sessions"
+    if not sessions_dir.is_dir():
+        return None
+    files = [p for p in sessions_dir.glob("*.md") if p.is_file()]
+    return max(files, key=session_sort_key) if files else None
+
+
 def derive_last_session_line(working_dir: Path) -> str | None:
     """Derive the `**Last session:**` line from the NEWEST file under
     <working_dir>/sessions/ (cp-engine #81).
@@ -657,19 +688,14 @@ def derive_last_session_line(working_dir: Path) -> str | None:
     the next capture or `cp sync` recomputes the same value on every
     machine — two teammates capturing between pulls can no longer race.
 
-    Newest = last in lexicographic filename order (the `YYYY-MM-DD-HHMM-`
-    prefix sorts chronologically; collision suffixes `-2`, `-3` sort after
-    their base). Timestamp + proper-cased user come from the file's
+    Newest = last by `session_sort_key` (stamp, then user slug, then
+    collision suffix). Timestamp + proper-cased user come from the file's
     `## Session:` header, falling back to the filename slug. Returns None
     when there are no session files.
     """
-    sessions_dir = working_dir / "sessions"
-    if not sessions_dir.is_dir():
+    newest = newest_session_file(working_dir)
+    if newest is None:
         return None
-    files = sorted(p for p in sessions_dir.glob("*.md") if p.is_file())
-    if not files:
-        return None
-    newest = files[-1]
     try:
         text = newest.read_text(encoding="utf-8")
     except OSError:
@@ -680,6 +706,8 @@ def derive_last_session_line(working_dir: Path) -> str | None:
     header = _SESSION_HEADER_RE.search(text)
     if header:
         timestamp = header.group("stamp").replace("T", " ")
+        # `HHMM` → `HH:MM`, the shape the refresh guard compares on.
+        timestamp = re.sub(r" (\d{2})(\d{2})$", r" \1:\2", timestamp)
         user = header.group("user")
     else:
         m = _SESSION_FILENAME_RE.match(newest.stem)
@@ -694,10 +722,13 @@ def derive_last_session_line(working_dir: Path) -> str | None:
     return f"**Last session:** _{timestamp} ({user}) — {one_line}_"
 
 
-# First YYYY-MM-DD anywhere after the label — matches both capture-written
-# lines (`_2026-07-13 10:15 (Drew) — …_`) and wrap-up-authored prose
-# (`2026-07-11 (evening) — …`). ISO dates compare lexicographically.
-_LINE_DATE_RE = re.compile(r"\*\*Last session:\*\*.*?(\d{4}-\d{2}-\d{2})")
+# First YYYY-MM-DD anywhere after the label, with the HH:MM that follows it
+# when there is one — matches both capture-written lines
+# (`_2026-07-13 10:15 (Drew) — …_`) and wrap-up-authored prose
+# (`2026-07-11 (evening) — …`, date only). ISO stamps compare lexicographically.
+_LINE_DATE_RE = re.compile(
+    r"\*\*Last session:\*\*.*?(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2}))?"
+)
 
 
 def refresh_last_session_line(working_dir: Path) -> bool:
@@ -712,6 +743,8 @@ def refresh_last_session_line(working_dir: Path) -> bool:
     capture is STRICTLY newer (by date) than the date already on the
     line, or when the line carries no parseable date at all (scaffold
     placeholder, freeform prose — the convergent choice is the capture).
+    A line carrying a time (`YYYY-MM-DD HH:MM`, the capture shape) compares
+    at minute resolution instead, so a second capture the same day moves it.
 
     No-op (False) when cp.md is missing, has no `**Last session:**` line,
     or the working dir has no session files. Only the FIRST matching line
@@ -738,10 +771,22 @@ def refresh_last_session_line(working_dir: Path) -> bool:
     existing_date = _LINE_DATE_RE.search(current.group(0))
     derived_date = _LINE_DATE_RE.search(replacement)
     if existing_date and derived_date:
-        # Same-day counts as current: a wrap-up and a capture on one day
-        # are both truthful — don't churn between them.
-        if existing_date.group(1) >= derived_date.group(1):
-            return False
+        if existing_date.group(2) is None:
+            # A date-only line (wrap-up prose): same-day counts as current —
+            # a wrap-up and a capture on one day are both truthful, and a
+            # day carries no finer order to compare.
+            if existing_date.group(1) >= derived_date.group(1):
+                return False
+        else:
+            # A timed line (a prior capture) compares at minute resolution
+            # (#353 item 1: comparing dates froze the line on the day's
+            # first capture). Strictly newer on the line survives; an equal
+            # stamp converges to the derived line, so a same-minute tie
+            # across users settles on the projection's deterministic pick.
+            existing_stamp = existing_date.group(1, 2)
+            derived_stamp = (derived_date.group(1), derived_date.group(2) or "")
+            if existing_stamp > derived_stamp:
+                return False
 
     updated = _LAST_SESSION_RE.sub(replacement, existing, count=1)
     if updated == existing:

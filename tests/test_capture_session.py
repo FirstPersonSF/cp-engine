@@ -1254,3 +1254,98 @@ def test_refresh_same_day_does_not_churn(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert refresh_last_session_line(wd) is False
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  #353 item 1: a second capture the same day must move the line
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_second_capture_same_day_moves_the_line_through_sync(tmp_path: Path) -> None:
+    """The 08-18 shape: two captures one day, the line stayed on the first
+    through two syncs. The guard compared DATES, so a same-day capture was
+    never "strictly newer" than the line it should replace."""
+    from cp_engine.sync import _refresh_all_last_session_lines
+
+    root = tmp_path / "tenant"
+    wd = root / "1p" / "acme" / "acme-1234-thing"
+    wd.mkdir(parents=True)
+    _session_file(
+        wd, "2026-10-21-0713-drew.md",
+        header="2026-10-21 07:13, Drew", body="### What we did\nMorning.\n",
+    )
+    (wd / "cp.md").write_text(
+        "## Exec Summary\n\n**Last session:** _stale_\n", encoding="utf-8"
+    )
+    assert refresh_last_session_line(wd) is True
+    assert "_2026-10-21 07:13 (Drew) — Morning._" in (wd / "cp.md").read_text()
+
+    _session_file(
+        wd, "2026-10-21-1642-drew.md",
+        header="2026-10-21 16:42, Drew", body="### What we did\nAfternoon.\n",
+    )
+    assert _refresh_all_last_session_lines(root) == [wd / "cp.md"]
+    assert "_2026-10-21 16:42 (Drew) — Afternoon._" in (wd / "cp.md").read_text()
+    # Converged: the next sync is a no-op.
+    assert _refresh_all_last_session_lines(root) == []
+
+
+def test_same_minute_collision_suffix_is_newest(tmp_path: Path) -> None:
+    """`_write_session_file` suffixes a same-minute, same-user capture `-2`.
+    Sorted on the full name, `drew-2.md` lands BEFORE `drew.md` ('-' < '.'),
+    so the earlier capture read as the newest."""
+    from cp_engine.brief import newest_session_capture
+
+    wd = tmp_path / "wd"
+    wd.mkdir()
+    _session_file(
+        wd, "2026-10-21-0713-drew.md",
+        header="2026-10-21 07:13, Drew", body="### What we did\nFirst.\n",
+    )
+    _session_file(
+        wd, "2026-10-21-0713-drew-2.md",
+        header="2026-10-21 07:13, Drew", body="### What we did\nSecond.\n",
+    )
+    assert derive_last_session_line(wd) == (
+        "**Last session:** _2026-10-21 07:13 (Drew) — Second._"
+    )
+    assert newest_session_capture(wd) == "2026-10-21-0713-drew-2.md"
+
+
+def test_same_minute_different_users_converges(tmp_path: Path) -> None:
+    """A tie on the minute across users: the filename can't say who was
+    later, so the projection picks deterministically (user slug) — and the
+    line must CONVERGE to it rather than keep whichever side a merge left."""
+    wd = tmp_path / "wd"
+    wd.mkdir()
+    _session_file(
+        wd, "2026-10-21-0713-drew.md",
+        header="2026-10-21 07:13, Drew", body="### What we did\nDrew's.\n",
+    )
+    _session_file(
+        wd, "2026-10-21-0713-tony.md",
+        header="2026-10-21 07:13, Tony", body="### What we did\nTony's.\n",
+    )
+    derived = derive_last_session_line(wd)
+    assert derived == "**Last session:** _2026-10-21 07:13 (Tony) — Tony's._"
+    (wd / "cp.md").write_text(
+        "**Last session:** _2026-10-21 07:13 (Drew) — Drew's._\n", encoding="utf-8"
+    )
+    assert refresh_last_session_line(wd) is True
+    assert derived in (wd / "cp.md").read_text()
+    assert refresh_last_session_line(wd) is False
+
+
+def test_newer_timed_line_is_not_regressed_same_day(tmp_path: Path) -> None:
+    """Forward-only still holds at minute resolution: a line stamped later
+    the same day than the newest capture survives."""
+    wd = tmp_path / "wd"
+    wd.mkdir()
+    _session_file(
+        wd, "2026-10-21-0713-drew.md",
+        header="2026-10-21 07:13, Drew", body="### What we did\nMorning.\n",
+    )
+    line = "**Last session:** _2026-10-21 18:05 (Tony) — wrap-up, later._\n"
+    (wd / "cp.md").write_text(line, encoding="utf-8")
+    assert refresh_last_session_line(wd) is False
+    assert line in (wd / "cp.md").read_text()

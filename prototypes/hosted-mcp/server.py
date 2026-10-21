@@ -7526,6 +7526,26 @@ def tree_root() -> Path:
         return root_path
 
 
+def _expire_tree_debounce() -> None:
+    """Make the next tree read fetch, after a write of OURS committed (#353 item 6).
+
+    The tree-committing verbs (`capture_project_state`, `capture_session`,
+    `rotate_word_count`, `log_improvement`, decision `promote_uphill`) write
+    upstream — mc-2 → webhook commits AND pushes before answering ok. But the
+    read that oriented the write had just reset the debounce clock, so the
+    read-back skipped the fetch and served the pre-write file: observed
+    2026-10-09, `get_project_state` returning the old Exec Summary right after
+    `capture_project_state` reported its commit.
+
+    Cost stays bounded: one fetch per successful write, then the window holds
+    again. Unrelated reads keep the debounce. Taken under `_TREE_LOCK` so an
+    in-flight fetch that began BEFORE the push cannot stamp `last_pull` after
+    this and swallow the expiry.
+    """
+    with _TREE_LOCK:
+        _TREE_STATE["last_pull"] = 0.0
+
+
 def tree_provenance() -> dict[str, Any]:
     """Where the served files came from, and whether that is current.
 
@@ -8610,6 +8630,8 @@ def log_improvement(area: str, observation: str) -> dict[str, Any]:
 
     client = user_client()
     result = call_mc2_log_improvement(area, observation)
+    if result.get("ok"):
+        _expire_tree_debounce()
     audit(
         client,
         "log_improvement",
@@ -8676,6 +8698,8 @@ def capture_session(
 
     # #345: forward the resolved FULL code; the webhook matches no short form.
     result = call_mc2_capture_session(upstream_code(project_code, scope), summary, when)
+    if result.get("ok"):
+        _expire_tree_debounce()
     audit(
         client,
         "capture_session",
@@ -8945,6 +8969,8 @@ def capture_project_state(
 
     # #345: forward the resolved FULL code; the webhook matches no short form.
     result = call_mc2_capture_project_state(upstream_code(project_code, scope), fields, entry)
+    if result.get("ok"):
+        _expire_tree_debounce()  # #353 item 6: the read-back must see this
     audit(
         client,
         "capture_project_state",
@@ -9120,6 +9146,7 @@ def promote_uphill(
         if not out.get("ok"):
             return {**out, "item_kind": "decision", "item_ref": ref,
                     "level": _level_for(project_code)}
+        _expire_tree_debounce()
         backend = out.get("backend")
         if not isinstance(backend, dict):
             return {
@@ -10669,6 +10696,8 @@ def rotate_word_count(project_code: str) -> dict[str, Any]:
 
     # #345: forward the resolved FULL code; the webhook matches no short form.
     result = call_mc2_rotate_word_count(upstream_code(project_code, scope))
+    if result.get("ok"):
+        _expire_tree_debounce()
     backend = result.get("backend") if isinstance(result.get("backend"), dict) else {}
     audit(
         client,
