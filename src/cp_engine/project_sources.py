@@ -22,6 +22,11 @@ from pathlib import Path
 
 from cp_engine.asset_ingest import FileRef, download_file, read_scoped_chunks
 from cp_engine.chunk_order import order_chunks, order_fields
+from cp_engine.extraction_coverage import (
+    META_COVERAGE_SELECT,
+    coverage_fields,
+    list_fields,
+)
 from cp_engine.spine_done import derive_done, fetch_project_done_map
 from cp_engine import mc2_db
 from cp_engine.mc2_db import RagAssetRow, Tables
@@ -191,12 +196,51 @@ def list_sources(
         # file carries feedback, not just a copy of our own deliverable.
         if row.comment_count:
             entry["comment_count"] = row.comment_count
+        # #349 — the ingest kept only part of this file (image-only slides
+        # or pages). Flagged here so a reader knows before pulling it.
+        entry.update(list_fields(raw.get("coverage")))
         if summaries is not None:
             summary = summaries.get(row.id)
             if summary is not None:
                 entry["summary"] = summary
         out.append(entry)
     return out
+
+
+def _asset_coverage(client, project_id: str, company_id: str | None,
+                    title: str | None):
+    """The stored `meta.coverage` of the active asset titled exactly `title`.
+
+    The chunk RPC returns no asset id, so the pulled document is found again
+    by its exact title in the same readable set (the project's own rows plus
+    the company's account rows). Several live rows with that title: the
+    newest after the supersede rule. Returns None when there is no row, no
+    coverage, or the read fails.
+    """
+    if not title:
+        return None
+    cols = f"id, title, created_at, prev_asset_id, {META_COVERAGE_SELECT}"
+    try:
+        # Copies, never `+=` on `.data`: a client may hand back a list it
+        # still owns, and extending it in place corrupts the next read.
+        rows = list((
+            client.table(Tables.RAG_ASSETS).select(cols)
+            .eq("project_id", project_id).eq("title", title)
+            .eq("status", "active").execute()
+        ).data or [])
+        if company_id:
+            rows = rows + list((
+                client.table(Tables.RAG_ASSETS).select(cols)
+                .eq("company_id", company_id).eq("scope", "account")
+                .eq("title", title).eq("status", "active").execute()
+            ).data or [])
+    except Exception:  # noqa: BLE001 — see docstring
+        return None
+    rows = drop_superseded_assets(rows)
+    if not rows:
+        return None
+    rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+    return rows[0].get("coverage")
 
 
 def _zero_chunk_ids(client, asset_ids: list, warnings: list | None = None) -> set:
@@ -597,6 +641,11 @@ def pull_source(
         "chunk_count": len(chunks),
         **order_fields(order_label),
     }
+    # How much of the file the ingest extracted (#349). Fail-open: a lookup
+    # that cannot run adds nothing, and absence never means "complete".
+    out.update(coverage_fields(
+        _asset_coverage(client, project_id, company_id, first.get("title"))
+    ))
     if truncated:
         out["truncated"] = True
         out["note"] = (

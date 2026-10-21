@@ -209,7 +209,11 @@ RAG_ASSET_LIST_COLUMNS = (
     # key as a text column named `comment_count`) — NOT the blob. The parsers
     # stamp it at ingest (document-ingest #108); listing it is how a reader
     # learns a file carries reviewer feedback before pulling 81 chunks (#298).
-    "meta->>comment_count"
+    "meta->>comment_count, "
+    # The extraction-coverage object (#349), projected alone with `->` (a
+    # small jsonb: counts plus slide/page numbers), never the `meta` blob.
+    # Rows ingested before document-ingest 224e546 return null.
+    "coverage:meta->coverage"
 )
 # `source_path` was always selected here and always dropped at the return —
 # which is why a correction could not find the folder it came from.

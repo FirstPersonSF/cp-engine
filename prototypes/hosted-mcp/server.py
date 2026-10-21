@@ -119,6 +119,7 @@ from cp_engine.state import slug_full_job_name as _engine_slug_full_job_name  # 
 # Exec Summary region, markers, stamp and stale threshold (step 1c).
 from cp_engine import project_sources as _engine_project_sources  # noqa: E402
 from cp_engine import chunk_order as _engine_chunk_order  # noqa: E402
+from cp_engine import extraction_coverage as _engine_extraction_coverage  # noqa: E402
 from cp_engine import authored_element as _engine_authored_element  # noqa: E402
 from cp_engine import mc2_db as _engine_mc2_db  # noqa: E402
 from cp_engine import spine as _engine_spine  # noqa: E402
@@ -1164,7 +1165,10 @@ RAG_ASSET_LIST_COLUMNS = (
     # What a doc IS and whether it can be trusted (mig 164) — the stdio list
     # always carried these; the hosted one dropped them, so an embargoed or
     # auto-flagged confidential source read as ordinary here (#324).
-    "description, status_note, scope"
+    "description, status_note, scope, "
+    # Extraction coverage (#349): slides/pages seen vs. those that bore text.
+    # `->` projects that one small jsonb object, never the `meta` blob.
+    f"{_engine_extraction_coverage.META_COVERAGE_SELECT}"
 )
 RAG_ASSET_PULL_COLUMNS = RAG_ASSET_LIST_COLUMNS + ", url, source_path"
 
@@ -2249,6 +2253,9 @@ def list_project_sources(project_code: str) -> dict[str, Any]:
             # default of `pull_project_source` — pull with a larger
             # `max_chars`, or rely on the tail-preservation there.
             **({"comment_count": _comment_count(r)} if _comment_count(r) else {}),
+            # The ingest kept only part of this file (#349): image-only
+            # slides or pages. `pull_project_source` spells out which.
+            **_engine_extraction_coverage.list_fields(r.get("coverage")),
         }
         for r in rows
     ]
@@ -2455,6 +2462,12 @@ def pull_project_source(asset_id: str, max_chars: int = 40000) -> dict[str, Any]
     an `order_note`. (A 2026-10-19 transcript stamped 0..41 came back
     shuffled because this tool read neither.)
 
+    EXTRACTION COVERAGE (#349): `coverage` is what the ingest saw against
+    what bore text (slides or pages; PPTX/PDF ingested since document-ingest
+    224e546), and `coverage_warning` says in plain words when part of the
+    file never reached the store, e.g. "12 slides, 4 with text — 8
+    image-only: 3,5,6,…". Absent for legacy rows and formats without units.
+
     Args:
         asset_id: `rag_assets.id` (from `list_project_sources`).
         max_chars: truncate the assembled text at this many characters.
@@ -2509,6 +2522,10 @@ def pull_project_source(asset_id: str, max_chars: int = 40000) -> dict[str, Any]
         **({"scope": asset["scope"]} if asset.get("scope") else {}),
         **_engine_chunk_order.order_fields(order),
         "truncated": truncated,
+        # How much of the file the ingest extracted (#349). `truncated` is
+        # about this pull's character cap; coverage is about what never made
+        # it into the store (image-only slides/pages). Absent on legacy rows.
+        **_engine_extraction_coverage.coverage_fields(asset.get("coverage")),
         **({"comment_count": _comment_count(asset)} if _comment_count(asset) else {}),
         **({"note": "body truncated; the trailing `## Comments` block was kept in full"}
            if comments_kept else {}),
