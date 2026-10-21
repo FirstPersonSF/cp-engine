@@ -332,3 +332,81 @@ def test_ttl_bucket_eligibility() -> None:
     broken = _ingest_c("g", "broken", "2026-06-01")
     broken["created_at"] = "not-a-date"
     assert _ttl_bucket(broken, _TTL_TODAY) is None
+
+
+# --- #354: the sweep hands back a ready resolve_commitments payload ---------
+#
+# The sweep FOUND the redundant rows but could not close them, so every
+# wrap-up re-keyed each id into a separate resolve call. It still never
+# resolves anything — it returns the exact argument object to send.
+
+def test_suggested_resolutions_name_the_redundant_row() -> None:
+    from cp_engine.commitments_sweep import suggested_resolutions
+
+    rows = _rows(
+        ("s1", "Written interpretation of Brad's feedback + clarifying questions "
+               "sent to Janet for her email to Jaime/Brad", "session"),
+        ("m1", "Email to Janet + Brad with team's interpretation of Brad's "
+               "feedback and clarifying questions", "meeting_ingest"),
+        ("m2", "Book the Fort Worth studio for the pre-light", "meeting_ingest"),
+    )
+    out = suggested_resolutions({"ibx-5153": rows})
+    # The hand-logged row is kept; the ingest restatement is the one to drop.
+    assert out["redundant"] == [
+        {"project_code": "ibx-5153", "drop": "m1", "keep": "s1"}
+    ]
+    assert out["resolve_commitments"] == [
+        {"project_code": "ibx-5153", "keys": ["m1"], "outcome": "dropped"}
+    ]
+
+
+def test_a_chain_of_restatements_keeps_exactly_one_row() -> None:
+    """Three rows for one obligation pair three ways (a↔b, a↔c, b↔c).
+    Dropping 'the other side of each pair' would close all three."""
+    from cp_engine.commitments_sweep import suggested_resolutions
+
+    d = ("Send Janet the migration runbook with the rollback plan attached "
+         "before the cutover window")
+    rows = [
+        _row(_c("old", d, created="2026-07-01"), _TODAY),
+        _row(_c("mid", d + " [confidence: low]", created="2026-07-10"), _TODAY),
+        _row(_c("new", d + " (from Janet Doe (Infoblox))", created="2026-07-20"), _TODAY),
+    ]
+    out = suggested_resolutions({"ibx-5153": rows})
+    (call,) = out["resolve_commitments"]
+    assert sorted(call["keys"]) == ["mid", "new"]  # the oldest survives
+    assert {r["keep"] for r in out["redundant"]} == {"old"}
+
+
+def test_a_dated_row_outranks_an_undated_one() -> None:
+    from cp_engine.commitments_sweep import suggested_resolutions
+
+    d = "Send Janet the migration runbook with the rollback plan attached"
+    rows = [
+        _row(_c("undated", d, created="2026-07-01", source_kind="session"), _TODAY),
+        _row(_c("dated", d, created="2026-07-20", due="2026-08-20"), _TODAY),
+    ]
+    (call,) = suggested_resolutions({"p": rows})["resolve_commitments"]
+    assert call["keys"] == ["undated"]
+
+
+def test_no_duplicates_means_no_payload() -> None:
+    from cp_engine.commitments_sweep import suggested_resolutions
+
+    rows = _rows(("a", "Book the Fort Worth studio", "session"),
+                 ("b", "Invoice #2 for SAP 5198", "session"))
+    assert suggested_resolutions({"p": rows}) == {"redundant": [], "resolve_commitments": []}
+
+
+def test_render_prints_the_ready_to_call_verb() -> None:
+    rows = _rows(
+        ("11111111-aaaa", "Written interpretation of Brad's feedback + clarifying "
+                          "questions sent to Janet for her email to Jaime/Brad", "session"),
+        ("22222222-bbbb", "Email to Janet + Brad with team's interpretation of Brad's "
+                          "feedback and clarifying questions", "meeting_ingest"),
+    )
+    text = render_sweep({"ibx-5153-ai-campaign": rows}, today=_TODAY)
+    assert (
+        '    resolve_commitments(project_code="ibx-5153-ai-campaign", '
+        'keys=["22222222-bbbb"], outcome="dropped")'
+    ) in text

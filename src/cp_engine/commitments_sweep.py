@@ -19,6 +19,12 @@ content-hash dedupe cannot see them, and successive meetings restate one
 obligation in new words. `likely_duplicates` pairs same-project open rows by
 description similarity and the sweep shows the pairs. It FLAGS; it never
 merges or resolves — closing the redundant row stays a human act.
+
+#354: the sweep found the redundant rows but could not close them, so every
+wrap-up re-keyed each id into its own resolve call. `suggested_resolutions`
+picks the row to keep in each duplicate cluster and returns the exact
+`resolve_commitments` argument object for the rest. Still read-only: the
+payload is a proposal to review and send, never an action taken.
 """
 
 from __future__ import annotations
@@ -339,6 +345,55 @@ def likely_duplicates(rows: list[SweepRow]) -> list[DuplicatePair]:
     return pairs
 
 
+def _keep_rank(r: SweepRow) -> tuple:
+    """Lower sorts first = the row a duplicate cluster keeps: a dated row
+    over an undated one (its date was agreed or set), a human-written row
+    over an ingest restatement, then the oldest (it was there first)."""
+    return (r.undated, r.source_kind == "meeting_ingest", -r.age_days, r.id)
+
+
+def suggested_resolutions(groups: dict[str, list[SweepRow]]) -> dict[str, list[dict]]:
+    """The ready-to-send close-out for #311's duplicate pairs (#354).
+
+    Pairs chain — three restatements of one obligation pair three ways — so
+    rows are clustered first and each cluster keeps exactly ONE row; dropping
+    "the other side of every pair" would close all three. Returns
+    ``{"redundant": [{project_code, drop, keep}], "resolve_commitments":
+    [{project_code, keys, outcome}]}``: each ``resolve_commitments`` entry is
+    the verb's argument object as-is. Outcome is ``dropped`` — a restatement
+    was not delivered, the row it repeats carries the obligation. Nothing is
+    resolved here.
+    """
+    redundant: list[dict] = []
+    calls: list[dict] = []
+    for code, rows in groups.items():
+        by_id = {r.id: r for r in rows}
+        parent = {r.id: r.id for r in rows}
+
+        def find(x: str) -> str:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        for p in likely_duplicates(rows):
+            parent[find(p.a.id)] = find(p.b.id)
+        clusters: dict[str, list[SweepRow]] = {}
+        for r in rows:
+            clusters.setdefault(find(r.id), []).append(r)
+        drops: list[str] = []
+        for members in clusters.values():
+            if len(members) < 2:
+                continue
+            keep, *rest = sorted(members, key=_keep_rank)
+            for r in rest:
+                redundant.append({"project_code": code, "drop": r.id, "keep": keep.id})
+                drops.append(r.id)
+        if drops:
+            calls.append({"project_code": code, "keys": drops, "outcome": "dropped"})
+    return {"redundant": redundant, "resolve_commitments": calls}
+
+
 def _clip(text: str, n: int = 70) -> str:
     return text if len(text) <= n else text[: n - 1] + "…"
 
@@ -377,6 +432,16 @@ def render_sweep(groups: dict[str, list[SweepRow]], *, today: date) -> str:
                 )
                 out.append(f"      {_clip(p.a.description)}")
                 out.append(f"      {_clip(p.b.description)}")
+            # #354: the ready-to-call close-out, like seal-sweep's. Review
+            # the pairs above first — the sweep proposes, it never resolves.
+            for call in suggested_resolutions({code: rows})["resolve_commitments"]:
+                keys = ", ".join(f'"{k}"' for k in call["keys"])
+                out.append("")
+                out.append("  Drop the redundant row(s) after review:")
+                out.append(
+                    f'    resolve_commitments(project_code="{code}", '
+                    f'keys=[{keys}], outcome="{call["outcome"]}")'
+                )
         out.append("")
     total = sum(len(rs) for rs in groups.values())
     stale = sum(1 for rs in groups.values() for r in rs if r.stale)

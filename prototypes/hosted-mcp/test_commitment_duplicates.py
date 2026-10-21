@@ -72,3 +72,26 @@ def test_sweep_returns_likely_duplicate_pairs(server, wired):
     assert {pair["a"], pair["b"]} == {"s1", "m1"}
     assert pair["same_meeting"] is True
     assert all(r["source_meeting_id"] == MEETING for r in out["buckets"][CHILD])
+
+
+def test_sweep_returns_a_ready_resolve_payload_and_resolves_nothing(server, wired, monkeypatch):
+    """#354: the sweep names the redundant row and hands back the exact
+    `resolve_commitments` arguments — it never closes a row itself."""
+    test_sweep_returns_likely_duplicate_pairs(server, wired)
+    out = server.commitments_sweep()
+    actions = out["suggested_actions"]
+    assert actions["redundant"] == [{"project_code": CHILD, "drop": "m1", "keep": "s1"}]
+    (call,) = actions["resolve_commitments"]
+    assert call == {"project_code": CHILD, "keys": ["m1"], "outcome": "dropped"}
+    assert all(r["status"] == "open" for r in wired.store["commitments"])
+    # The payload is send-ready: the real verb accepts it unchanged and its
+    # key matcher lands on the row (the fake client has no UPDATE, so the
+    # write itself is stubbed at the one helper that performs it).
+    closed: list[str] = []
+    monkeypatch.setattr(
+        server, "_close_commitment_row",
+        lambda _c, row, outcome: closed.append(row["id"]) or {"resolved": row["id"], "outcome": outcome},
+    )
+    done = server.resolve_commitments(**call)
+    assert done["resolved"] == 1, done["results"]
+    assert closed == ["m1"]
