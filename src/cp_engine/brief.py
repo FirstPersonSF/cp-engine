@@ -466,14 +466,12 @@ def fetch_open_commitments(client, code) -> tuple[list[dict] | None, str | None]
 def newest_session_capture(working_dir: Path | None) -> str | None:
     """Filename of the newest capture under <working_dir>/sessions/, or None.
 
-    Newest = last in lexicographic order — the same rule as
-    `capture_session.derive_last_session_line` (the `YYYY-MM-DD-HHMM-` prefix
-    sorts chronologically).
+    Newest = `capture_session.newest_session_file` — the same rule the
+    `**Last session:**` derivation uses, so the two never disagree (#353).
     """
     if working_dir is None:
         return None
-    sessions_dir = working_dir / "sessions"
-    if not sessions_dir.is_dir():
-        return None
-    files = sorted(p.name for p in sessions_dir.glob("*.md") if p.is_file())
-    return files[-1] if files else None
+    from cp_engine.capture_session import newest_session_file
+
+    newest = newest_session_file(working_dir)
+    return newest.name if newest is not None else None
