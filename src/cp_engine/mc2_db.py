@@ -212,7 +212,7 @@ RAG_ASSET_LIST_COLUMNS = (
     "meta->>comment_count, "
     # The extraction-coverage object (#349), projected alone with `->` (a
     # small jsonb: counts plus slide/page numbers), never the `meta` blob.
-    # Rows ingested before document-ingest 224e546 return null.
+    # Rows ingested before document-ingest 7492bdd return null.
     "coverage:meta->coverage"
 )
 # `source_path` was always selected here and always dropped at the return —

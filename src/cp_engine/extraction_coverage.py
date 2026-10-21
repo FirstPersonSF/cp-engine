@@ -6,7 +6,7 @@ came out as slide titles only, because its slide bodies are images, and the
 Navan eBook PDF gave ~6 chunks from ~19 pages. Both pulls reported
 `truncated: false`.
 
-Since document-ingest 224e546 the PPTX and PDF parsers record coverage in
+Since document-ingest 7492bdd the PPTX and PDF parsers record coverage in
 `rag_assets.meta.coverage`:
 
     {"unit": "slide" | "page", "total": N, "with_text": K,

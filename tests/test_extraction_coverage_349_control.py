@@ -1,6 +1,6 @@
 """A pull says how much of a source the ingest actually extracted (#349).
 
-The parsers record `rag_assets.meta.coverage` (document-ingest 224e546):
+The parsers record `rag_assets.meta.coverage` (document-ingest 7492bdd):
 slides or pages seen against those that bore text. Before this, the stdio
 `pull_source` and `list_sources` never read it, so a deck stored as titles
 only read exactly like a complete one (sap-5200 "Competitive Messaging

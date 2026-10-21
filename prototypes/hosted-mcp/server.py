@@ -2464,7 +2464,7 @@ def pull_project_source(asset_id: str, max_chars: int = 40000) -> dict[str, Any]
 
     EXTRACTION COVERAGE (#349): `coverage` is what the ingest saw against
     what bore text (slides or pages; PPTX/PDF ingested since document-ingest
-    224e546), and `coverage_warning` says in plain words when part of the
+    7492bdd), and `coverage_warning` says in plain words when part of the
     file never reached the store, e.g. "12 slides, 4 with text — 8
     image-only: 3,5,6,…". Absent for legacy rows and formats without units.
 

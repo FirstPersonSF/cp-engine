@@ -1,7 +1,7 @@
 """Hosted `pull_project_source` / `list_project_sources` report extraction
 coverage (#349).
 
-The parsers record `rag_assets.meta.coverage` (document-ingest 224e546):
+The parsers record `rag_assets.meta.coverage` (document-ingest 7492bdd):
 slides or pages seen against those that bore text. The hosted tools never
 read it, so a deck stored as titles only (sap-5200) and a PDF that lost
 13 of 19 pages (Navan eBook) pulled with `truncated: false` and nothing
