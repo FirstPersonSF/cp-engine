@@ -10412,9 +10412,21 @@ def commitments_sweep(project_code: str = "", undated_only: bool = False) -> dic
     one obligation (#311) — typically a row logged by hand mid-session and
     the row auto-ingest wrote for the same meeting. A flag, not a verdict:
     resolve the redundant row with `resolve_commitment` if they match.
+
+    `suggested_actions` (#354) is that close-out, ready to send: `redundant`
+    names the row each cluster keeps and each it would drop (a dated row over
+    an undated one, a hand-written row over an ingest restatement, then the
+    oldest), and each `resolve_commitments` entry is that verb's argument
+    object as-is — `{project_code, keys, outcome}`. Nothing is resolved here:
+    review the pairs, prune `keys` if a pair is not the same obligation, then
+    call `resolve_commitments(**entry)`.
     """
     client = user_client()
-    from cp_engine.commitments_sweep import likely_duplicates, sweep
+    from cp_engine.commitments_sweep import (
+        likely_duplicates,
+        suggested_resolutions,
+        sweep,
+    )
 
     code = project_code.strip() or None
     if code:
@@ -10466,6 +10478,7 @@ def commitments_sweep(project_code: str = "", undated_only: bool = False) -> dic
         "total": sum(len(v) for v in buckets.values()),
         "likely_duplicates": duplicates,
         "likely_duplicate_pairs": sum(len(v) for v in duplicates.values()),
+        "suggested_actions": suggested_resolutions(result),
     }
 
 

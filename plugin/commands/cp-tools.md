@@ -301,7 +301,11 @@ hash recipe everywhere: `cp_engine.asks.ask_hash(<co>-<number>,
   `source_meeting_id` (a `meeting_id` from `list_project_meetings`) links a
   row logged mid-session to its meeting, so it groups with the rows the
   webhook later writes for that meeting (#311); `commitments_sweep` flags
-  likely-duplicate pairs either way.
+  likely-duplicate pairs either way, and its `suggested_actions` carries the
+  close-out ready to send (#354): `redundant` names the row each cluster
+  keeps and drops, and each `resolve_commitments` entry is that verb's
+  `{project_code, keys, outcome}` as-is. It resolves nothing — review the
+  pairs, prune `keys`, then send.
 - `list_commitments(project_code, status?)` — the read side (`status` ∈
   `open | done | dropped | routed | expired | all`). Use at wrap up to reconcile promised vs.
   delivered; `date_status` shows ratification, `source_kind` shows origin.

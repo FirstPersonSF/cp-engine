@@ -553,7 +553,8 @@ def commitments_sweep_cmd(
     sort oldest-first with age, date status, source, and owner — the
     fields that drive a keep/close decision. Undated rows at or near
     the 14-day TTL (#136) are flagged. Closing stays a deliberate act
-    via resolve_commitment; this just makes the decision cheap.
+    via resolve_commitment; this just makes the decision cheap — likely
+    duplicates come with a ready `resolve_commitments(...)` line (#354).
     """
 
     from cp_engine import mc2_db
