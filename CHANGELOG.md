@@ -4,6 +4,50 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.131.12 — 2026-10-21
+
+**Wave 1 from the 10-21 improvements sweep: sources in document order, safer
+aliases, sweeps that hand you the close-out.** Patch.
+
+*Sources come back in document order (#349).* `pull_project_source` (hosted and
+stdio) reassembles chunks by their stored position (`meta.chunk_index`, which
+ingest has stamped since 1p-lib 6a0f2db) instead of database order. That
+shuffle scrambled a Google Doc transcript, interleaved a tabbed doc and put a
+CSV out of row order. Every pull now reports `order` (`chunk_index`,
+`start_seconds`, `relevance` or `unknown`); legacy rows with no stored position
+read as `unknown` with a note, never as silently ordered. mc-2 migration 200
+adds a typed `asset_chunks.chunk_index` filled by trigger; readers retry
+without it on 42703, so deploy order does not matter.
+
+*Hand-added `.gitignore` lines survive sync (#359).* The generated file ends
+with a `# cp-engine:hand-written` marker; sync rewrites above it and keeps
+everything below. First sync on an unmarked file carries hand-added patterns
+below the marker. The template now ignores `~$*` (Office lock files) and
+`__pycache__/`.
+
+*Release check redeploys a stale webhook (#360).* When `/health` reports a
+commit older than the release tag after a different deploy lands mid-poll (or
+300 s pass), `post_release.py` runs `railway redeploy --from-source` once and
+re-polls instead of timing out.
+
+*`commitments_sweep` returns the close-out (#354).* Hosted `suggested_actions`
+and a CLI line give a ready `resolve_commitments` payload for likely
+duplicates, keeping one row per duplicate group (dated over undated,
+hand-written over meeting-ingest, then oldest). Nothing is resolved
+automatically.
+
+*Single-name aliases (#355).* `[names] aliases` and card `Aliases:` lines now
+accept one capitalised name, matched case-sensitively as a whole word and
+skipped where it is followed by a different surname or where a workstream has
+another person with that first name. Speaker labels resolve through aliases.
+People under an "Interviewees" or "Participants" header are no longer marked
+client.
+
+*State reads that keep up (#353 items 1, 6).* `**Last session:**` converges
+after a second capture the same day (minute-level comparison, a deterministic
+newest-file order). The hosted server's read-after-own-write no longer serves
+the pre-write Exec Summary: a successful tree write expires the fetch debounce.
+
 ## v0.131.11 — 2026-10-12
 
 **Hosted: account elements version from any sibling; word count finds short
