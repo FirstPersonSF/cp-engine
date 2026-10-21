@@ -35,8 +35,13 @@ returns it:
 Stakeholders layer — its own and its ancestors' cards plus the company's
 account-scope cards; see ``cp_engine.stakeholders``): each card's name (the
 details block's ``Name``, else the name leading ``framing``) and its
-``Aliases``, plus the speaker labels themselves. A card's multi-word alias is
-also a rewrite ("Rena Lanham" → "Rina Lanham"), like a tenant alias. Step 4b
+``Aliases``, plus the speaker labels themselves. A card's alias is also a
+rewrite ("Rena Lanham" → "Rina Lanham"; one-word "Elin" → "Aoileann Banks",
+#355), like a tenant alias. A ONE-word alias — tenant or card — is a bare
+first name: it rewrites only where it stands alone (``apply_aliases``), and
+not at all on a workstream that knows a different person by that first name.
+Speaker labels are read through the aliases too, so a person Fathom labels
+by a mis-heard name still counts as heard. Step 4b
 retired the sprint file's ``### Stakeholders`` bullets as a source: cards are
 the one store. Internal team members (`[team] members`) are never hedged and
 never used to correct a surname.
@@ -81,7 +86,7 @@ class Person:
 class KnownPeople:
     people: list[Person] = field(default_factory=list)
     team_firsts: frozenset[str] = frozenset()
-    #: Multi-word card aliases → the card's name (applied like tenant aliases).
+    #: Card aliases → the card's name (applied like tenant aliases).
     aliases: dict[str, str] = field(default_factory=dict)
 
     def add(self, name: str) -> None:
@@ -177,8 +182,16 @@ def load_known_people(
             continue
         known.add(name)
         for alias in card.aliases:
-            if len(alias.split()) >= 2 and alias.lower() != name.lower():
-                known.aliases.setdefault(alias, name)
+            alias = " ".join(alias.split())
+            if not alias or alias.lower() == name.lower():
+                continue
+            # A bare first name (#355): its own first name is not a
+            # mis-hearing, and only a proper noun is a name.
+            if len(alias.split()) == 1 and (
+                alias.lower() == name.split()[0].lower() or not _NAME_WORD_RE.match(alias)
+            ):
+                continue
+            known.aliases.setdefault(alias, name)
     for label in speaker_labels(transcript):
         if all(_NAME_WORD_RE.match(w) for w in label.split()):
             known.add(label)
@@ -192,15 +205,30 @@ def load_known_people(
 
 def apply_aliases(text: str, aliases: Mapping[str, str]) -> str:
     """Rewrite each alias key to its value, longest key first, on word
-    boundaries (case-sensitive: `Jeff` → `Geoff` must not touch `jeffrey`)."""
-    if not text or not aliases:
-        return text
-    for wrong in sorted(aliases, key=len, reverse=True):
-        right = aliases[wrong]
-        if not wrong or wrong == right:
-            continue
-        text = re.sub(rf"(?<![\w-]){re.escape(wrong)}(?![\w-])", right, text)
-    return text
+    boundaries (case-sensitive: `Jeff` → `Geoff` must not touch `jeffrey`).
+    A one-word key rewrites only a name standing alone (#355). The one
+    definition lives in ``cp_engine.stakeholders``."""
+    from cp_engine.stakeholders import apply_aliases as _apply
+
+    return _apply(text, aliases)
+
+
+def aliases_for(known: KnownPeople, aliases: Mapping[str, str] | None) -> dict[str, str]:
+    """The aliases to apply on one workstream: its cards' aliases plus the
+    tenant's (tenant wins), minus any one-word alias whose first name a
+    DIFFERENT known person carries — there "Elin" may be Elin Smith (#355)."""
+    merged = {**known.aliases, **dict(aliases or {})}
+    out: dict[str, str] = {}
+    for wrong, right in merged.items():
+        if len(wrong.split()) == 1:
+            # A bare "Elin" (a speaker label, a first-name-only card) is the
+            # mis-hearing itself, not a second person.
+            spare = {" ".join(right.split()).lower(), wrong.lower()}
+            if any(p.first.lower() == wrong.lower() and p.full.lower() not in spare
+                   for p in known.people):
+                continue
+        out[wrong] = right
+    return out
 
 
 _FULL_NAME_RE = re.compile(
@@ -253,13 +281,19 @@ def unheard_external_mentions(
     ]
 
 
-def heard_first_names(transcript: str) -> set[str]:
+def heard_first_names(transcript: str, aliases: Mapping[str, str] | None = None) -> set[str]:
+    """First names the transcript's reliable speaker labels carry — each
+    label also read through ``aliases``, so "Elin" hears Aoileann (#355)."""
     unreliable = self_addressing_labels(transcript)
-    return {
-        label.split()[0].lower()
-        for label in speaker_labels(transcript)
-        if label.split() and label not in unreliable
-    }
+    out: set[str] = set()
+    for label in speaker_labels(transcript):
+        if not label.split() or label in unreliable:
+            continue
+        out.add(label.split()[0].lower())
+        aliased = apply_aliases(label, aliases or {})
+        if aliased.split():
+            out.add(aliased.split()[0].lower())
+    return out
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -300,12 +334,11 @@ def check_plan_attribution(
     """
     summary = {"aliased": 0, "resolved": 0, "hedged": 0, "stakeholders_dropped": 0}
     aliases = dict(aliases or {})
-    heard = heard_first_names(transcript)
 
-    def _clean(value, known):
+    def _clean(value, known, scoped):
         if not isinstance(value, str) or not value:
             return value
-        aliased = apply_aliases(value, {**known.aliases, **aliases})
+        aliased = apply_aliases(value, scoped)
         if aliased != value:
             summary["aliased"] += 1
         resolved = resolve_surnames(aliased, known)
@@ -317,6 +350,8 @@ def check_plan_attribution(
         if not isinstance(entries, dict):
             continue
         known = known_for(code)
+        scoped = aliases_for(known, aliases)
+        heard = heard_first_names(transcript, scoped)
         for verb, items in list(entries.items()):
             if not isinstance(items, list):
                 continue
@@ -327,7 +362,7 @@ def check_plan_attribution(
                     continue
                 for f in _TEXT_FIELDS:
                     if f in item:
-                        item[f] = _clean(item[f], known)
+                        item[f] = _clean(item[f], known, scoped)
                 if verb in _STAKEHOLDER_VERBS:
                     name = str(item.get("name") or "").strip()
                     if name and _resolves_to_known(name, known):

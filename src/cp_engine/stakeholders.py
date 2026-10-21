@@ -224,17 +224,45 @@ def is_person_name(name: str) -> bool:
     return all(_NAME_WORD_RE.match(w) for w in words)
 
 
+def is_single_name_alias(wrong: str) -> bool:
+    """A one-word alias key ("Elin") — a bare first name, held to the
+    stricter rule in :func:`apply_aliases` (#355)."""
+    return len(wrong.split()) == 1
+
+
 def apply_aliases(text: str, aliases: Mapping[str, str] | None) -> str:
     """The tenant ``[names] aliases`` rewrite (word boundaries, longest key
-    first, case-sensitive) — the same rule ``attribution.apply_aliases``
-    applies to plan text."""
+    first, case-sensitive) — the one rule attribution, ingest and the card
+    writer all apply.
+
+    A one-word key is a bare first name (#355: "Elin" for Aoileann Banks),
+    so it rewrites only where it stands alone. Followed by the target's own
+    surname it becomes the target once ("Elin Banks" → "Aoileann Banks", not
+    "… Banks Banks"); followed by any other capitalised word it is a
+    different person who shares the name ("Elin Smith") and is left alone."""
     if not text or not aliases:
         return text
     for wrong in sorted(aliases, key=len, reverse=True):
         right = aliases[wrong]
         if not wrong or wrong == right:
             continue
-        text = re.sub(rf"(?<![\w-]){re.escape(wrong)}(?![\w-])", right, text)
+        if not is_single_name_alias(wrong):
+            text = re.sub(rf"(?<![\w-]){re.escape(wrong)}(?![\w-])", right, text)
+            continue
+        surname = right.split()[-1] if len(right.split()) > 1 else ""
+
+        def _one(m: re.Match, right: str = right, surname: str = surname) -> str:
+            nxt = m.group("next")
+            if not nxt:
+                return right
+            if surname and nxt.strip() == surname:
+                return right
+            return m.group(0)  # another surname follows: someone else
+
+        text = re.sub(
+            rf"(?<![\w-]){re.escape(wrong)}(?![\w-])(?P<next>\s+[A-Z][A-Za-z'’À-ſ-]+)?",
+            _one, text,
+        )
     return text
 
 
@@ -717,7 +745,25 @@ def remove_span(body: str, span: tuple[int, int]) -> str:
 
 _INTERNAL_GROUP_RE = re.compile(r"first person|\binternal\b|\bFP\b|\bteam\b", re.I)
 _EXTERNAL_GROUP_RE = re.compile(r"vendor|agency|partner|supplier", re.I)
-_EXTERNAL_ROLE_RE = re.compile(r"\b(interviewee|participant|vendor|agency|sub-vendor)\b", re.I)
+# A group of research subjects — "**Interviewees**", "**Study participants**"
+# — works elsewhere (#355: slt-5196's nine interviewees were stamped client).
+# A header that also says "client" ("Salesloft (client) participants") is the
+# author saying they are the client's people.
+_SUBJECT_GROUP_RE = re.compile(r"\b(interviewees?|participants?)\b", re.I)
+_CLIENT_WORD_RE = re.compile(r"\bclient\b", re.I)
+_EXTERNAL_ROLE_RE = re.compile(
+    r"\b(interviewees?|participants?|vendors?|agency|agencies|sub-vendors?)\b", re.I)
+
+
+def is_external_group(group: str) -> bool:
+    """A ``**Group**`` header whose people are not the client's: vendors,
+    agencies, partners — and interviewees/participants unless the header
+    names them the client's."""
+    if not group:
+        return False
+    if _EXTERNAL_GROUP_RE.search(group):
+        return True
+    return bool(_SUBJECT_GROUP_RE.search(group)) and not _CLIENT_WORD_RE.search(group)
 
 
 @dataclass(frozen=True)
@@ -821,7 +867,7 @@ def explicit_company(mentions: Iterable[Mention], client_company: str = "") -> s
         words = {w for w in norm_name(client_company).split() if len(w) > 2}
         for m in mentions:
             g = norm_name(m.group)
-            if not g or _EXTERNAL_GROUP_RE.search(g):
+            if not g or is_external_group(g):
                 continue
             if "client" in g.split() or (words and words <= set(g.split())):
                 return client_company
@@ -843,7 +889,7 @@ def body_company(body: str | None) -> str:
 
 
 def side_for(m: Mention, *, default: str = "client") -> str:
-    if m.group and _EXTERNAL_GROUP_RE.search(m.group):
+    if is_external_group(m.group):
         return "external"
     if _EXTERNAL_ROLE_RE.search(m.role or "") or _EXTERNAL_ROLE_RE.search(m.context or ""):
         return "external"
