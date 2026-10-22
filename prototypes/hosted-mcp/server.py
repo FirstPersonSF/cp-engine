@@ -1449,7 +1449,10 @@ def list_spine_elements(
     default, with the count reported as `absorbed_hidden`. Pass
     `include_absorbed=true` (retrospective mode) to include them, each
     annotated with the deliverable that absorbed it. Canon members (active
-    `canon_of` edge to the standing brief) carry `canon: true`.
+    `canon_of` edge to the standing brief) carry `canon: true`. A row a live
+    element replaced (active `supersedes` edge) carries `superseded_by:
+    {key, framing, date}` — read that successor first; an active
+    `contradicts` edge adds `contradicted_by` (#352).
 
     `tier` is the signal/noise facet (#158): "working"/"authored" drops the
     per-doc source stubs so orientation reads the authored working set;
@@ -1482,10 +1485,11 @@ def list_spine_elements(
 
     # One edge read serves both annotations: canon membership and absorption.
     # Shared with the stdio verb (#330) — `seal_sweep.read_lifecycle_edges`.
-    from cp_engine.seal_sweep import read_lifecycle_edges
+    from cp_engine.seal_sweep import challenge_marks, read_lifecycle_edges
 
     absorbed_into: dict[str, str] = {}
     canon_ids: set[str] = set()
+    challenges: list[dict] = []
     try:
         # Account rows carry their HOME project's id, so an edge on one lives
         # under that project, not this one. Read every project represented in
@@ -1495,6 +1499,7 @@ def list_spine_elements(
         absorbed_into, canon_ids = read_lifecycle_edges(
             client,
             {project_id} | {r["project_id"] for r in rows if r.get("project_id")},
+            challenges=challenges,
         )
     except Exception as exc:  # noqa: BLE001 — annotations degrade, the list survives
         # Degrading is right; degrading SILENTLY is not. `absorbed_into` gates
@@ -1510,6 +1515,14 @@ def list_spine_elements(
     else:
         annotations_error = None
 
+    # #352: "this was replaced". Every unarchived row is the live set a
+    # successor must be in — including sealed ones, which the pointer then
+    # names with the deliverable that absorbed them.
+    challenged = challenge_marks(
+        challenges,
+        {r.get("est_item_id"): r for r in rows if not r.get("archived")},
+        absorbed_into,
+    )
     tier_n = (tier or "all").lower()
     stubs_hidden = 0
     elements = []
@@ -1556,8 +1569,14 @@ def list_spine_elements(
                     if eid in absorbed_into
                     else {}
                 ),
+                # Newest successor only; `pull_spine_element` names them all.
+                **{
+                    k: v for k, v in (challenged.get(eid) or {}).items()
+                    if k in ("superseded_by", "contradicted_by")
+                },
             }
         )
+    superseded_count = sum(1 for e in elements if "superseded_by" in e)
     audit(
         client,
         "list_spine_elements",
@@ -1580,6 +1599,15 @@ def list_spine_elements(
         **({"canon_size": len(canon_ids)} if canon_ids else {}),
         **(
             {
+                "superseded_count": superseded_count,
+                "note_on_superseded": "a live element replaced these "
+                "(superseded_by) — read the successor first",
+            }
+            if superseded_count
+            else {}
+        ),
+        **(
+            {
                 "absorbed_hidden": absorbed_hidden,
                 "note_on_absorbed": "sealed into a deliverable; pass "
                 "include_absorbed=true for retrospective mode",
@@ -1591,9 +1619,10 @@ def list_spine_elements(
             {
                 "annotations_available": False,
                 "annotations_error": annotations_error,
-                "note_on_annotations": "canon and absorbed-by edges could not be "
-                "read — sealed elements are NOT filtered out of this list and "
-                "canon membership is unmarked; treat lifecycle state as unknown",
+                "note_on_annotations": "canon, absorbed-by and supersedes edges "
+                "could not be read — sealed elements are NOT filtered out of "
+                "this list, canon membership is unmarked and replaced elements "
+                "carry no superseded_by; treat lifecycle state as unknown",
             }
             if annotations_error
             else {}
@@ -1731,6 +1760,10 @@ def pull_spine_element(
     instantly true here — never retype them into the element. A failed read
     sets `derived_block: false` and names itself in `warnings`.
 
+    A replaced element (active `supersedes` edge from a live element) leads
+    with `warning: "Superseded by X on <date> — read that first."` plus
+    `superseded_by` / `contradicted_by` (#352).
+
     Args:
         element_id: `spine_substance.est_item_id` (e.g. "_authored/janet-dossier")
                     or the row's own `id`. Exact match only on this server —
@@ -1819,8 +1852,54 @@ def pull_spine_element(
     }
     if (row.get("layer") or "").lower() == "agreement" and row.get("project_id"):
         _compose_agreement_projection(result, client, row.get("project_id"))
+    if row.get("project_id"):
+        result = _with_challenges(result, client, row)
     return _with_project_status(
         result, client, row.get("project_id"), row.get("project_code"))
+
+
+def _with_challenges(result: dict[str, Any], client, row: dict) -> dict[str, Any]:
+    """#352: lead the pull with "Superseded by X on <date> — read that first."
+    when an active `supersedes` edge from a LIVE element points at it, and
+    attach `superseded_by` (+ `superseded_by_all` when several) and
+    `contradicted_by`, each with its edge note. Same edge read as the
+    listings (`seal_sweep.read_lifecycle_edges`). Fail-soft but loud: a failed
+    read adds `supersession_error`, because a missing warning would otherwise
+    read as "current"."""
+    from cp_engine.seal_sweep import (
+        challenge_marks,
+        read_lifecycle_edges,
+        supersession_warning,
+    )
+
+    pid, eid = row.get("project_id"), row.get("est_item_id")
+    challenges: list[dict] = []
+    try:
+        absorbed_into, _canon = read_lifecycle_edges(
+            client, {pid}, challenges=challenges)
+        incoming = [e for e in challenges if e.get("to_item_id") == eid]
+        live: dict[str, dict] = {}
+        sources = sorted({e["from_item_id"] for e in incoming})
+        if sources:
+            for s in (
+                client.table("spine_substance")
+                .select("est_item_id, framing, archived")
+                .eq("project_id", pid)
+                .eq("status", "live")
+                .in_("est_item_id", sources)
+                .execute()
+                .data
+                or []
+            ):
+                if not s.get("archived"):
+                    live[s["est_item_id"]] = s
+    except Exception as exc:  # noqa: BLE001 — the pull survives, and says so
+        log.warning("supersedes edges unreadable for %s: %s", eid, exc)
+        result["supersession_error"] = f"{type(exc).__name__}: {exc}"
+        return result
+    mark = challenge_marks(incoming, live, absorbed_into, with_note=True).get(eid) or {}
+    warning = supersession_warning(mark)
+    return {**({"warning": warning} if warning else {}), **result, **mark}
 
 
 def _compose_agreement_projection(

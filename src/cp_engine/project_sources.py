@@ -1517,8 +1517,8 @@ def list_spine(client, project_id: str, company_id: str | None = None, *,
             return [{"note": f"layer filter {layer!r} matched no elements",
                      "hint": layers}]
         return []
-    rows, absorbed_into, canon_ids, lifecycle_notes = _lifecycle_facet(
-        client, project_id, all_rows, rows, include_absorbed
+    rows, absorbed_into, canon_ids, lifecycle_notes, challenged = (
+        _lifecycle_facet(client, project_id, all_rows, rows, include_absorbed)
     )
     if compact:
         out = [
@@ -1532,7 +1532,7 @@ def list_spine(client, project_id: str, company_id: str | None = None, *,
                 "has_note": bool(row.get("note")),
                 "scope": _row_scope(row),
                 "version_label": row.get("version_label"),
-                **_lifecycle_marks(row, absorbed_into, canon_ids),
+                **_lifecycle_marks(row, absorbed_into, canon_ids, challenged),
             }
             for row in rows
         ]
@@ -1580,7 +1580,7 @@ def list_spine(client, project_id: str, company_id: str | None = None, *,
                 "scope": _row_scope(row),
                 "version_label": row.get("version_label"),
                 "version_date": row.get("version_date"),
-                **_lifecycle_marks(row, absorbed_into, canon_ids),
+                **_lifecycle_marks(row, absorbed_into, canon_ids, challenged),
             }
         )
     # Important elements sort first; list.sort is stable so within-group order
@@ -1590,14 +1590,20 @@ def list_spine(client, project_id: str, company_id: str | None = None, *,
 
 
 def _lifecycle_marks(row: dict, absorbed_into: dict[str, str],
-                     canon_ids: set[str]) -> dict:
+                     canon_ids: set[str],
+                     challenged: dict[str, dict] | None = None) -> dict:
     """The hosted listing's lifecycle markers, each omitted when absent:
     `canon: true` for a member of the standing brief (an active `canon_of`
-    edge, #335) and `absorbed_by: <deliverable>` for a sealed row."""
+    edge, #335), `absorbed_by: <deliverable>` for a sealed row, and (#352)
+    `superseded_by: {key, framing, date}` / `contradicted_by: [...]` for a
+    row a live element replaced or challenged. Listings carry only the
+    newest successor; `pull_spine` names them all."""
     eid = row.get("est_item_id")
+    mark = (challenged or {}).get(eid) or {}
     return {
         **({"canon": True} if eid in canon_ids else {}),
         **({"absorbed_by": absorbed_into[eid]} if eid in absorbed_into else {}),
+        **{k: mark[k] for k in ("superseded_by", "contradicted_by") if k in mark},
     }
 
 
@@ -1605,7 +1611,9 @@ def _lifecycle_facet(client, project_id: str, all_rows: list[dict],
                      rows: list[dict], include_absorbed: bool | None):
     """Apply `list_spine`'s lifecycle facet to the filtered `rows`.
 
-    Returns `(rows, absorbed_into, canon_ids, note_rows)`. Stdio
+    Returns `(rows, absorbed_into, canon_ids, note_rows, challenged)` —
+    `challenged` is `seal_sweep.challenge_marks` over the same read (#352),
+    with every listed-or-hidden row as the live set. Stdio
     `list_spine_elements` had no lifecycle awareness at all: it listed sealed,
     historical elements in the working set with nothing to mark them, where
     the hosted verb hid them by default (#330), and it never marked canon
@@ -1620,30 +1628,37 @@ def _lifecycle_facet(client, project_id: str, all_rows: list[dict],
     `canon_size` (every active canon edge read, as hosted counts it).
     """
     if include_absorbed is None:
-        return rows, {}, set(), []
-    from cp_engine.seal_sweep import read_lifecycle_edges
+        return rows, {}, set(), [], {}
+    from cp_engine.seal_sweep import challenge_marks, read_lifecycle_edges
 
+    challenges: list[dict] = []
     try:
         absorbed_into, canon_ids = read_lifecycle_edges(
             client,
             {project_id} | {r.get("project_id") for r in all_rows},
+            challenges=challenges,
         )
     except Exception as exc:  # noqa: BLE001 — degrade the facet, never the list
         logger.warning("list_spine: absorbed_by edges unreadable for "
                        "project_id=%s: %s", project_id, exc)
         return rows, {}, set(), [{
-            "note": "canon and absorbed-by edges could not be read — sealed "
-                    "elements are NOT filtered out of this list and canon "
-                    "membership is unmarked; treat lifecycle state as unknown",
+            "note": "canon, absorbed-by and supersedes edges could not be "
+                    "read — sealed elements are NOT filtered out of this list, "
+                    "canon membership is unmarked and replaced elements carry "
+                    "no superseded_by; treat lifecycle state as unknown",
             "annotations_available": False,
             "annotations_error": f"{type(exc).__name__}: {exc}",
-        }]
+        }], {}
+    challenged = challenge_marks(
+        challenges, {r.get("est_item_id"): r for r in all_rows}, absorbed_into)
     kept = rows if include_absorbed else [
         r for r in rows if r.get("est_item_id") not in absorbed_into
     ]
     hidden = len(rows) - len(kept)
-    if not hidden and not canon_ids:
-        return kept, absorbed_into, canon_ids, []
+    superseded = sum(1 for r in kept if "superseded_by"
+                     in challenged.get(r.get("est_item_id"), {}))
+    if not hidden and not canon_ids and not superseded:
+        return kept, absorbed_into, canon_ids, [], challenged
     notes = []
     if hidden:
         notes.append(f"{hidden} element(s) sealed into a deliverable are "
@@ -1651,11 +1666,15 @@ def _lifecycle_facet(client, project_id: str, all_rows: list[dict],
     if canon_ids:
         notes.append(f"{len(canon_ids)} element(s) are canon (the standing "
                      "brief); listed rows among them carry canon: true")
+    if superseded:
+        notes.append(f"{superseded} listed element(s) were superseded by a "
+                     "live element (superseded_by) — read the successor first")
     return kept, absorbed_into, canon_ids, [{
         "note": "; ".join(notes),
         **({"absorbed_hidden": hidden} if hidden else {}),
         **({"canon_size": len(canon_ids)} if canon_ids else {}),
-    }]
+        **({"superseded": superseded} if superseded else {}),
+    }], challenged
 
 
 def pull_spine(client, project_id: str, key: str,
@@ -1683,7 +1702,8 @@ def pull_spine(client, project_id: str, key: str,
 
     row, reason, distinct = _match_one_live(rows, key)
     if row is not None:
-        result = _spine_element(row)
+        result = _with_challenges(client, project_id, rows, row,
+                                  _spine_element(row))
         # Surface derived `done` only on a successful single-element pull.
         # Best-effort: if the estimator schema is unreachable the fetch may
         # raise, so we fail-soft to an empty map (→ derive_done returns None).
@@ -1722,6 +1742,37 @@ def pull_spine(client, project_id: str, key: str,
             f"[{candidates}]; pass an est_item_id or a more specific title"
         ),
     }
+
+
+def _with_challenges(client, project_id: str, rows: list[dict], row: dict,
+                     result: dict) -> dict:
+    """#352: lead a pull with "Superseded by X on <date> — read that first."
+    when a live element replaced this one, and attach `superseded_by` /
+    `contradicted_by` (with each edge's note). `rows` — every live row the
+    pull fetched — is the live set a successor must be in. A failed edge read
+    leaves the pull as it was, plus `supersession_error`: the warning's
+    absence then means UNKNOWN, not "current"."""
+    from cp_engine.seal_sweep import (
+        challenge_marks,
+        read_lifecycle_edges,
+        supersession_warning,
+    )
+
+    challenges: list[dict] = []
+    try:
+        absorbed_into, _canon = read_lifecycle_edges(
+            client, {project_id, row.get("project_id")}, challenges=challenges)
+    except Exception as exc:  # noqa: BLE001 — the pull survives; says so
+        logger.warning("pull_spine: supersedes edges unreadable for "
+                       "project_id=%s: %s", project_id, exc)
+        result["supersession_error"] = f"{type(exc).__name__}: {exc}"
+        return result
+    mark = challenge_marks(
+        challenges, {r.get("est_item_id"): r for r in rows}, absorbed_into,
+        with_note=True,
+    ).get(row.get("est_item_id")) or {}
+    warning = supersession_warning(mark)
+    return {**({"warning": warning} if warning else {}), **result, **mark}
 
 
 def _spine_element(row: dict) -> dict:

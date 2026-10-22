@@ -85,7 +85,7 @@ DELIVERABLE_LAYERS = ("deliverables", "output")
 
 
 def read_lifecycle_edges(
-    client, project_ids: Iterable[str]
+    client, project_ids: Iterable[str], challenges: list | None = None,
 ) -> tuple[dict[str, str], set[str]]:
     """``(absorbed_into, canon_ids)`` from the ACTIVE lifecycle edges of
     ``project_ids`` — the one read both servers' ``list_spine_elements`` use.
@@ -104,6 +104,12 @@ def read_lifecycle_edges(
     It lived inline in the hosted server alone until #330 gave the stdio
     listing the same ``include_absorbed`` flag; one reader keeps "what counts
     as absorbed" from drifting between the two.
+
+    ``challenges`` (#352): pass a list and the SAME query also reads the
+    active ``supersedes`` / ``contradicts`` edges, appended to it as raw
+    ``{kind, from_item_id, to_item_id, created_at, note}`` dicts for
+    :func:`challenge_marks`. One read, one failure mode: a caller that
+    degrades on a failed lifecycle read degrades on this too.
     """
     from cp_engine.mc2_db import Tables  # lazy: this module is otherwise pure
 
@@ -112,21 +118,112 @@ def read_lifecycle_edges(
     ids = sorted({p for p in project_ids if p})
     if not ids:
         return absorbed_into, canon_ids
+    kinds = ["canon_of", "absorbed_by"]
+    if challenges is not None:
+        kinds += list(CHALLENGE_KINDS)
     for e in (
         client.table(Tables.SPINE_RELATIONS)
-        .select("kind, from_item_id, to_item_id")
+        .select("kind, from_item_id, to_item_id, created_at, note")
         .in_("project_id", ids)
         .eq("status", "active")
-        .in_("kind", ["canon_of", "absorbed_by"])
+        .in_("kind", kinds)
         .execute()
         .data
         or []
     ):
         if e["kind"] == "canon_of":
             canon_ids.add(e["from_item_id"])
-        else:
+        elif e["kind"] == "absorbed_by":
             absorbed_into[e["from_item_id"]] = e["to_item_id"]
+        elif challenges is not None:
+            challenges.append(e)
     return absorbed_into, canon_ids
+
+
+# ── "This was replaced" (#352 item 1) ──────────────────────────────────────
+#
+# Both edge kinds point FROM the newer element TO the one it overtakes:
+# `supersedes` is new -> old (what `promote_to_canon(replaces_key=)` writes),
+# and every live `contradicts` edge (6 of 6, 2026-10-22) runs challenger ->
+# challenged. So the TARGET is the element a reader must be warned about.
+CHALLENGE_KINDS = ("supersedes", "contradicts")
+
+
+def _pointer(edge: dict, live: dict[str, dict],
+             absorbed_into: dict[str, str], *, with_note: bool) -> dict:
+    src = edge.get("from_item_id")
+    row = live.get(src) or {}
+    out = {
+        "key": src,
+        "framing": row.get("framing") or src,
+        "date": str(edge.get("created_at") or "")[:10] or None,
+    }
+    # A successor sealed into a deliverable is hidden from the default
+    # listing (2 of the 5 live successors are) — say where it went, or the
+    # pointer leads nowhere the reader can see.
+    if src in absorbed_into:
+        out["absorbed_by"] = absorbed_into[src]
+    if with_note and edge.get("note"):
+        out["note"] = edge["note"]
+    return out
+
+
+def challenge_marks(
+    challenges: Iterable[dict], live: dict[str, dict],
+    absorbed_into: dict[str, str] | None = None, *, with_note: bool = False,
+) -> dict[str, dict]:
+    """Per-target read-side markers from active supersedes/contradicts edges.
+
+    ``live`` maps est_item_id -> a live row (``framing`` used); an edge whose
+    SOURCE is not live marks nothing — a retired successor cannot be "read
+    that first". Returns ``{target_id: {...}}`` with, each omitted when absent:
+
+      - ``superseded_by``: the NEWEST successor ``{key, framing, date}``
+        (``date`` = when the edge was recorded), plus ``superseded_by_all``
+        newest-first when more than one replaced it;
+      - ``contradicted_by``: every live challenger, newest first.
+
+    ``with_note`` adds the edge's ``note`` (the pull shows it; listings stay
+    short). Pure: no I/O.
+    """
+    absorbed_into = absorbed_into or {}
+    grouped: dict[str, dict[str, list[dict]]] = {}
+    for e in challenges:
+        if e.get("kind") not in CHALLENGE_KINDS or e.get("from_item_id") not in live:
+            continue
+        grouped.setdefault(e.get("to_item_id"), {}).setdefault(
+            e["kind"], []).append(e)
+    marks: dict[str, dict] = {}
+    for target, by_kind in grouped.items():
+        mark: dict[str, Any] = {}
+        sup = sorted(by_kind.get("supersedes", []),
+                     key=lambda e: str(e.get("created_at") or ""), reverse=True)
+        if sup:
+            ptrs = [_pointer(e, live, absorbed_into, with_note=with_note)
+                    for e in sup]
+            mark["superseded_by"] = ptrs[0]
+            if len(ptrs) > 1:
+                mark["superseded_by_all"] = ptrs
+        con = sorted(by_kind.get("contradicts", []),
+                     key=lambda e: str(e.get("created_at") or ""), reverse=True)
+        if con:
+            mark["contradicted_by"] = [
+                _pointer(e, live, absorbed_into, with_note=with_note)
+                for e in con]
+        marks[target] = mark
+    return marks
+
+
+def supersession_warning(mark: dict) -> str | None:
+    """The one line a pull leads with, or None when nothing replaced it."""
+    sup = mark.get("superseded_by")
+    if not sup:
+        return None
+    when = f" on {sup['date']}" if sup.get("date") else ""
+    where = (f", sealed into {sup['absorbed_by']}"
+             if sup.get("absorbed_by") else "")
+    return (f"Superseded by '{sup['framing']}' ({sup['key']}{where})"
+            f"{when} — read that first.")
 
 def _norm(value: str | None) -> str:
     return (value or "").strip().lower()

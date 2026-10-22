@@ -115,10 +115,21 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   (`absorbed_hidden` = how many were hidden);
   `include_absorbed=true` lists them annotated `absorbed_by`. Canon members
   carry `canon: true`, with `canon_size` beside `absorbed_hidden`.
+  **Replaced elements are marked, not hidden (#352):** an element with an
+  incoming active `supersedes` edge from a LIVE element carries
+  `superseded_by: {key, framing, date}` — the newest successor; `date` is
+  when the edge was recorded; plus `absorbed_by` when that successor is
+  sealed — and the response counts them in `superseded_count`. An active
+  `contradicts` edge marks its target `contradicted_by: [{key, framing,
+  date}]`. Read the successor before building on a `superseded_by` row.
 - `pull_spine_element(project_code, key)` — ONE element's full body. `key` must be
   an EXACT est_item_id (`_authored/email-from-janet-6-18`) or row id — no title
   substring; `project_code` is optional (a disambiguator). `element_id` is
-  accepted as an alias for `key`.
+  accepted as an alias for `key`. A replaced element's pull LEADS with
+  `warning: "Superseded by '<framing>' (<key>) on <date> — read that first."`
+  and carries `superseded_by` (+ `superseded_by_all` when several replaced
+  it) and `contradicted_by`, each with the edge's `note`. A failed edge read
+  sets `supersession_error` — no warning then means UNKNOWN, not current.
 - `create_spine_element(project_code, framing, body, layer?, slug?, important?, note?, sources?)`
   — author a new live v1 element. `framing` is the title; `layer`
   (default `note`) ∈ email|note|decision|source|brief|stakeholder|agreement|
@@ -186,7 +197,9 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   (est_item_id or distinct title substring). Idempotent. Edge vocab: responds_to
   = their voice reacting to ours; derives_from = built from named inputs;
   supersedes = a genuine fork (rare); informs = shaped but didn't generate;
-  contradicts = conflicting claim. **Direction for the feeding kinds
+  contradicts = conflicting claim. **supersedes / contradicts point FROM the
+  newer element TO the one it overtakes** — the target is what list/pull
+  then mark `superseded_by` / `contradicted_by`. **Direction for the feeding kinds
   (derives_from / informs / responds_to): `from_key` is the INPUT, `to_key` is
   the thing built from it** — `source --serves--> activity
   --derives_from--> deliverable`. The verb accepts either direction silently;
