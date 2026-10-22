@@ -15,6 +15,19 @@ Since document-ingest 7492bdd the PPTX and PDF parsers record coverage in
      "with_notes": M,                                                # pptx
      "method": "text" | "visual"}                                    # pdf
 
+Since 1p-component-library #21 (#349 item 2) an OCR pass reads the pictures
+on image-only / title-only slides and image-only PDF pages, when the ingest
+host has a vision key. The text-layer counts above stay as they were, and
+the pass adds:
+
+    {"ocr_recovered": [numbers whose image text is now in the content],
+     "ocr_attempted" / "ocr_failed" / "ocr_unreadable": [...],
+     "ocr_skipped_cap": [numbers not read because the cap was hit],
+     "ocr_cap": N, "ocr_cap_hit": bool, "ocr_model": "..."}
+
+so the warning can say "8 image-only: …; 6 recovered by OCR: …". Rows
+without an OCR pass carry no `ocr_*` keys and read exactly as before.
+
 Rows ingested before that carry no coverage. Readers then omit the field
 rather than claim the document is complete. Other formats record nothing,
 because they have no unit of "saw it but found no text".
@@ -52,6 +65,9 @@ def normalize(raw: Any) -> dict | None:
     out["total"], out["with_text"] = total, with_text
     for key in ("without_text", "title_only"):
         out[key] = _numbers(raw.get(key))
+    for key in ("ocr_recovered", "ocr_skipped_cap"):
+        if key in raw:
+            out[key] = _numbers(raw.get(key))
     return out
 
 
@@ -100,8 +116,28 @@ def warning(cov: dict) -> str | None:
     if cov["title_only"]:
         head += (f"; {_plural(len(cov['title_only']), unit)} with only a title over "
                  f"images: {_listing(cov['title_only'])}")
-    return (head + ". That content is not in this text; read the original via "
-            "`fetch_project_source`.")
+    if "ocr_recovered" not in cov:
+        return (head + ". That content is not in this text; read the original via "
+                "`fetch_project_source`.")
+
+    gaps = sorted(set(missing) | set(cov["title_only"]))
+    recovered = [n for n in gaps if n in set(cov["ocr_recovered"])]
+    still = [n for n in gaps if n not in set(recovered)]
+    head += f"; {len(recovered)} recovered by OCR"
+    head += f": {_listing(recovered)}" if recovered else ""
+    if still:
+        head += f"; {len(still)} not recovered: {_listing(still)}"
+    skipped = cov.get("ocr_skipped_cap") or []
+    if skipped:
+        head += (f". OCR stopped at its cap of {cov.get('ocr_cap', '?')} "
+                 f"{'images' if unit == 'slide' else 'pages'}; "
+                 f"{_plural(len(skipped), unit)} not read: {_listing(skipped)}")
+    tail = (" The OCR text is transcribed from images and may misread; "
+            "read the original via `fetch_project_source` to confirm.")
+    if still:
+        tail = (" The OCR text is transcribed from images; the rest is not in "
+                "this text. Read the original via `fetch_project_source`.")
+    return head + "." + tail
 
 
 def short_flag(cov: dict) -> str | None:
@@ -112,6 +148,8 @@ def short_flag(cov: dict) -> str | None:
     flag = f"{cov['with_text']}/{cov['total']} {unit}s with text"
     if cov["title_only"]:
         flag += f", {len(cov['title_only'])} title-only"
+    if "ocr_recovered" in cov:
+        flag += f", {len(cov['ocr_recovered'])} OCR-recovered"
     return flag
 
 
