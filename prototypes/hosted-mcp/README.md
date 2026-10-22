@@ -285,7 +285,10 @@ spine_element_modify_source(p_project_id uuid, p_est_item_id text,
 It validates team membership, the entry shape (`type ∈ rag_asset|spine_element`,
 `id` present, `title` required on add), that the referent exists (a `rag_asset`
 by uuid; a `spine_element` by est_item_id within the project, at **any** status),
-dedupes by `(type, id)`, and applies to every version row. The tools do
+dedupes by `(type, id)`, and applies to every version row — except
+`add_element_source`, which since #352 item 3 passes `p_live_only` (mc-2
+migration 202) and writes the live row only, marking the link `for_next` when
+that version is a shipped deliverable. The tools do
 resolution and reporting; the function is the authorization boundary.
 
 That constraint **closes** a gap batch 2 left open. `set_spine_element` is

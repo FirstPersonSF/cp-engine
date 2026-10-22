@@ -56,7 +56,10 @@ def test_scope_and_company_id_are_carried_together(srv):
     """Both halves travel from the live base row onto the new version."""
     src = _SERVER_PATH.read_text()
     start = src.index("def add_spine_version(")
-    body = src[start:start + 6000]
+    # The whole function, not a fixed window: a longer docstring or comment
+    # pushed the row dict past a 6000-char slice (#352).
+    end = src.index("\ndef ", start + 1)
+    body = src[start:end]
     assert '"scope": base.get("scope")' in body
     assert '"company_id": base.get("company_id")' in body, (
         "add_spine_version does not carry company_id forward (#198)"

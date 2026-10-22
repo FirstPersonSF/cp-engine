@@ -172,15 +172,14 @@ SPINE_LINT_COLUMNS = (
     "est_item_id, framing, layer, binding, serves, important, body, "
     "sources, status, archived, scope, project_id, version_label, version_date"
 )
-# add/remove_element_source — every version row + its sources array (the
-# element-level fact moves across all versions together, like serves).
 # cp seal-sweep — "what did this shipped round consume?" (#175). Needs the
 # version bookkeeping (which deliverables shipped, when) plus enough to render
 # a candidate for review. No `body`: the sweep names elements, never quotes
-# them, so the large column stays out of the read.
+# them, so the large column stays out of the read. `sources` (a small jsonb
+# array) splits what fed the shipped version from what is `for_next` (#352).
 SEAL_SWEEP_COLUMNS = (
     "est_item_id, framing, layer, status, archived, version_label, "
-    "version_date, serves, project_id"
+    "version_date, serves, project_id, sources"
 )
 # cp stub-sweep — empty Source-material cards and where their provenance
 # belongs (#178). Needs `body` (to measure emptiness and match the ingest
@@ -189,9 +188,13 @@ STUB_SWEEP_COLUMNS = (
     "est_item_id, framing, layer, status, archived, body, sources, serves, "
     "version_date, project_id"
 )
+# add/remove_element_source — every version row + its sources array. An
+# attach writes the LIVE row only; a detach strips every version (#352 item 3).
+# `layer`/`card_kind`/`version_label` answer seal-sweep's "shipped" test for
+# the `for_next` flag.
 SPINE_SOURCES_EDIT_COLUMNS = (
     "id, est_item_id, framing, status, archived, scope, company_id, "
-    "project_id, sources"
+    "project_id, sources, layer, card_kind, version_label"
 )
 
 # rag_assets — manifest list shape. `meta` is JSONB and must NEVER be

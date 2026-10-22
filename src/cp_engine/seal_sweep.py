@@ -245,6 +245,42 @@ def _is_deliverable(row: dict) -> bool:
     return _norm(row.get("layer")) in DELIVERABLE_LAYERS
 
 
+def is_shipped_deliverable(row: dict) -> bool:
+    """The "shipped" test (#352 item 3): a deliverable with a version label.
+
+    The same predicate `build_rounds` uses for `shipped_ids`, named so the
+    source-attach verbs can ask it of an element's LIVE row: an input attached
+    to a shipped deliverable arrived after that version and is an input to the
+    NEXT one (`for_next`), not to the version already out the door.
+    """
+    return _is_deliverable(row) and bool(row.get("version_label"))
+
+
+def split_for_next(sources: Any) -> tuple[list, list]:
+    """``(consumed, pending)`` — a version's typed source links, split on the
+    `for_next` flag (#352 item 3). A `for_next` link was attached after the
+    version shipped: it has NOT fed this version, so no reader may count it as
+    having done so. Non-dict entries (legacy string refs) count as consumed."""
+    consumed: list = []
+    pending: list = []
+    for entry in sources or []:
+        if isinstance(entry, dict) and entry.get("for_next"):
+            pending.append(entry)
+        else:
+            consumed.append(entry)
+    return consumed, pending
+
+
+def clear_for_next(sources: Any) -> list:
+    """The sources a NEW version carries forward: every link, `for_next`
+    dropped — the input now feeds the version being written (#352 item 3)."""
+    return [
+        {k: v for k, v in entry.items() if k != "for_next"}
+        if isinstance(entry, dict) else entry
+        for entry in (sources or [])
+    ]
+
+
 def _as_date(value: Any) -> date | None:
     """Parse a date or timestamp column; None when absent or malformed."""
     if not value:
@@ -298,6 +334,11 @@ class Round:
     version_date: date | None
     candidates: list[Candidate] = field(default_factory=list)
     already_absorbed: int = 0
+    # Attached source links on the shipped version (#352 item 3): `sources`
+    # fed it; `next_sources` (`for_next`) arrived after it shipped and feed
+    # the NEXT version — never evidence about this one.
+    sources: list[dict] = field(default_factory=list)
+    next_sources: list[dict] = field(default_factory=list)
 
 
 def _feeds_index(
@@ -358,9 +399,7 @@ def build_rounds(
     # An input still feeding a deliverable that has NOT shipped is live work
     # for that other round — never propose closing it (#164 step 2).
     shipped_ids = {
-        eid
-        for eid, r in by_id.items()
-        if _is_deliverable(r) and r.get("version_label")
+        eid for eid, r in by_id.items() if is_shipped_deliverable(r)
     }
     feeding_unshipped: set[str] = set()
     for dst, sources in into.items():
@@ -426,6 +465,7 @@ def build_rounds(
             and src not in feeding_unshipped
         )
         candidates.sort(key=lambda c: (-c.weight, bool(c.via), c.framing.lower()))
+        fed, pending = split_for_next(row.get("sources"))
         rounds.append(
             Round(
                 est_item_id=eid,
@@ -434,6 +474,8 @@ def build_rounds(
                 version_date=vdate,
                 candidates=candidates,
                 already_absorbed=sum(1 for s in sources if s in absorbed),
+                sources=[e for e in fed if isinstance(e, dict)],
+                next_sources=pending,
             )
         )
 
@@ -458,6 +500,13 @@ def render_sweep(rounds: list[Round], *, code: str) -> str:
         out.append(head)
         if r.already_absorbed:
             out.append(f"  {r.already_absorbed} input(s) already absorbed.")
+        if r.next_sources:
+            titles = ", ".join(
+                str(s.get("title") or s.get("id")) for s in r.next_sources)
+            out.append(
+                f"  {len(r.next_sources)} source(s) attached after this "
+                f"version shipped — inputs to the next version, not this "
+                f"one: {titles}")
         if not r.candidates:
             # "Already compressed" and "nothing ever recorded what fed this"
             # are opposite states that both produce an empty candidate list.

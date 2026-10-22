@@ -1283,7 +1283,8 @@ def _source_link(asset: dict) -> dict:
 
 def modify_element_sources(client, project_id: str, key: str,
                            source_title: str, *, add: bool,
-                           company_id: str | None = None) -> dict:
+                           company_id: str | None = None,
+                           for_next_version: bool | None = None) -> dict:
     """Attach/detach one ingested source document on a spine element.
 
     Resolves `key` to ONE live element (same discipline as pull_spine) and
@@ -1292,14 +1293,22 @@ def modify_element_sources(client, project_id: str, key: str,
     ones — by `pick_source`'s ladder (#344): a rag_asset uuid, else a
     case-exact title, else a case-insensitive exact title, else a unique
     case-insensitive substring; several matches on one rung is ambiguity and
-    returns the candidates, never a guess. The typed link
-    `{"type": "rag_asset", "id", "title"}` is then added to / removed from the
-    `sources` array of EVERY version row — sources are an element-level fact,
-    like `serves` — deduped by asset id exactly as MC-2's PATCH /substance
-    add_source/remove_source actions do. Adding an already-attached id is a
-    no-op (`already: true`); removing an id that isn't attached returns a
-    structured note. Never raises past the MCP boundary.
+    returns the candidates, never a guess.
+
+    SOURCES ARE PER VERSION (#352 item 3). An ADD writes the typed link
+    `{"type": "rag_asset", "id", "title"}` onto the LIVE row only: superseded
+    rows keep the sources they actually had, so history stays truthful. When
+    the live version is a shipped deliverable (`seal_sweep.
+    is_shipped_deliverable`) the link carries `"for_next": true` — it arrived
+    after that version shipped and feeds the next one; `for_next_version`
+    True/False overrides the inference. A REMOVE strips every version (a wrong
+    attach is wrong everywhere). Deduped by asset id. Adding an
+    already-attached id is a no-op (`already: true`); removing an id that
+    isn't attached returns a structured note. Never raises past the MCP
+    boundary.
     """
+    from cp_engine.seal_sweep import is_shipped_deliverable
+
     est_item_id, versions = resolve_element_versions(
         client, project_id, key,
         columns=mc2_db.SPINE_SOURCES_EDIT_COLUMNS, company_id=company_id,
@@ -1330,8 +1339,16 @@ def modify_element_sources(client, project_id: str, key: str,
         return {"note": f"'{link['title']}' is not attached to "
                         f"'{est_item_id}'"}
 
+    for_next = False
+    if add:
+        for_next = (is_shipped_deliverable(live or {})
+                    if for_next_version is None else bool(for_next_version))
+        if for_next:
+            link = {**link, "for_next": True}
+
     result_sources = current_live
-    for row in versions:
+    targets = versions if not add else [live] if live is not None else []
+    for row in targets:
         entries = list(row.get("sources") or [])
         if add:
             new = entries if _attached(entries) else [*entries, link]
@@ -1345,6 +1362,8 @@ def modify_element_sources(client, project_id: str, key: str,
             result_sources = new
     return {"est_item_id": est_item_id, "source": link,
             "attached" if add else "removed": True,
+            **({"for_next": True} if for_next else {}),
+            "versions_updated": len(targets),
             "sources": result_sources}
 
 
@@ -1785,6 +1804,7 @@ def _spine_element(row: dict) -> dict:
         "status": row.get("status"),
         "serves": row.get("serves") or [],
         "sources": row.get("sources") or [],
+        **_next_version_sources(row),
         "version_label": row.get("version_label"),
         "body": row.get("body") or "",
         "important": bool(row.get("important")),
@@ -1792,6 +1812,16 @@ def _spine_element(row: dict) -> dict:
         "scope": _row_scope(row),
         **_provenance_fields(row),
     }
+
+
+def _next_version_sources(row: dict) -> dict:
+    """#352 item 3 — sources attached AFTER this version shipped (`for_next`),
+    named apart so a reader never takes them as what fed this version.
+    Absent when there are none, so a plain pull looks as it did before."""
+    from cp_engine.seal_sweep import split_for_next
+
+    _consumed, pending = split_for_next(row.get("sources"))
+    return {"sources_for_next_version": pending} if pending else {}
 
 
 def _provenance_fields(row: dict) -> dict:

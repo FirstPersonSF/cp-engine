@@ -7,7 +7,7 @@ Author: Claude
 
 # Spine supersession: the "this was replaced" signal, and sources per version (#352 items 1 and 3)
 
-**Status:** item 1 read side BUILT on `w3/352-supersession`. Write side and item 3 are design only. Item 2 (Feedback layer) is being built separately in `cp-engine-w3f`.
+**Status:** item 1 read side BUILT on `w3/352-supersession`; (c) item 3 (`replaces_key` on the create verbs) and (d) Option A (sources per version) BUILT on the same branch — (d) needs mc-2 migration `202_spine_source_live_only.sql` (branch `w3/352-sources`, NOT applied) before the hosted server ships. (c) items 1, 2 and 4 remain design only. Item 2 (Feedback layer) is being built separately in `cp-engine-w3f`.
 
 ## Test cases
 
@@ -66,4 +66,5 @@ Today `add_element_source` writes the link onto **every** version row. Attaching
 ## (e) Built vs deferred
 
 - **Built** (`w3/352-supersession`): read-side `superseded_by` / `superseded_by_all` / `contradicted_by` / `warning` on hosted `list_spine_elements` + `pull_spine_element` and on the engine's `list_spine` + `pull_spine`; a shared pure `seal_sweep.challenge_marks` and `supersession_warning`; cp-tools docs. No schema change, no new tool, no MC-2 writes. Control tests: `tests/test_spine_supersession_352.py`, `prototypes/hosted-mcp/test_supersession_352.py`.
-- **Deferred:** the heuristic (measured, rejected); all of (c); all of (d); a mc-2 UI badge; backfilling edges for the two ibx-5153 test cases (a human call, and this branch writes nothing).
+- **Built, second pass** (`w3/352-supersession`): (c) 3 — `replaces_key` on hosted `create_spine_element` / `add_spine_document`, resolved before the insert, edge via `_insert_lifecycle_edge` (no engine create verb exists to mirror). (d) Option A — `add_element_source` live row only + `for_next` (hosted via `p_live_only`; engine `modify_element_sources` directly), `add_spine_version` clears it, pull adds `sources_for_next_version`, `seal_sweep` rounds split `sources` / `sources_for_next_version`, `spine_lint` counts only consumed sources. `add_element_provenance` keeps the every-version write. Control tests: `tests/test_sources_for_next_352.py`, `prototypes/hosted-mcp/test_supersession_write_352.py`.
+- **Deferred:** the heuristic (measured, rejected); (c) 1, 2 and 4; a mc-2 UI badge; backfilling edges for the two ibx-5153 test cases (a human call, and this branch writes nothing).

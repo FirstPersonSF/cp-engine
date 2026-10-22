@@ -286,6 +286,14 @@ def _is_deliverable_row(row: dict) -> bool:
     return _norm_layer(row.get("layer")) in ("deliverables", "output")
 
 
+def _consumed_sources(row: dict) -> list:
+    """The row's sources that fed THIS version — `for_next` links excluded
+    (#352 item 3; `seal_sweep.split_for_next`)."""
+    from cp_engine.seal_sweep import split_for_next
+
+    return split_for_next(row.get("sources"))[0]
+
+
 def _version_depth(label) -> int:
     """The number in a version label (v7 / V1 / 1 / v01); 0 when unparseable."""
     m = re.search(r"\d+", str(label or ""))
@@ -367,7 +375,9 @@ def lint_curation(rows: list[dict], *, today=None,
         # splits: with nothing attached, "attach the raw text as a source" was
         # impossible (ibx-5192, sap-5174 — the card was the ONLY copy), so the
         # message says to land the raw text as a source first.
-        n_sources = len(row.get("sources") or [])
+        # #352 item 3: a `for_next` link has not fed this version, so it does
+        # not make the card authored nor hold this version's raw material.
+        n_sources = len(_consumed_sources(row))
         authored = n_sources > 0 and _version_depth(row.get("version_label")) > 1
         if (_norm_layer(layer) in DISTILL_LAYERS and len(body) > DISTILL_BODY_MAX
                 and not authored):
@@ -409,14 +419,19 @@ def lint_curation(rows: list[dict], *, today=None,
             # fine — the work lives elsewhere and the card says where.
             elif (_first_version(row.get("version_label"))
                     and len(body) < STUB_BODY_MAX
-                    and not (row.get("sources") or [])
+                    and not _consumed_sources(row)
                     and not _POINTER_RE.search(body)):
+                # #352 item 3: a `for_next` link arrived after this version
+                # shipped — it does not source the version on the layer.
+                pending = len(row.get("sources") or []) - len(_consumed_sources(row))
+                waiting = (f" ({pending} attached for the next version only)"
+                           if pending else "")
                 out.append(
                     f"⚠ empty deliverable: '{title}' ({eid}) is "
                     f"{len(body)} chars at {row.get('version_label')} with "
-                    "no attached source and no pointer to where the work "
-                    "lives — say what it is, attach it, or move it off the "
-                    "Deliverables layer")
+                    f"no attached source{waiting} and no pointer to where "
+                    "the work lives — say what it is, attach it, or move it "
+                    "off the Deliverables layer")
 
         # #158 gap 4 — unlayered, or framing that is a pasted instruction.
         if layer is None:
