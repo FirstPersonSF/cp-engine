@@ -4,6 +4,44 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.131.14 — 2026-10-22
+
+**Leftovers from Waves 1 and 2: whole documents, readable images, and state
+that says when it's behind.** Patch.
+
+*Sources (#349 items 2, 4, 6).* Pulls page through every chunk (1,000-row
+pages, up to 20,000) instead of stopping silently at the PostgREST cap, and
+say `truncated` when a cap still stops them; the stdio wide-window check could
+never trip and now reads the resolved asset directly. Image-only and
+title-only PPTX slides and image-only PDF pages go through the existing
+visual-capture fallback (gated on `INGEST_VISUAL_CAPTURE` + `ANTHROPIC_API_KEY`;
+caps `INGEST_VISUAL_MAX_IMAGES` 40 / `INGEST_VISUAL_MAX_PAGES` 100); text
+lands under `Image text (OCR):` and coverage records `ocr_recovered` and
+friends, which the warning reports. EMF/WMF give up their embedded bitmap or
+are listed unreadable. Tabbed Google Docs ingest as markdown with each tab
+under `## <tab title>` (Docs API `includeTabsContent`), falling back to the
+`.docx` export. document-ingest / cloud-storage / visual-document-capture
+58626fc. mc-2 migration 200 is applied; 3,121 stamped chunks backfilled.
+
+*State that says it's behind (#353 items 2, 3, 5).* An unauthored Exec
+Summary on a workstream with ingested meetings reads `not yet authored — but
+N meetings ingested since <date>` in the planning bundle, `exec-lint` and
+`spine-lint`, and the weekly drafter now drafts it (`· drafted by cp`; never
+over authored text). `cxp prep-planning --since-synthesis` lists workstreams
+whose sprint file, Exec Summary or commitments changed after `_planning.md`.
+`cxp render` / `render --check` warn when a hand-kept `Provenance:` stamp is
+older than the file's last substantive commit.
+
+*Done asks close their commitments, in any week (#354).* A closed or
+struck-through ask in an older week resolves its still-open commitment; the
+newest statement wins and a commitment raised after the done mark stays open.
+Live gap at release: zero.
+
+*Quiet projects say where their people went (#355 item 4).* The planning
+bundle adds `**Cross-engagement:** quiet 19d — <people> active on <sibling>
+(N meetings)` when a quiet job's client attendees met on a sibling under the
+same company. Measured: ~40% of 10-day gaps on client jobs are explained so.
+
 ## v0.131.13 — 2026-10-21
 
 **Wave 2: say what a source is missing, and where a commitment belongs.** Patch.
