@@ -21,7 +21,15 @@ import re
 from pathlib import Path
 
 from cp_engine.asset_ingest import FileRef, download_file, read_scoped_chunks
-from cp_engine.chunk_order import order_chunks, order_fields
+from cp_engine.chunk_order import (
+    CAPPED_NOTE,
+    META_CHUNK_INDEX_SELECT,
+    POSTGREST_MAX_ROWS,
+    is_missing_column,
+    order_chunks,
+    order_fields,
+    read_asset_chunks_paged,
+)
 from cp_engine.extraction_coverage import (
     META_COVERAGE_SELECT,
     coverage_fields,
@@ -207,6 +215,36 @@ def list_sources(
     return out
 
 
+_PULL_ASSET_COLUMNS = (
+    f"id, title, scope, url, created_at, prev_asset_id, {META_COVERAGE_SELECT}"
+)
+
+
+def _live_assets_titled(client, project_id: str, company_id: str | None,
+                        title: str) -> list[dict]:
+    """The live (active, not superseded) readable assets titled exactly `title`.
+
+    Same readable set as the chunk RPC: the project's own rows plus the
+    company's account rows. Newest first. Raises on a read error.
+    """
+    # Copies, never `+=` on `.data`: a client may hand back a list it
+    # still owns, and extending it in place corrupts the next read.
+    rows = list((
+        client.table(Tables.RAG_ASSETS).select(_PULL_ASSET_COLUMNS)
+        .eq("project_id", project_id).eq("title", title)
+        .eq("status", "active").execute()
+    ).data or [])
+    if company_id:
+        rows = rows + list((
+            client.table(Tables.RAG_ASSETS).select(_PULL_ASSET_COLUMNS)
+            .eq("company_id", company_id).eq("scope", "account")
+            .eq("title", title).eq("status", "active").execute()
+        ).data or [])
+    rows = drop_superseded_assets(rows)
+    rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+    return rows
+
+
 def _asset_coverage(client, project_id: str, company_id: str | None,
                     title: str | None):
     """The stored `meta.coverage` of the active asset titled exactly `title`.
@@ -219,28 +257,102 @@ def _asset_coverage(client, project_id: str, company_id: str | None,
     """
     if not title:
         return None
-    cols = f"id, title, created_at, prev_asset_id, {META_COVERAGE_SELECT}"
     try:
-        # Copies, never `+=` on `.data`: a client may hand back a list it
-        # still owns, and extending it in place corrupts the next read.
+        rows = _live_assets_titled(client, project_id, company_id, title)
+    except Exception:  # noqa: BLE001 — see docstring
+        return None
+    return rows[0].get("coverage") if rows else None
+
+
+# The direct chunk read's projection: text plus every place a position or a
+# page can live. `page` arrives as text from `meta->>page`; `_page_number`
+# parses it for the legacy fallback sort.
+_DIRECT_CHUNK_COLUMNS = (
+    f"id, text, chunk_index, {META_CHUNK_INDEX_SELECT}, meta_page:meta->>page"
+)
+_DIRECT_CHUNK_COLUMNS_PRE_200 = (
+    f"id, text, {META_CHUNK_INDEX_SELECT}, meta_page:meta->>page"
+)
+
+
+def _page_number(value) -> float | None:
+    m = re.match(r"\s*(\d+(?:\.\d+)?)", str(value)) if value is not None else None
+    return float(m.group(1)) if m else None
+
+
+def _read_document_direct(client, project_id: str, company_id: str | None,
+                          title: str) -> tuple[list[dict], bool, dict] | None:
+    """Read the ONE live asset titled exactly `title` straight from `asset_chunks`.
+
+    WHY (#349 item 6): the scoped RPC is a window over the whole project +
+    account pool, and PostgREST caps every response — RPC results included —
+    at max-rows (1000). The widened 2,000-row window therefore returned at
+    most 1,000 rows and a long document was cut with no flag. Once the title
+    is resolved, the document is read by asset id instead, paged with
+    `.range()` until exhausted (`read_asset_chunks_paged`).
+
+    Returns `(rows, capped, asset)` — rows shaped like the RPC's
+    (`text`, `chunk_index`, `page`) — or None when the read cannot be made
+    (no single live asset with that title, or a read error); the caller then
+    keeps the RPC window and its honest `truncated` flag.
+    """
+    try:
+        assets = _live_assets_titled(client, project_id, company_id, title)
+        if len(assets) != 1:
+            return None
+        asset = assets[0]
+        try:
+            rows, capped = read_asset_chunks_paged(
+                client, asset["id"], _DIRECT_CHUNK_COLUMNS)
+        except Exception as exc:  # noqa: BLE001 — retried pre-mig-200 only
+            if not is_missing_column(exc):
+                raise
+            rows, capped = read_asset_chunks_paged(
+                client, asset["id"], _DIRECT_CHUNK_COLUMNS_PRE_200)
+    except Exception:  # noqa: BLE001 — fail back to the RPC window
+        return None
+    if not rows:
+        return None
+    for r in rows:
+        r["page"] = _page_number(r.pop("meta_page", None))
+    return rows, capped, asset
+
+
+def _resolve_title_from_assets(client, project_id: str, company_id: str | None,
+                               doc_title: str) -> str | None:
+    """Resolve `doc_title` against the asset table, for a capped RPC window.
+
+    When the RPC window is FULL (the cap, not the pool, ended it) a document
+    older than the window's rows never appears in it, and the pull would say
+    "no source named …" about a document that is there. The asset table is
+    small (one row per document), so the title is resolved there instead with
+    the same resolver. Returns the exact title, or None (no match, ambiguous,
+    or the read failed — the caller keeps its existing answer).
+    """
+    cols = "id, title, created_at, prev_asset_id"
+    try:
         rows = list((
             client.table(Tables.RAG_ASSETS).select(cols)
-            .eq("project_id", project_id).eq("title", title)
-            .eq("status", "active").execute()
+            .eq("project_id", project_id).eq("status", "active").execute()
         ).data or [])
         if company_id:
             rows = rows + list((
                 client.table(Tables.RAG_ASSETS).select(cols)
                 .eq("company_id", company_id).eq("scope", "account")
-                .eq("title", title).eq("status", "active").execute()
+                .eq("status", "active").execute()
             ).data or [])
     except Exception:  # noqa: BLE001 — see docstring
         return None
-    rows = drop_superseded_assets(rows)
-    if not rows:
+    rows = [r for r in drop_superseded_assets(rows)
+            if _title_matches(doc_title.strip(), r.get("title"))]
+    distinct: dict[str, dict] = {}
+    for r in rows:
+        distinct.setdefault((r.get("title") or "").strip(),
+                            {"id": None, "title": r.get("title")})
+    if not distinct:
         return None
-    rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
-    return rows[0].get("coverage")
+    picked, _note = resolve_source(list(distinct.values()), doc_title, mode="lookup")
+    return (picked.get("title") or "").strip() if picked else None
 
 
 def _zero_chunk_ids(client, asset_ids: list, warnings: list | None = None) -> set:
@@ -515,11 +627,14 @@ def pull_source(
     # A no-query document read widens when the window is SATURATED, not only
     # on a miss: a doc can be partly inside the window and partly beyond it,
     # and a partial read is worse than a miss because nothing flags it (#298).
-    window_saturated = len(rows) >= limit
+    # PostgREST caps the RPC's response at max-rows whatever `p_limit` asked
+    # for, so a window is full at the smaller of the two (#349 item 6).
+    window_saturated = len(rows) >= min(limit, POSTGREST_MAX_ROWS)
     widen_for_completeness = (
         complete and query is None and window_saturated and limit < _MISS_RETRY_LIMIT
     )
     truncated = False
+    miss_direct = None  # a direct read made on a capped-window miss (#349)
     if (not matched and limit < _MISS_RETRY_LIMIT) or widen_for_completeness:
         # The scoped read returns only the top `limit` chunks ACROSS the whole
         # scope, then we title-filter here — so a doc whose chunks fall outside
@@ -543,7 +658,26 @@ def pull_source(
         matched = [r for r in rows if _title_matches(doc_title.strip(), r.get("title"))]
         # The widened window filled too: a corpus larger than the widest read.
         # We cannot prove the document is whole — say so rather than cap it.
-        truncated = complete and query is None and len(rows) >= _MISS_RETRY_LIMIT
+        # The widened window filled — at `_MISS_RETRY_LIMIT`, or (always, in
+        # practice) at the server's max-rows cap below it. Before #349 item 6
+        # this compared against 2000 alone and never fired: a 1,500-chunk
+        # document came back as ~1,000 chunks, unflagged.
+        widened_full = len(rows) >= min(_MISS_RETRY_LIMIT, POSTGREST_MAX_ROWS)
+        truncated = complete and query is None and widened_full
+        if not matched and query is None and widened_full:
+            # The cap, not the pool, ended the window: the document may sit
+            # entirely below it. Resolve the title on the asset table and read
+            # the document directly rather than call it missing.
+            resolved = _resolve_title_from_assets(client, project_id, company_id, doc_title)
+            direct = (_read_document_direct(client, project_id, company_id, resolved)
+                      if resolved else None)
+            if direct is not None:
+                miss_direct = direct
+                _drows, _capped, _asset = direct
+                matched = [{**r, "title": _asset.get("title"),
+                            "scope": _asset.get("scope"),
+                            "citation_url": _asset.get("url")}
+                           for r in _drows]
     if not matched:
         # "Exists but empty" is not "not found" (#324): a zero-chunk asset
         # never appears in the chunk RPC, so ask the asset table before
@@ -632,6 +766,18 @@ def pull_source(
     # A complete no-query read returns the WHOLE document (that is the
     # guarantee). Ranked reads and opted-out reads cap at `limit` (top-k).
     uncapped = complete and query is None
+    # #349 item 6: the RPC window cannot prove a document whole (its rows are
+    # capped at max-rows), so a complete read takes the document straight from
+    # `asset_chunks` by asset id, paged. Fails back to the window — and its
+    # honest `truncated` — when no single live asset carries the title.
+    direct = miss_direct
+    if direct is None and uncapped:
+        direct = _read_document_direct(client, project_id, company_id, chosen)
+    direct_asset = None
+    if direct is not None:
+        drows, capped, direct_asset = direct
+        selected, order_label = order_chunks(drows, fallback_key=_legacy_order)
+        truncated = capped
     chunks = [r.get("text") for r in (selected if uncapped else selected[:limit])]
     out = {
         "title": first.get("title"),
@@ -644,12 +790,17 @@ def pull_source(
     # How much of the file the ingest extracted (#349). Fail-open: a lookup
     # that cannot run adds nothing, and absence never means "complete".
     out.update(coverage_fields(
-        _asset_coverage(client, project_id, company_id, first.get("title"))
+        direct_asset.get("coverage") if direct_asset is not None
+        else _asset_coverage(client, project_id, company_id, first.get("title"))
     ))
-    if truncated:
+    if truncated and direct_asset is not None:
+        out["truncated"] = True
+        out["note"] = CAPPED_NOTE.format(n=len(chunks))
+    elif truncated:
         out["truncated"] = True
         out["note"] = (
-            f"read capped at {_MISS_RETRY_LIMIT} chunks across the project — "
+            f"read capped at {min(_MISS_RETRY_LIMIT, POSTGREST_MAX_ROWS)} "
+            "chunks across the project — "
             f"'{first.get('title')}' may be incomplete; narrow with `query` "
             "or fetch the original via `fetch_project_source`"
         )

@@ -2492,14 +2492,18 @@ def pull_project_source(asset_id: str, max_chars: int = 40000) -> dict[str, Any]
         }
     asset = asset_rows[0]
 
+    raw_chunks, chunks_capped = _read_asset_chunks(client, asset_id)
     chunks, order = _engine_chunk_order.order_chunks(
-        _read_asset_chunks(client, asset_id),
+        raw_chunks,
         # Legacy fallback, unchanged: time-coded chunks by start, else as stored.
         fallback_key=lambda c: (c.get("start_seconds") is None, c.get("start_seconds") or 0),
     )
 
     text = "\n\n".join((c.get("text") or "") for c in chunks)
     text, truncated, comments_kept = _truncate_keeping_comments(text, max_chars)
+    # A chunk read stopped by the per-document bound is a partial document
+    # too (#349 item 6) — `truncated` covers it, and the note says which cut.
+    truncated = truncated or chunks_capped
 
     audit(client, "pull_project_source", {"asset_id": asset_id, "max_chars": max_chars}, len(chunks))
     return {
@@ -2522,6 +2526,8 @@ def pull_project_source(asset_id: str, max_chars: int = 40000) -> dict[str, Any]
         **({"scope": asset["scope"]} if asset.get("scope") else {}),
         **_engine_chunk_order.order_fields(order),
         "truncated": truncated,
+        **({"truncated_note": _engine_chunk_order.CAPPED_NOTE.format(n=len(chunks))}
+           if chunks_capped else {}),
         # How much of the file the ingest extracted (#349). `truncated` is
         # about this pull's character cap; coverage is about what never made
         # it into the store (image-only slides/pages). Absent on legacy rows.
@@ -2533,23 +2539,22 @@ def pull_project_source(asset_id: str, max_chars: int = 40000) -> dict[str, Any]
     }
 
 
-def _read_asset_chunks(client, asset_id: str) -> list[dict[str, Any]]:
-    """One asset's chunks with their position (#349).
+def _read_asset_chunks(client, asset_id: str) -> tuple[list[dict[str, Any]], bool]:
+    """One asset's chunks with their position (#349), and whether the read was capped.
+
+    PAGED (#349 item 6): one request is cut at PostgREST's max-rows (1000),
+    so a long document used to come back as its first 1,000 chunks with
+    `truncated: false`. `chunk_order.read_asset_chunks_paged` reads windows
+    until the asset is exhausted, bounded by `MAX_DOC_CHUNKS`; the returned
+    flag is True only when that bound stopped a read with more rows behind it.
 
     Selects the mig-200 `chunk_index` column; against a database without it
     (PostgREST 42703 — the migration is not applied yet) re-reads with the
     `meta.chunk_index` projection alone, which every stamped row carries. Any
     other error propagates.
     """
-    def _read(cols: str) -> list[dict[str, Any]]:
-        return (
-            client.table("asset_chunks")
-            .select(cols)
-            .eq("asset_id", asset_id)
-            .execute()
-            .data
-            or []
-        )
+    def _read(cols: str) -> tuple[list[dict[str, Any]], bool]:
+        return _engine_chunk_order.read_asset_chunks_paged(client, asset_id, cols)
 
     try:
         return _read(ASSET_CHUNK_COLUMNS + ASSET_CHUNK_ORDER_COLUMNS)

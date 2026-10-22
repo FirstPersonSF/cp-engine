@@ -96,7 +96,10 @@ class _Q:
 
     def execute(self):
         if self._t == "asset_chunks":
-            rows = [{"asset_id": r["id"]} for r in self._c.assets]
+            # One chunk per asset, text = the asset id (as the RPC fake
+            # returns it); the pull reads it directly since #349 item 6.
+            rows = [{"asset_id": r["id"], "id": r["id"], "text": r["id"],
+                     "chunk_index": 0} for r in self._c.assets]
         else:
             rows = self._c.assets
         return SimpleNamespace(data=[r for r in rows if all(f(r) for f in self._f)])
