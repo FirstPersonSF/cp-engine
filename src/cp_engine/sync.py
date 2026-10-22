@@ -1173,11 +1173,15 @@ def _sync_asks_for_project(client, sprint_root: Path, project, *,
         f for f in prior
         if cutoff is None or _iso_week_dates(f.parent.name)[0] >= cutoff
     ]
+    # Weeks before the cutoff: read for hand-marked closes only (#354). One
+    # small file per week, so bounded by the tenant's age in weeks.
+    history = [f for f in prior if f not in earlier]
     try:
         res = sync_sprint_asks(
             client, sprint_path=path, code=project.code,
             project_id=project.mc2_id, today=today,
-            earlier_files=earlier, company_name=project.company_name,
+            earlier_files=earlier, history_files=history,
+            company_name=project.company_name,
         )
     except Exception as exc:  # noqa: BLE001 — one project never blocks sync
         logger.warning("asks: %s skipped: %s: %s",
@@ -1188,6 +1192,9 @@ def _sync_asks_for_project(client, sprint_root: Path, project, *,
     if res.imported:
         logger.info("asks %s: imported %d into MC-2",
                     project.code, len(res.imported))
+    for week, desc in res.resolved_from_history:
+        logger.info("asks %s: resolved commitment marked closed in %s: %s",
+                    project.code, week, desc[:80])
     return [path] if res.changed else []
 
 

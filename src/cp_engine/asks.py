@@ -562,14 +562,30 @@ class HandBullet:
         return "\n".join(self.lines)
 
 
+_STRUCK_LEAD_RE = re.compile(r"^(?P<lead>\s*-\s+)~~(?P<inner>\[.+?)~~(?P<rest>.*)$")
+_STRUCK_TEXT_RE = re.compile(r"^~~.+~~$", re.DOTALL)
+
+
 def _parse_bullet(lines: list[str]) -> HandBullet | None:
     from cp_engine.sprints import _ask_who_and_by, _join_bullet, parse_bracketed_bullet
 
-    parsed = parse_bracketed_bullet(lines[0])
+    first = lines[0]
+    struck = _STRUCK_LEAD_RE.match(first)
+    if struck:  # `- ~~[open · d · who] text~~` — struck whole
+        first = struck.group("lead") + struck.group("inner") + struck.group("rest")
+    parsed = parse_bracketed_bullet(first)
     if not parsed:
         return None
     parts, text = parsed
     status = (parts[0] if parts else "open").strip().lower()
+    # Struck through (whole bullet, or just its text) reads as `done` — the
+    # mark a person reaches for (#354). An explicit close word still wins;
+    # an unknown status word stays uninterpreted.
+    struck_text = _STRUCK_TEXT_RE.match(_COMMENT_RE.sub("", text).strip())
+    if struck_text:  # the tildes are display, not identity
+        text = text.replace("~~", "", 2)
+    if status == OPEN and (struck or struck_text):
+        status = "done"
     asked = parts[1] if len(parts) > 1 else ""
     who, by = _ask_who_and_by(parts[2:])
     full = _join_bullet(text, "\n".join(ln.strip() for ln in lines[1:]))
@@ -653,6 +669,8 @@ class AsksSyncResult:
     imported: list[str] = field(default_factory=list)     # descriptions
     matched: list[str] = field(default_factory=list)      # hand bullets already in MC-2
     resolved: list[str] = field(default_factory=list)     # commitments closed by a hand edit
+    #: (week dir, description) for closes made from an EARLIER week's bullet (#354)
+    resolved_from_history: list[tuple[str, str]] = field(default_factory=list)
     rendered: int = 0
     changed: bool = False
     errors: list[str] = field(default_factory=list)
@@ -663,6 +681,14 @@ def _insert(client: Any, row: dict) -> dict:
 
     data = client.table(Tables.COMMITMENTS).insert(row).execute().data or []
     return {**row, **(data[0] if data else {})}
+
+
+def _week_end(path: Path) -> date | None:
+    """The Sunday of the ``YYYY-W##`` week a sprint file sits in, or None."""
+    from cp_engine.sprints import _WEEK_ISO_RE, _iso_week_dates
+
+    week = path.parent.name
+    return _iso_week_dates(week)[1] if _WEEK_ISO_RE.match(week) else None
 
 
 def _close(client: Any, row_id: str, outcome: str) -> None:
@@ -679,6 +705,7 @@ def sync_sprint_asks(
     project_id: str,
     today: date,
     earlier_files: Iterable[Path] = (),
+    history_files: Iterable[Path] = (),
     company_name: str | None = None,
     writer: str = "cxp sync",
 ) -> AsksSyncResult:
@@ -693,8 +720,13 @@ def sync_sprint_asks(
        closes its open commitment. Every handled bullet is removed — it now
        renders inside the region, once.
     3. ``earlier_files`` (prior weeks in the carry window): an open hand
-       bullet that matches nothing is imported. Those files are history and
-       are not edited; a re-run matches the import and does nothing.
+       bullet that matches nothing is imported; a closed one (close word or
+       struck through) closes its OPEN commitment — step 2's rule, reaching
+       back (#354). ``history_files`` (weeks before the carry cutoff) are
+       read for closes only, never imports. Newest statement wins, and a
+       commitment created after the week that marked it closed is a new
+       life of the obligation and is left open. Those files are history and
+       are not edited; a re-run finds the row closed and does nothing.
     4. Render the region from the workstream's open commitments.
 
     A failed insert keeps its bullet where it was (never lost) and is
@@ -734,6 +766,24 @@ def sync_sprint_asks(
                 result.resolved.append(m.row.get("description") or "")
             except Exception as exc:  # noqa: BLE001
                 result.errors.append(f"close {m.row.get('id')}: {exc}")
+
+    def _close_from_history(hb: HandBullet, outcome: str, path: Path) -> None:
+        m = _match(hb)
+        if not m or m.row.get("status") != OPEN:
+            return  # unmatched = history; already closed = nothing to do
+        week_end = _week_end(path)
+        created = _local_day(m.row.get("created_at"))
+        if week_end and created and created > week_end.isoformat():
+            return  # raised after the week that closed it: a new life
+        try:
+            _close(client, m.row["id"], outcome)
+        except Exception as exc:  # noqa: BLE001
+            result.errors.append(f"close {m.row.get('id')}: {exc}")
+            return
+        m.row["status"] = outcome
+        desc = m.row.get("description") or ""
+        result.resolved.append(desc)
+        result.resolved_from_history.append((path.parent.name, desc))
 
     # 2 — this week's hand bullets.
     handled: list[HandBullet] = []
@@ -777,15 +827,21 @@ def sync_sprint_asks(
         result.imported.append(row["description"])
         handled.append(hb)
 
-    # 3 — open hand bullets in the earlier weeks of the carry window. The
-    # NEWEST statement of an ask decides (the carry walk's rule): one closed
-    # in this week or a later earlier-week is not imported from an older
-    # open copy. `earlier_files` arrive newest first.
+    # 3 — hand bullets in earlier weeks. The NEWEST statement of an ask
+    # decides (the carry walk's rule): one closed in this week or a later
+    # earlier-week is not imported from an older open copy, and one reopened
+    # later is not closed from an older closed copy. Both lists arrive newest
+    # first. This week's REGION is a view of MC-2, not a statement — it must
+    # not shadow an older close mark (only a flipped region bullet counts,
+    # and step 1 has handled those).
     def _identity(hb: HandBullet) -> str:
         return hb.hash or normalize_ask_text(hb.text)
 
-    stated: set[str] = {_identity(hb) for hb in region_bullets + hand_bullets}
-    for path in earlier_files:
+    stated: set[str] = {_identity(hb) for hb in hand_bullets}
+    stated |= {_identity(hb) for hb in region_bullets
+               if hb.status in _CLOSE_WORDS}
+    windows = [(p, True) for p in earlier_files] + [(p, False) for p in history_files]
+    for path, may_import in windows:
         try:
             other = path.read_text(encoding="utf-8")
         except OSError:
@@ -795,7 +851,11 @@ def sync_sprint_asks(
             if key in stated:
                 continue
             stated.add(key)
-            if hb.status != OPEN or _match(hb):
+            outcome = _CLOSE_WORDS.get(hb.status)
+            if outcome:
+                _close_from_history(hb, outcome, path)
+                continue
+            if not may_import or hb.status != OPEN or _match(hb):
                 continue
             row = build_import_row(
                 text=hb.text, code=code, project_id=project_id, who=hb.who,
