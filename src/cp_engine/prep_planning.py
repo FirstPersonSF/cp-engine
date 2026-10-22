@@ -211,6 +211,10 @@ class ProjectPlanningBlock:
     # reaches the bundle. Each entry keeps its `[YYYY-W## · Slack]` prefix
     # (self-labeling week); placeholders and hash markers stripped.
     slack_digest: tuple[str, ...] = ()
+    # Cross-engagement line for a QUIET job (#355 item 4): "quiet 19d —
+    # Janet Noe active on ibx-5192 (3 meetings)". Set after the blocks are
+    # built (it needs the siblings); None when not quiet or unexplained.
+    sibling_activity: str | None = None
     # ``fetch_error`` carries ONE sentinel since the ClickUp fallback was
     # removed (commitments consolidation, cp-engine #38):
     #   "no_schedule_milestones" — the MC-2 estimator schedule has no undone
@@ -2192,6 +2196,9 @@ def _render_project_block(block: ProjectPlanningBlock) -> list[str]:
     out = _render_block_header(block.project)
     out.extend(_render_urgent(block))
     out.extend(_render_open_questions(block))
+    if block.sibling_activity:
+        out.append(f"**Cross-engagement:** {block.sibling_activity}")
+        out.append("")
 
     if block.drift:
         out.append("**⚠ Estimate drift:**")
@@ -2299,6 +2306,9 @@ def _render_bundle_project_block(block: ProjectPlanningBlock) -> list[str]:
     out = _render_block_header(block.project)
     out.extend(_render_urgent(block))
     out.extend(_render_open_questions(block))
+    if block.sibling_activity:
+        out.append(f"**Cross-engagement:** {block.sibling_activity}")
+        out.append("")
 
     if block.drift:
         out.append("**⚠ Estimate drift:**")
@@ -2459,6 +2469,60 @@ def _make_supabase_client(config: TenantConfig):
     return client
 
 
+def _attach_sibling_activity(
+    blocks: list[ProjectPlanningBlock],
+    projects: tuple[ProjectState, ...],
+    supabase_client,
+    *,
+    today: date,
+    team: tuple[str, ...],
+    errors: list[str],
+) -> list[ProjectPlanningBlock]:
+    """Set `sibling_activity` on each quiet client job (#355 item 4).
+
+    Siblings are every other workstream of the same client company in
+    `projects` — any status, since a Holding job can still be where the
+    client people are meeting. One `fathom_meetings` read covers them all; a
+    failed read is reported in `errors`, never rendered as "no activity".
+    """
+    from dataclasses import replace
+
+    from cp_engine import sibling_activity
+
+    by_company: dict[str, dict[str, str]] = {}
+    for p in projects:
+        if p.company_kind == "client" and p.company_code and p.mc2_id:
+            by_company.setdefault(p.company_code, {})[p.mc2_id] = p.code
+
+    def _siblings(b: ProjectPlanningBlock) -> dict[str, str]:
+        mates = by_company.get(b.project.company_code or "", {})
+        if not b.project.mc2_id or b.project.mc2_id not in mates:
+            return {}
+        return {i: c for i, c in mates.items() if i != b.project.mc2_id}
+
+    ids = {
+        i for b in blocks if _siblings(b)
+        for i in by_company[b.project.company_code or ""]
+    }
+    if not ids:
+        return blocks
+    try:
+        meetings = sibling_activity.fetch_meetings(supabase_client, ids, today=today)
+    except Exception as exc:  # noqa: BLE001 — surfaced, not swallowed
+        errors.append(
+            f"cross-engagement meetings read failed ({type(exc).__name__}: {exc})"
+        )
+        return blocks
+    out = []
+    for b in blocks:
+        siblings = _siblings(b)
+        line = siblings and sibling_activity.sibling_activity_line(
+            b.project.mc2_id or "", siblings, meetings, today=today, team=team
+        )
+        out.append(replace(b, sibling_activity=line) if line else b)
+    return out
+
+
 def build_planning_result(
     config: TenantConfig,
     projects: tuple[ProjectState, ...],
@@ -2556,6 +2620,12 @@ def build_planning_result(
             # failure; a block whose fetchers logged nothing counts as fetched.
             fetched += 1
         blocks.append(block)
+
+    if supabase_client is not None:
+        blocks = _attach_sibling_activity(
+            blocks, projects, supabase_client, today=today,
+            team=config.team, errors=errors,
+        )
 
     blocks_by_account = _group_by_account(tuple(blocks))
 
