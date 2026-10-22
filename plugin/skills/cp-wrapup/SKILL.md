@@ -80,7 +80,9 @@ belongs in the sprint file, not the Exec Summary.
 
 Field budgets are warn-only and enforced by `cxp exec-lint <code>`
 (Status ≤ 100 words; Where it stands ≤ 5 bullets and ≤ 40 words/bullet;
-Next up ≤ 6 bullets; Blockers ≤ 5 bullets).
+Next up ≤ 6 bullets; Blockers ≤ 5 bullets). It also flags a summary that
+was never authored although meetings have been ingested ("N meetings
+ingested since <date>") — author that one from its sprint files.
 
 ## 2 — Sweep the cross-cutting decisions
 
@@ -180,8 +182,10 @@ Authored text counts: hand-written prose plus the Exec Summary (it sits in a
 `cp-engine` region but you write it, so trim it too). Every other
 `cp-engine:start/end` region is excluded. Sprint files are not measured.
 
-`cxp render --check` warns on both thresholds and on Exec Summary field
-budgets (warn-only — it never blocks a commit, and with `--check` it writes
+`cxp render --check` warns on both thresholds, on Exec Summary field
+budgets, and on hand-kept `Provenance: Version NN | <date>` stamps older
+than the file's last substantive commit — bump the version and date on any
+document you revised this session (warn-only — it never blocks a commit, and with `--check` it writes
 nothing: no tenant file, no MC-2 row). Plain `cxp render` is a full sync —
 it rewrites generated files and expires stale MC-2 commitments — so do not
 run it just to read the counts. Acting on the warning is yours: the audit is manual; for

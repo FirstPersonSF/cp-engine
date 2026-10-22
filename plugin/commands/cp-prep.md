@@ -319,6 +319,12 @@ with fresh state. Safe to re-run after a `cxp sync`, after a meeting auto-ingest
 or anytime new content lands (including after adding/closing milestones
 in the MC-2 schedule or commitments in MC-2).
 
+To see whether a re-run is needed, `cxp prep-planning --since-synthesis`
+lists the workstreams whose sprint file (hand-written text), Exec Summary
+or MC-2 commitments changed after `_planning.md` was last committed (its
+mtime when uncommitted). Read-only; add `--summary` for JSON. Patch those
+projects' sections, or re-run.
+
 ## After the meeting
 
 Tag the Fathom recording in the dashboard as
@@ -386,7 +392,12 @@ per-project bullets when auto-ingest is available.
   from the old Quick Resume and seeded from stale content. The bundle
   shows that project as thin. Fix: author its Exec Summary at the next
   `wrap up` (that's the model's job — see the wrap-up authoring
-  instructions in the tenant CLAUDE.md), then re-run `/cp-prep`.
+  instructions in the tenant CLAUDE.md), then re-run `/cp-prep`. When
+  meeting auto-ingest has already landed on it, the sentinel says so —
+  `not yet authored — but N meetings ingested since <date>` — and the
+  state is in its sprint files: read them for that project rather than
+  reporting it as having no state. The weekly `cxp draft-summaries` run
+  now drafts unauthored summaries too (marked `· drafted by cp`).
 
 ## What this command doesn't do
 

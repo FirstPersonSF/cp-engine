@@ -51,7 +51,12 @@ from cp_engine.agenda import (
     to_datetime,
 )
 from cp_engine.config import TenantConfig
-from cp_engine.exec_summary_freshness import PartialRefresh, partial_refresh
+from cp_engine.exec_summary_freshness import (
+    IngestedMeetings,
+    PartialRefresh,
+    partial_refresh,
+    unauthored_ingest,
+)
 from cp_engine.loud import captured_warnings, print_warnings
 from cp_engine.snooze import active_snooze, is_snoozed, strip_snooze_marker
 from cp_engine.render import (
@@ -199,6 +204,10 @@ class ProjectPlanningBlock:
     # git blame (`exec_summary_freshness`); None when the history cannot
     # tell (shallow clone, no git) as well as when the summary is whole.
     exec_summary_partial_refresh: "PartialRefresh | None" = None
+    # The summary was never authored, yet meeting auto-ingest has landed on
+    # the workstream (#353 item 2) — so "not yet authored" must not read as
+    # "nothing happened". None when authored, or no ingest is on record.
+    exec_summary_unauthored_ingest: IngestedMeetings | None = None
     # Estimate-drift warnings (cp-engine #65): undone estimate items past due
     # with no done-mark, or whose linked meeting's actual date diverges from
     # the estimated date — the same lines the Agreement projection appends to
@@ -1536,6 +1545,11 @@ def build_project_block(
     # ...and it can pass on a real Status over state fields that stopped
     # moving months earlier; the stamp reads fresh either way (#251).
     partial = partial_refresh(cp_md_path) if exec_summary else None
+    # ...and an unauthored one can sit over weeks of ingested meetings (#353).
+    unauthored_fed = (
+        unauthored_ingest(cp_md_path, project.code)
+        if exec_summary is None and cp_md_path.is_file() else None
+    )
 
     return ProjectPlanningBlock(
         project=project,
@@ -1556,6 +1570,7 @@ def build_project_block(
         exec_summary_age_days=age_days,
         exec_summary_placeholder_fields=placeholder_fields,
         exec_summary_partial_refresh=partial,
+        exec_summary_unauthored_ingest=unauthored_fed,
     )
 
 
@@ -2163,6 +2178,19 @@ _EXEC_SUMMARY_UNAUTHORED_MARKER = (
 )
 
 
+def _unauthored_marker(block: ProjectPlanningBlock) -> str:
+    """The unauthored sentinel — with the ingest count when there is one, so
+    a scaffold over ingested meetings never reads as "no state" (#353)."""
+    fed = block.exec_summary_unauthored_ingest
+    if fed is None:
+        return _EXEC_SUMMARY_UNAUTHORED_MARKER
+    return (
+        f"_(Exec Summary not yet authored — but {fed.describe()}; the state "
+        "is in the sprint files, not here. Fill it in at wrap up before "
+        "sprint planning)_"
+    )
+
+
 def _render_block_header(p: ProjectState) -> list[str]:
     """The `### <code> <name> — <owner>` header + blank line. Standalone repos
     (and some initiatives) carry name == code, which used to render as a
@@ -2201,7 +2229,7 @@ def _render_project_block(block: ProjectPlanningBlock) -> list[str]:
     if block.exec_summary:
         out.append(block.exec_summary)
     else:
-        out.append(_EXEC_SUMMARY_UNAUTHORED_MARKER)
+        out.append(_unauthored_marker(block))
     out.append("")
 
     # Whole-project sweep synthesis (Project Spine slice 3, Phase B). Only
@@ -2348,7 +2376,7 @@ def _render_bundle_project_block(block: ProjectPlanningBlock) -> list[str]:
     if block.exec_summary:
         out.append(block.exec_summary)
     else:
-        out.append(_EXEC_SUMMARY_UNAUTHORED_MARKER)
+        out.append(_unauthored_marker(block))
     out.append("")
 
     if block.deliverables:

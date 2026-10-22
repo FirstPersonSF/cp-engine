@@ -142,8 +142,8 @@ def _warn_if_behind_upstream(root: Path) -> None:
 @click.option(
     "--check",
     is_flag=True,
-    help="Report only: print the word-count, Exec Summary and bullet "
-    "warnings without syncing. Writes no file and no MC-2 row.",
+    help="Report only: print the word-count, Exec Summary, bullet and "
+    "provenance-stamp warnings without syncing. Writes no file and no MC-2 row.",
 )
 def render(check: bool) -> None:
     """Re-render generated files (alias for `cxp sync` in v0.1).
@@ -178,6 +178,14 @@ def render(check: bool) -> None:
         from cp_engine.sprint_bullet_lint import unparsed_bullet_warnings
 
         for warning in unparsed_bullet_warnings(config.root):
+            click.echo(warning, err=True)
+
+        # Hand-kept `Provenance: Version NN | date` stamps older than the
+        # file's last substantive commit (#353 item 5). Reads git only.
+        from cp_engine.clock import tenant_today
+        from cp_engine.provenance_lint import provenance_warnings
+
+        for warning in provenance_warnings(config.root, today=tenant_today()):
             click.echo(warning, err=True)
     except Exception as exc:  # noqa: BLE001 — advisory pass, never fail a render
         # The exit code stays clean (any sync already ran), but a crashed lint

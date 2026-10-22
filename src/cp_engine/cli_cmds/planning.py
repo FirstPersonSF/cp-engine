@@ -204,6 +204,13 @@ def prep_agenda_cmd(
     "rendered doc.",
 )
 @click.option(
+    "--since-synthesis",
+    is_flag=True,
+    help="Report what changed after the planning doc (`sprints/<W##>/"
+    "_planning.md`) was synthesized: workstreams whose sprint file, Exec "
+    "Summary or MC-2 commitments moved since. Read-only. With --summary, JSON.",
+)
+@click.option(
     "--legacy-render",
     is_flag=True,
     help="Render the DEPRECATED engine-formatted planning doc (the "
@@ -231,6 +238,7 @@ def prep_planning_cmd(
     out: Path | None,
     summary: bool,
     bundle: bool,
+    since_synthesis: bool,
     legacy_render: bool,
     sweep: bool,
     sweep_model: str,
@@ -248,7 +256,16 @@ def prep_planning_cmd(
 
     With ``--projects <code>,<code>``: scoped to those projects only.
     ``--out <path>`` persists the bundle or legacy doc; default stdout.
+
+    ``--since-synthesis`` (#353): the planning doc goes stale within a day —
+    meetings keep landing after it is written. This lists the workstreams
+    whose sprint file, Exec Summary or commitments changed after the doc's
+    last commit (its mtime when uncommitted). Read-only; markdown, or JSON
+    with ``--summary``.
     """
+    if since_synthesis:
+        _since_synthesis(project_filter, as_json=summary)
+        return
     if not (summary or bundle or legacy_render):
         click.echo(
             "cxp prep-planning no longer renders the planning doc directly.\n"
@@ -256,6 +273,8 @@ def prep_planning_cmd(
             "  cxp prep-planning --bundle    # raw material for /cp-prep "
             "in-session synthesis\n"
             "  cxp prep-planning --summary   # JSON metrics\n"
+            "  cxp prep-planning --since-synthesis   # what changed after "
+            "_planning.md\n"
             "The deprecated engine-rendered inventory is available behind "
             "--legacy-render (works with --out).",
             err=True,
@@ -394,6 +413,41 @@ def prep_planning_cmd(
         click.echo(f"wrote {out}")
     else:
         click.echo(doc)
+
+
+def _since_synthesis(project_filter: str, *, as_json: bool) -> None:
+    """Body of `prep-planning --since-synthesis` (#353 item 3)."""
+    import json
+
+    from cp_engine.planning_since import changes_since_synthesis
+    from cp_engine.prep_planning import _make_supabase_client
+    from cp_engine.sprints import current_sprint_week_iso
+
+    config = _cli._load_config_or_die()
+    projects: tuple = ()
+    try:
+        from cp_engine.sync import _default_backend_factory
+
+        projects = tuple(_default_backend_factory(config.sync.backend)
+                         .read_projects(config))
+    except Exception as exc:  # noqa: BLE001 — the git half still answers
+        click.echo(f"(note: project roster unreadable — commitments-only "
+                   f"changes show by job number: {type(exc).__name__}: {exc})",
+                   err=True)
+    codes = tuple(c.strip() for c in project_filter.split(",") if c.strip()) or None
+    report = changes_since_synthesis(
+        config.root, current_sprint_week_iso(tenant_now()),
+        supabase_client=_make_supabase_client(config),
+        projects=projects, codes=codes,
+    )
+    if report is None:
+        click.echo("No _planning.md found for this or an earlier sprint week — "
+                   "nothing to compare against. Run /cp-prep first.", err=True)
+        sys.exit(1)
+    if as_json:
+        click.echo(json.dumps(report.to_dict(), indent=2))
+    else:
+        click.echo(report.render_markdown(), nl=False)
 
 
 @click.command("attention-digest")
@@ -639,8 +693,10 @@ def draft_summaries_cmd(
     """Machine-draft stale Exec Summaries from each workstream's own recent
     material (#251).
 
-    In scope: every active workstream whose summary is 14+ days old or a
-    partial refresh (or, with CODES, only those — still scope-checked).
+    In scope: every active workstream whose summary is 14+ days old, a
+    partial refresh, or never authored (#353 — a scaffold however new; a
+    workstream with no material yet gets nothing) (or, with CODES, only
+    those — still scope-checked).
     Writes Status, Where it stands, Next up and Blockers — never Objective —
     and marks the stamp `· drafted by cp`. A workstream any of whose fields
     fails the fidelity check gets NOTHING written, and is reported.

@@ -610,7 +610,13 @@ def spine_lint_cmd(code: str) -> None:
         stale_state = partial_refresh_warning(cp_md)
         if stale_state:
             warnings.append(stale_state)
+        # Scaffold summary over ingested meetings (#353 item 2): say how
+        # much has landed, not just that nothing was written.
+        from cp_engine.exec_summary_freshness import unauthored_ingest_warning
 
+        fed = unauthored_ingest_warning(cp_md, code)
+        if fed:
+            warnings.append(fed)
 
     if warnings:
         click.echo(f"{code} — {len(warnings)} spine-lint warning(s):")
@@ -900,6 +906,10 @@ def exec_lint_cmd(code: str) -> None:
     Also reports a stamp that overstates the summary (#251): Where it stands,
     Next up and Blockers all last changed 14+ days before `· updated`, read
     from the file's git history. Silent when there is no full history.
+
+    And a summary that was never authored although meeting auto-ingest has
+    landed on the workstream (#353 item 2): "N meetings ingested since
+    <date>", counted from the `[auto-ingest] <code>: meeting` commits.
     """
     from cp_engine.exec_summary_lint import lint_exec_summary
     from cp_engine.spine import SpineDirNotFound, find_spine_dir
@@ -920,6 +930,12 @@ def exec_lint_cmd(code: str) -> None:
     stale_state = partial_refresh_warning(cp_md)
     if stale_state:
         warnings.append(stale_state)
+    # A scaffold summary over ingested meetings (#353 item 2).
+    from cp_engine.exec_summary_freshness import unauthored_ingest_warning
+
+    fed = unauthored_ingest_warning(cp_md, code)
+    if fed:
+        warnings.append(fed)
     if warnings:
         click.echo(f"{code} — {len(warnings)} exec-summary warning(s):")
         for w in warnings:

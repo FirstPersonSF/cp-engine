@@ -259,3 +259,112 @@ def partial_refresh_warning(cp_md_path: Path) -> str | None:
         "Refresh them against current reality, or confirm they still "
         "hold"
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Unauthored, but fed (#353 item 2)
+# ──────────────────────────────────────────────────────────────────────
+#
+# Meeting auto-ingest writes a workstream's sprint file and meeting ledger;
+# it never touches the Exec Summary. On 2026-09-01 a full client briefing
+# landed on sap-5198 while its cp.md was still the scaffold, and prep said
+# "not yet authored" — which reads as "nothing has happened". The ingest
+# commits are the record that something has: each lands as
+# `[auto-ingest] <code>: meeting <id>`. Counting them turns the silence into
+# a number a person can act on. Read-only, like the rest of this module.
+
+# The `<co>-<number>` prefix. Ingest commits name a workstream by whichever
+# spelling MC-2 carried (`slt-5196`, `ggl-5216-google`), so match both.
+_SHORT_CODE_RE = re.compile(r"^([a-z0-9]+-\d+)(?:-|$)")
+_INGEST_MEETING_RE = re.compile(r": meeting (?P<id>\S+)")
+
+
+@dataclass(frozen=True)
+class IngestedMeetings:
+    """Meetings auto-ingest landed on one workstream, per the git log."""
+
+    meetings: int
+    first: date
+    last: date
+
+    def describe(self) -> str:
+        noun = "meeting" if self.meetings == 1 else "meetings"
+        return (f"{self.meetings} {noun} ingested since "
+                f"{self.first.isoformat()} (latest {self.last.isoformat()})")
+
+
+def _code_pattern(code: str) -> str:
+    """ERE matching every spelling of `code` an ingest subject may carry."""
+    m = _SHORT_CODE_RE.match(code or "")
+    if m is None:
+        return re.escape(code)
+    short = m.group(1)
+    return f"{short}(-[a-z0-9-]+)?"
+
+
+def ingested_meetings(repo_dir: Path, code: str) -> IngestedMeetings | None:
+    """Distinct meetings `[auto-ingest] <code>: meeting <id>` commits landed.
+
+    None when there are none, or when git cannot answer (no repo, or a
+    shallow clone, whose single commit would undercount to a misleading
+    "1 meeting"). Account and sprint-planning summaries
+    (`[auto-ingest] account:<code>:`) are not this workstream's own ingest
+    and do not count.
+    """
+    shallow = _run_git(["rev-parse", "--is-shallow-repository"], repo_dir)
+    if shallow is None or shallow.strip() == "true":
+        return None
+    out = _run_git(
+        ["log", "-E", f"--grep=^\\[auto-ingest\\] {_code_pattern(code)}: meeting ",
+         "--format=%cs%x09%s"],
+        repo_dir,
+    )
+    if not out:
+        return None
+    seen: dict[str, date] = {}
+    for line in out.splitlines():
+        day, _, subject = line.partition("\t")
+        m = _INGEST_MEETING_RE.search(subject)
+        if m is None:
+            continue
+        try:
+            when = date.fromisoformat(day)
+        except ValueError:
+            continue
+        mid = m.group("id")
+        seen[mid] = min(when, seen.get(mid, when))
+    if not seen:
+        return None
+    dates = sorted(seen.values())
+    return IngestedMeetings(meetings=len(seen), first=dates[0], last=dates[-1])
+
+
+def unauthored_ingest(cp_md_path: Path, code: str | None = None) -> IngestedMeetings | None:
+    """Ingest that reached a workstream whose Exec Summary is still scaffold.
+
+    None when the summary is authored (any real field), when the cp.md has
+    no exec-summary region, or when no ingest is on record. `code` defaults
+    to the workstream directory's name.
+    """
+    from cp_engine.render import exec_summary_is_authored, slice_exec_summary_region
+
+    try:
+        text = cp_md_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    region = slice_exec_summary_region(text)
+    if region is None or exec_summary_is_authored(region):
+        return None
+    return ingested_meetings(cp_md_path.parent, code or cp_md_path.parent.name)
+
+
+def unauthored_ingest_warning(cp_md_path: Path, code: str | None = None) -> str | None:
+    """The lint line for `cxp exec-lint` / `cxp spine-lint`, or None."""
+    found = unauthored_ingest(cp_md_path, code)
+    if found is None:
+        return None
+    return (
+        f"⚠ exec-summary never authored, but {found.describe()}. The state "
+        "is in the sprint files; author it at wrap up (or let "
+        "`cxp draft-summaries` draft it)"
+    )

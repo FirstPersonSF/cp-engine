@@ -10,7 +10,8 @@ with current, ingested fact.
 
 Approved 2026-09-30 as #251's resolution: the engine drafts the four STATE
 fields (Status, Where it stands, Next up, Blockers) for every active
-workstream whose summary is stale or partially refreshed, and writes them
+workstream whose summary is stale, partially refreshed or never authored
+(#353 item 2), and writes them
 directly, visibly marked. Objective stays human-owned and is never written.
 
 THE SEAM, RESTATED. The cutover's rule was "the engine does not author
@@ -148,20 +149,34 @@ def stamp_date(cp_md_text: str) -> date | None:
 
 
 def scope_reason(cp_md_path: Path, *, today: date) -> str | None:
-    """Why this summary needs a draft — `stale <n>d` or `partial refresh` — or
-    None when it is current (or has no Exec Summary region to write into).
+    """Why this summary needs a draft — `unauthored`, `stale <n>d` or
+    `partial refresh` — or None when it is current (or has no Exec Summary
+    region to write into).
+
+    UNAUTHORED (#353 item 2): a scaffold summary is in scope whatever its
+    stamp says. The scaffold's stamp is its creation date, so a workstream
+    whose first meetings were ingested the week it was created read as
+    "current" and was never drafted, while prep said it had no state. Nothing
+    authored can be overwritten — every field is still a placeholder — and
+    `draft_one` writes nothing when the workstream has no material yet. The
+    reason names the ingest count when the git log has one.
 
     Partial-refresh detection reads git blame (a full-history checkout); on a
     shallow clone it answers None and only the stamp age decides.
     """
-    from cp_engine.exec_summary_freshness import partial_refresh
+    from cp_engine.exec_summary_freshness import ingested_meetings, partial_refresh
+    from cp_engine.render import exec_summary_is_authored
 
     try:
         text = cp_md_path.read_text(encoding="utf-8")
     except OSError:
         return None
-    if slice_exec_summary_region(text) is None:
+    region = slice_exec_summary_region(text)
+    if region is None:
         return None
+    if not exec_summary_is_authored(region):
+        fed = ingested_meetings(cp_md_path.parent, cp_md_path.parent.name)
+        return f"unauthored, {fed.describe()}" if fed else "unauthored"
     stamp = stamp_date(text)
     if stamp is None:
         return None
