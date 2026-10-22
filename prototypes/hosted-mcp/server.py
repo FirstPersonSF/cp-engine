@@ -3047,6 +3047,20 @@ CANON_TARGET_MAX = 7
 # Element `type` → canonical `layer`; case/space-insensitive, an unmapped
 # value passes through unchanged. The shared package's own function.
 canon_layer = _engine_authored_element.canon_layer
+# The WRITE-boundary form (#352): canon_layer, else ValueError naming the
+# layers `spine_substance_layer_check` admits. A writer that passed an
+# unknown layer through got a raw constraint error naming none of them — the
+# 10-06 slt-5196 author wrote "Feedback", concluded no feedback layer
+# existed, and filed client input as a Note. Readers keep `canon_layer`.
+resolve_layer = _engine_authored_element.resolve_layer
+
+
+def _checked_layer(value: str | None) -> tuple[str | None, dict[str, Any] | None]:
+    """(canonical layer, None) or (None, {"error": ...}) — never a substitute."""
+    try:
+        return resolve_layer(value), None
+    except ValueError as exc:
+        return None, {"error": str(exc)}
 
 
 # Layers where `serves` means RELEVANCE, not a work binding (#179 step 4).
@@ -5068,7 +5082,9 @@ def set_spine_element(
         key: the element (est_item_id, bare slug, or unique framing substring).
         important: element-level importance flag (no promotion side effect).
         note: element-level annotation.
-        layer: element kind, normalized to the canonical string.
+        layer: element kind, normalized to the canonical string
+            (`feedback` -> `Client feedback`); an unknown layer is refused
+            with the valid list and nothing is written.
         framing: retitle the element. The est_item_id NEVER changes — it is the
             lineage key nine columns across seven tables join on without FKs,
             so it stays opaque and frozen (#165). A retitle auto-journals a
@@ -5129,7 +5145,9 @@ def set_spine_element(
         patch["note"] = note
     canonical_layer = None
     if layer is not None:
-        canonical_layer = canon_layer(layer)
+        canonical_layer, refused = _checked_layer(layer)
+        if refused:
+            return refused
         patch["layer"] = canonical_layer
     if framing is not None:
         patch["framing"] = framing
@@ -6901,7 +6919,10 @@ def create_spine_element(
         body: the element's content (markdown).
         layer: element kind — email|note|decision|source|brief|stakeholder|
                agreement|synthesis|output|activity|retrospective|research|
-               deliverable|timeline|clientfeedback (normalized to canonical form).
+               deliverable|draft|timeline|feedback (normalized to canonical
+               form; `feedback`/`clientfeedback` -> `Client feedback`, the
+               stakeholder-signal layer). An unknown layer is REFUSED with
+               the list of real ones — never written, never swapped for note.
         slug: optional explicit slug; defaults to `slugify(framing)`.
         important: element-level importance flag.
         note: optional element-level annotation.
@@ -6911,6 +6932,9 @@ def create_spine_element(
         return {"error": "framing is required"}
     if not (body or "").strip():
         return {"error": "body is required"}
+    layer, refused = _checked_layer(layer)
+    if refused:
+        return refused
 
     client = user_client()
     subject = caller_subject()
@@ -6957,7 +6981,7 @@ def create_spine_element(
         "est_item_kind": None,
         "phase": None,
         "binding": "unbound",
-        "layer": canon_layer(layer),
+        "layer": layer,
         "placement": "context",
         "serves": [],
         "version_label": "v1",
@@ -7284,11 +7308,16 @@ def add_spine_document(
       source is attached as a typed provenance link on the new element —
       "turn this ingested brief into a spine card."
 
-    `type` is the element kind (default `synthesis`). To UPDATE an existing
+    `type` is the element kind (default `synthesis`), the same vocabulary as
+    `create_spine_element`'s `layer` — `feedback` for client input; an
+    unknown kind is refused before anything is read. To UPDATE an existing
     element from a document, use `add_spine_version` instead.
     """
     if bool(content and content.strip()) == bool(source_title and source_title.strip()):
         return {"error": "provide exactly one of content or source_title"}
+    _, refused = _checked_layer(type)
+    if refused:
+        return refused
 
     client = user_client()
     scope = resolve_write_scope(client, project_code)

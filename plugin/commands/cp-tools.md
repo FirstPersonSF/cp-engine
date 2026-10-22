@@ -122,8 +122,12 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
 - `create_spine_element(project_code, framing, body, layer?, slug?, important?, note?, sources?)`
   — author a new live v1 element. `framing` is the title; `layer`
   (default `note`) ∈ email|note|decision|source|brief|stakeholder|agreement|
-  synthesis|output|activity|retrospective|research|deliverable|timeline|
-  clientfeedback. **The kind is `layer`, not `type`** (sibling verb
+  synthesis|output|activity|retrospective|research|deliverable|draft|timeline|
+  feedback. **Client input** (a client's comments, map, markup, redirect) is
+  `feedback` → stored `Client feedback`, the stakeholder-signal layer: it
+  ranks above notes and advises, never vetoes (`clientfeedback` is the same
+  layer). An unknown layer is refused with the valid list — pick from it;
+  never re-file client input as `note`. **The kind is `layer`, not `type`** (sibling verb
   `add_spine_document` says `type`); `type` here
   is rejected. `serves` is not settable at create — bind afterwards with
   `set_spine_element(..., serves=[...])`. Live immediately; stored under the
@@ -133,7 +137,8 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   `content` (the document text — read a local `.md` and pass its text; the
   hosted server has no file access) OR an already-ingested `source_title` (pull
   the ingested doc's text as the body AND auto-attach the rag_asset for
-  provenance). `type` (the layer) defaults to `synthesis`; provide exactly one
+  provenance). `type` (the layer — same vocabulary as `create_spine_element`'s
+  `layer`; `feedback` for client input) defaults to `synthesis`; provide exactly one
   of content/source. To UPDATE an element from a document, pass its text to
   `add_spine_version` instead.
 - `add_spine_version(project_code, element_id, body, version_note?, step_title?)` — supersede the prior
@@ -145,7 +150,8 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   (`element_id` accepted as an alias for `key`)
   partial update of an element's flags and element-level facts: retitle
   with `framing` (the est_item_id never changes), rebind with `serves` (work-item
-  ids; `[]` unbinds — `binding` follows automatically), re-file with `layer`,
+  ids; `[]` unbinds — `binding` follows automatically), re-file with `layer`
+  (e.g. a client input filed as a note: `layer="feedback"`),
   and tag WHO IS SPEAKING with `actor` (partner | client | vendor | inferred —
   the schema half of the v04 authority ordering; list/pull surface it, and a
   `client`-actor element is a stakeholder signal: it advises, never vetoes).

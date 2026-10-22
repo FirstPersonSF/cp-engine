@@ -135,8 +135,8 @@ there, not here.
 
 When sources conflict: **partner directive** > **project canon** (the
 standing Inputs & Briefing element and what's pinned to it) >
-**delivered artifacts** > **stakeholder signals** > **working
-notes/ephemera**.
+**delivered artifacts** > **stakeholder signals** (the `Client feedback`
+layer; `actor: client`) > **working notes/ephemera**.
 
 **Stakeholder memory advises; it never vetoes.** Execute the partner's
 direction and surface the conflict in one line ("Heads up — Janet said X
