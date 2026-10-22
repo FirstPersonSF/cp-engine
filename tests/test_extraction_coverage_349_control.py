@@ -84,7 +84,10 @@ class _Client:
             "company_id": "c", "file_hash": "h", "prev_asset_id": None,
             "meta": {"coverage": coverage} if coverage is not None else {},
         }]
-        self.chunks = [{"asset_id": "a1", "id": "k1"}]
+        # The stored chunk the RPC row above came from: the pull reads the
+        # resolved document straight from the table since #349 item 6.
+        self.chunks = [{"asset_id": "a1", "id": "k1", "text": "[Slide 1]\nOverview",
+                        "chunk_index": 0, "meta": {"chunk_index": 0}}]
 
     def rpc(self, name, params):
         assert name == "read_scoped_asset_chunks"

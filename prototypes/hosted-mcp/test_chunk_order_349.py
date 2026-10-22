@@ -59,6 +59,10 @@ class _Q:
     def limit(self, *_a, **_k):
         return self
 
+    def range(self, start, end):  # the pull pages (#349 item 6)
+        self._range = (start, end)
+        return self
+
     def _project(self, row):
         if self._cols is None:
             return dict(row)
@@ -75,7 +79,8 @@ class _Q:
 
     def execute(self):
         rows = [self._project(r) for r in self._rows if all(f(r) for f in self._f)]
-        return SimpleNamespace(data=rows)
+        start, end = getattr(self, "_range", None) or (0, len(rows) - 1)
+        return SimpleNamespace(data=rows[start:end + 1])
 
 
 _CHUNK_COLUMNS_PRE = {"id", "asset_id", "start_seconds", "end_seconds", "text",

@@ -96,6 +96,78 @@ def order_fields(label: str | None) -> dict:
     return out
 
 
+# PostgREST's `max-rows` on MC-2: no single response carries more rows than
+# this, whatever `.limit()` or `.range()` asked for. Reads page at it.
+POSTGREST_MAX_ROWS = 1000
+
+# The most chunks one document read will fetch (#349 item 6). A bound, so a
+# runaway asset cannot pull an unbounded transfer; a read that reaches it with
+# more rows behind it reports `capped` instead of passing as whole. The
+# largest live document is ~2,000 chunks.
+MAX_DOC_CHUNKS = 20_000
+
+CAPPED_NOTE = (
+    "chunk read stopped at {n} chunks (the per-document bound); the document "
+    "has more — its tail is missing. Read the original via `fetch_project_source`."
+)
+
+
+def read_asset_chunks_paged(
+    client,
+    asset_id: str,
+    columns: str,
+    *,
+    table: str = "asset_chunks",
+    page: int | None = None,
+    max_chunks: int | None = None,
+) -> tuple[list[dict], bool]:
+    """Every chunk row of one asset, paged past PostgREST's row cap (#349).
+
+    One unpaged request is silently cut at `max-rows` (1000): a 2,500-chunk
+    deck came back as its first 1,000 chunks with nothing saying so. This
+    reads `.range()` windows ordered by `id` (a stable key, so windows
+    neither overlap nor skip — document order is `order_chunks`' job, after)
+    until a short window says the asset is exhausted, or `max_chunks` is
+    reached.
+
+    Returns `(rows, capped)`: `capped` is True only when the bound stopped
+    the read with a full last window, i.e. more rows may exist. `page` must
+    not exceed the server's `max-rows`, or a full window reads as short.
+    Read errors propagate (callers decide whether to retry on 42703).
+    """
+    page = page or POSTGREST_MAX_ROWS
+    bound = MAX_DOC_CHUNKS if max_chunks is None else max_chunks
+    rows: list[dict] = []
+    start = 0
+    while start < bound:
+        want = min(page, bound - start)
+        batch = (
+            client.table(table)
+            .select(columns)
+            .eq("asset_id", asset_id)
+            .order("id")
+            .range(start, start + want - 1)
+            .execute()
+            .data
+        ) or []
+        rows.extend(batch)
+        if len(batch) < want:
+            return rows, False
+        start += want
+    # The bound was reached on a full window. One probe row decides whether
+    # anything lies beyond it, so a document exactly at the bound is whole.
+    more = (
+        client.table(table)
+        .select("id")
+        .eq("asset_id", asset_id)
+        .order("id")
+        .range(bound, bound)
+        .execute()
+        .data
+    ) or []
+    return rows, bool(more)
+
+
 def is_missing_column(exc: BaseException, column: str = "chunk_index") -> bool:
     """True for PostgREST's "column does not exist" (42703) naming `column`.
 
