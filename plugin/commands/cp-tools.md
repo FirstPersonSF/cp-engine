@@ -115,11 +115,22 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   (`absorbed_hidden` = how many were hidden);
   `include_absorbed=true` lists them annotated `absorbed_by`. Canon members
   carry `canon: true`, with `canon_size` beside `absorbed_hidden`.
+  **Replaced elements are marked, not hidden (#352):** an element with an
+  incoming active `supersedes` edge from a LIVE element carries
+  `superseded_by: {key, framing, date}` — the newest successor; `date` is
+  when the edge was recorded; plus `absorbed_by` when that successor is
+  sealed — and the response counts them in `superseded_count`. An active
+  `contradicts` edge marks its target `contradicted_by: [{key, framing,
+  date}]`. Read the successor before building on a `superseded_by` row.
 - `pull_spine_element(project_code, key)` — ONE element's full body. `key` must be
   an EXACT est_item_id (`_authored/email-from-janet-6-18`) or row id — no title
   substring; `project_code` is optional (a disambiguator). `element_id` is
-  accepted as an alias for `key`.
-- `create_spine_element(project_code, framing, body, layer?, slug?, important?, note?, sources?)`
+  accepted as an alias for `key`. A replaced element's pull LEADS with
+  `warning: "Superseded by '<framing>' (<key>) on <date> — read that first."`
+  and carries `superseded_by` (+ `superseded_by_all` when several replaced
+  it) and `contradicted_by`, each with the edge's `note`. A failed edge read
+  sets `supersession_error` — no warning then means UNKNOWN, not current.
+- `create_spine_element(project_code, framing, body, layer?, slug?, important?, note?, sources?, replaces_key?)`
   — author a new live v1 element. `framing` is the title; `layer`
   (default `note`) ∈ email|note|decision|source|brief|stakeholder|agreement|
   synthesis|output|activity|retrospective|research|deliverable|draft|timeline|
@@ -132,15 +143,21 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   is rejected. `serves` is not settable at create — bind afterwards with
   `set_spine_element(..., serves=[...])`. Live immediately; stored under the
   project's canonical dir-slug whatever code form you pass (#309); mirrors to
-  the repo on next sync.
-- `add_spine_document(project_code, label, content?, source_title?, type?)` — author a whole DOCUMENT into the spine as a new element. Pass EITHER
+  the repo on next sync. `replaces_key` names a live element this one
+  REPLACES (a different element it overtakes — talking points v03 over v02):
+  it writes an ACTIVE `supersedes` edge new → old (the `promote_to_canon`
+  path) and returns it under `replaces`, so list/pull mark the old one
+  `superseded_by`. A key that doesn't resolve is refused before anything is
+  written. A new version of the SAME element is `add_spine_version`, not this.
+- `add_spine_document(project_code, label, content?, source_title?, type?, replaces_key?)` — author a whole DOCUMENT into the spine as a new element. Pass EITHER
   `content` (the document text — read a local `.md` and pass its text; the
   hosted server has no file access) OR an already-ingested `source_title` (pull
   the ingested doc's text as the body AND auto-attach the rag_asset for
   provenance). `type` (the layer — same vocabulary as `create_spine_element`'s
   `layer`; `feedback` for client input) defaults to `synthesis`; provide exactly one
   of content/source. To UPDATE an element from a document, pass its text to
-  `add_spine_version` instead.
+  `add_spine_version` instead. `replaces_key` works as on
+  `create_spine_element`.
 - `add_spine_version(project_code, element_id, body, version_note?, step_title?)` — supersede the prior
   live version with a new one (a targeted "what changed" update). Here the
   element is `element_id` (est_item_id, bare slug, or distinct title substring
@@ -180,19 +197,28 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   spine element as provenance to `key` (the tiering-rule move for "this synthesis
   card absorbs these raw cards"). `source_key` MAY be already-retired; the link is
   a property of the surviving card, so it survives the source's retirement.
-- `add_element_source(project_code, key, source_title)` — attach an
+- `add_element_source(project_code, key, source_title, for_next_version?)` — attach an
   INGESTED source (a rag_asset, resolved like `list_project_sources`) to `key`,
-  writing the typed link onto every version. The verb that closes an Agreement's
+  writing the typed link onto the LIVE version only (older versions keep what
+  they actually drew on). When the live version has SHIPPED (a deliverable
+  sealed — active `absorbed_by` — on/after that version's date) the
+  link is marked `for_next: true` — an input to the next version, not the one
+  out the door; `for_next_version` true/false overrides. `add_spine_version`
+  clears the mark on the copy it carries forward; pull lists such links under
+  `sources_for_next_version`, and `seal_sweep` reports them apart from what
+  fed the shipped version. The verb that closes an Agreement's
   "attach as source" loop, and what `cxp spine-lint` points you at. Re-attaching
   is a no-op. Inverse: `remove_element_source(project_code, key, source_title)` — also
-  hosted. Distinct from `add_element_provenance`, which attaches a spine ELEMENT.
+  hosted; it strips EVERY version (a wrong attach is wrong everywhere). Distinct from `add_element_provenance`, which attaches a spine ELEMENT.
 - `create_spine_relation(project_code, kind, from_key, to_key, note?)` — author a
   typed directed edge between two live elements. `kind` ∈ responds_to | supersedes |
   derives_from | informs | contradicts. Keys resolve like `pull_spine_element`
   (est_item_id or distinct title substring). Idempotent. Edge vocab: responds_to
   = their voice reacting to ours; derives_from = built from named inputs;
   supersedes = a genuine fork (rare); informs = shaped but didn't generate;
-  contradicts = conflicting claim. **Direction for the feeding kinds
+  contradicts = conflicting claim. **supersedes / contradicts point FROM the
+  newer element TO the one it overtakes** — the target is what list/pull
+  then mark `superseded_by` / `contradicted_by`. **Direction for the feeding kinds
   (derives_from / informs / responds_to): `from_key` is the INPUT, `to_key` is
   the thing built from it** — `source --serves--> activity
   --derives_from--> deliverable`. The verb accepts either direction silently;

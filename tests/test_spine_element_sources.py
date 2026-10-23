@@ -46,7 +46,9 @@ def _run(versions, assets, title, *, add=True, monkeypatch=None):
     return out, client
 
 
-def test_add_attaches_typed_link_to_every_version(monkeypatch):
+def test_add_attaches_typed_link_to_the_live_version_only(monkeypatch):
+    """#352 item 3: was every version — which made a superseded version claim
+    an input it never saw. Superseded rows now keep their own sources."""
     versions = [_version("v1", status="superseded"), _version("v2")]
     out, client = _run(versions, [_asset("a1", "SOW-5174-final-sow.md")],
                        "SOW-5174-final-sow.md", monkeypatch=monkeypatch)
@@ -54,8 +56,7 @@ def test_add_attaches_typed_link_to_every_version(monkeypatch):
     assert out["attached"] is True
     assert out["source"] == link
     assert out["sources"] == [link]
-    assert [u[0] for u in client.updates] == ["v1", "v2"]
-    assert all(u[1] == {"sources": [link]} for u in client.updates)
+    assert client.updates == [("v2", {"sources": [link]})]
 
 
 def test_add_substring_resolves_unique_source(monkeypatch):

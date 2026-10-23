@@ -1449,7 +1449,10 @@ def list_spine_elements(
     default, with the count reported as `absorbed_hidden`. Pass
     `include_absorbed=true` (retrospective mode) to include them, each
     annotated with the deliverable that absorbed it. Canon members (active
-    `canon_of` edge to the standing brief) carry `canon: true`.
+    `canon_of` edge to the standing brief) carry `canon: true`. A row a live
+    element replaced (active `supersedes` edge) carries `superseded_by:
+    {key, framing, date}` — read that successor first; an active
+    `contradicts` edge adds `contradicted_by` (#352).
 
     `tier` is the signal/noise facet (#158): "working"/"authored" drops the
     per-doc source stubs so orientation reads the authored working set;
@@ -1482,10 +1485,11 @@ def list_spine_elements(
 
     # One edge read serves both annotations: canon membership and absorption.
     # Shared with the stdio verb (#330) — `seal_sweep.read_lifecycle_edges`.
-    from cp_engine.seal_sweep import read_lifecycle_edges
+    from cp_engine.seal_sweep import challenge_marks, read_lifecycle_edges
 
     absorbed_into: dict[str, str] = {}
     canon_ids: set[str] = set()
+    challenges: list[dict] = []
     try:
         # Account rows carry their HOME project's id, so an edge on one lives
         # under that project, not this one. Read every project represented in
@@ -1495,6 +1499,7 @@ def list_spine_elements(
         absorbed_into, canon_ids = read_lifecycle_edges(
             client,
             {project_id} | {r["project_id"] for r in rows if r.get("project_id")},
+            challenges=challenges,
         )
     except Exception as exc:  # noqa: BLE001 — annotations degrade, the list survives
         # Degrading is right; degrading SILENTLY is not. `absorbed_into` gates
@@ -1510,6 +1515,14 @@ def list_spine_elements(
     else:
         annotations_error = None
 
+    # #352: "this was replaced". Every unarchived row is the live set a
+    # successor must be in — including sealed ones, which the pointer then
+    # names with the deliverable that absorbed them.
+    challenged = challenge_marks(
+        challenges,
+        {r.get("est_item_id"): r for r in rows if not r.get("archived")},
+        absorbed_into,
+    )
     tier_n = (tier or "all").lower()
     stubs_hidden = 0
     elements = []
@@ -1556,8 +1569,14 @@ def list_spine_elements(
                     if eid in absorbed_into
                     else {}
                 ),
+                # Newest successor only; `pull_spine_element` names them all.
+                **{
+                    k: v for k, v in (challenged.get(eid) or {}).items()
+                    if k in ("superseded_by", "contradicted_by")
+                },
             }
         )
+    superseded_count = sum(1 for e in elements if "superseded_by" in e)
     audit(
         client,
         "list_spine_elements",
@@ -1580,6 +1599,15 @@ def list_spine_elements(
         **({"canon_size": len(canon_ids)} if canon_ids else {}),
         **(
             {
+                "superseded_count": superseded_count,
+                "note_on_superseded": "a live element replaced these "
+                "(superseded_by) — read the successor first",
+            }
+            if superseded_count
+            else {}
+        ),
+        **(
+            {
                 "absorbed_hidden": absorbed_hidden,
                 "note_on_absorbed": "sealed into a deliverable; pass "
                 "include_absorbed=true for retrospective mode",
@@ -1591,9 +1619,10 @@ def list_spine_elements(
             {
                 "annotations_available": False,
                 "annotations_error": annotations_error,
-                "note_on_annotations": "canon and absorbed-by edges could not be "
-                "read — sealed elements are NOT filtered out of this list and "
-                "canon membership is unmarked; treat lifecycle state as unknown",
+                "note_on_annotations": "canon, absorbed-by and supersedes edges "
+                "could not be read — sealed elements are NOT filtered out of "
+                "this list, canon membership is unmarked and replaced elements "
+                "carry no superseded_by; treat lifecycle state as unknown",
             }
             if annotations_error
             else {}
@@ -1731,6 +1760,10 @@ def pull_spine_element(
     instantly true here — never retype them into the element. A failed read
     sets `derived_block: false` and names itself in `warnings`.
 
+    A replaced element (active `supersedes` edge from a live element) leads
+    with `warning: "Superseded by X on <date> — read that first."` plus
+    `superseded_by` / `contradicted_by` (#352).
+
     Args:
         element_id: `spine_substance.est_item_id` (e.g. "_authored/janet-dossier")
                     or the row's own `id`. Exact match only on this server —
@@ -1813,14 +1846,61 @@ def pull_spine_element(
         "note": row.get("note"),
         "actor": row.get("actor"),
         "sources": row.get("sources"),
+        **_next_version_sources(row),
         "body": row.get("body"),
         "versions_visible": len(rows),
         **_provenance_fields(row),
     }
     if (row.get("layer") or "").lower() == "agreement" and row.get("project_id"):
         _compose_agreement_projection(result, client, row.get("project_id"))
+    if row.get("project_id"):
+        result = _with_challenges(result, client, row)
     return _with_project_status(
         result, client, row.get("project_id"), row.get("project_code"))
+
+
+def _with_challenges(result: dict[str, Any], client, row: dict) -> dict[str, Any]:
+    """#352: lead the pull with "Superseded by X on <date> — read that first."
+    when an active `supersedes` edge from a LIVE element points at it, and
+    attach `superseded_by` (+ `superseded_by_all` when several) and
+    `contradicted_by`, each with its edge note. Same edge read as the
+    listings (`seal_sweep.read_lifecycle_edges`). Fail-soft but loud: a failed
+    read adds `supersession_error`, because a missing warning would otherwise
+    read as "current"."""
+    from cp_engine.seal_sweep import (
+        challenge_marks,
+        read_lifecycle_edges,
+        supersession_warning,
+    )
+
+    pid, eid = row.get("project_id"), row.get("est_item_id")
+    challenges: list[dict] = []
+    try:
+        absorbed_into, _canon = read_lifecycle_edges(
+            client, {pid}, challenges=challenges)
+        incoming = [e for e in challenges if e.get("to_item_id") == eid]
+        live: dict[str, dict] = {}
+        sources = sorted({e["from_item_id"] for e in incoming})
+        if sources:
+            for s in (
+                client.table("spine_substance")
+                .select("est_item_id, framing, archived")
+                .eq("project_id", pid)
+                .eq("status", "live")
+                .in_("est_item_id", sources)
+                .execute()
+                .data
+                or []
+            ):
+                if not s.get("archived"):
+                    live[s["est_item_id"]] = s
+    except Exception as exc:  # noqa: BLE001 — the pull survives, and says so
+        log.warning("supersedes edges unreadable for %s: %s", eid, exc)
+        result["supersession_error"] = f"{type(exc).__name__}: {exc}"
+        return result
+    mark = challenge_marks(incoming, live, absorbed_into, with_note=True).get(eid) or {}
+    warning = supersession_warning(mark)
+    return {**({"warning": warning} if warning else {}), **result, **mark}
 
 
 def _compose_agreement_projection(
@@ -3371,6 +3451,12 @@ def resolve_live_element_id(client, project_id: str, key: str) -> tuple[str | No
 # status — a retired provenance source is the POINT, see below), dedupes by
 # (type, id), and applies to every version row of the element. The function is
 # the authorization boundary; these tools do resolution and reporting only.
+#
+# #352 item 3 (mc-2 migration 202) adds `p_live_only boolean default false`:
+# `add_element_source` passes true and writes the LIVE row only, because a
+# source attached after a version shipped did not feed that version (and is
+# marked `for_next` when the live version was sealed, i.e. shipped). Detach
+# and provenance keep the every-version write and the 4-argument call.
 
 
 def _source_entry_attached(entries: Any, type_: str, ident: str) -> bool:
@@ -3388,6 +3474,22 @@ def _source_entry_attached(entries: Any, type_: str, ident: str) -> bool:
 
 def _live_row(versions: list[dict[str, Any]]) -> dict[str, Any] | None:
     return next((v for v in versions if v.get("status") == "live"), None)
+
+
+def _clear_for_next(sources: Any) -> list:
+    """`seal_sweep.clear_for_next` — the sources a new version carries."""
+    from cp_engine.seal_sweep import clear_for_next
+
+    return clear_for_next(sources)
+
+
+def _next_version_sources(row: dict[str, Any]) -> dict[str, Any]:
+    """#352 item 3 — the `for_next` links on a pulled row, named apart: they
+    arrived after this version shipped and have not fed it. Absent when none."""
+    from cp_engine.seal_sweep import split_for_next
+
+    _consumed, pending = split_for_next(row.get("sources"))
+    return {"sources_for_next_version": pending} if pending else {}
 
 
 def _read_live_sources(client, project_id: str, est_item_id: str) -> Any:
@@ -3546,12 +3648,18 @@ def _modify_element_sources(
     scope: dict[str, Any],
     est_item_id: str,
     versions: list[dict[str, Any]],
+    live_only: bool = False,
 ) -> dict[str, Any]:
     """The shared attach/detach tail: already-checks, the RPC, the read-back.
 
     Both quartet halves converge here once their own resolution is done, so the
     already/not-attached semantics, the guarded call, and the returned shape are
     written once rather than four times.
+
+    `live_only` (#352 item 3, `add_element_source`) asks the guarded function
+    to write the LIVE row only. The `p_live_only` argument is sent ONLY then:
+    it needs mc-2 migration 202, and every other caller keeps the original
+    4-argument call, so detach and provenance work on either side of it.
     """
     type_ = entry["type"]
     ident = entry["id"]
@@ -3577,22 +3685,29 @@ def _modify_element_sources(
             "sources": current_live,
         }
 
+    params: dict[str, Any] = {
+        "p_project_id": scope["id"],
+        "p_est_item_id": est_item_id,
+        "p_entry": entry,
+        "p_add": add,
+    }
+    if live_only:
+        params["p_live_only"] = True
     try:
-        updated = (
-            client.rpc(
-                "spine_element_modify_source",
-                {
-                    "p_project_id": scope["id"],
-                    "p_est_item_id": est_item_id,
-                    "p_entry": entry,
-                    "p_add": add,
-                },
-            )
-            .execute()
-            .data
-        )
+        updated = client.rpc("spine_element_modify_source", params).execute().data
     except Exception as exc:  # noqa: BLE001
         audit(client, tool, audit_args, 0)
+        if live_only and ("PGRST202" in str(exc) or "Could not find the function" in str(exc)):
+            # Refuse rather than fall back to the every-version write: that
+            # fallback is the exact lie #352 item 3 removes.
+            return {
+                "error": "the live-row-only source write needs mc-2 migration "
+                "202_spine_source_live_only (spine_element_modify_source "
+                "p_live_only), which is not applied on this database — "
+                "nothing was written.",
+                "est_item_id": est_item_id,
+                "source": entry,
+            }
         return {
             "error": f"guarded source write failed: {type(exc).__name__}: {str(exc)[:400]}",
             "est_item_id": est_item_id,
@@ -5805,16 +5920,17 @@ def route_commitment(
 # That constraint buys back a semantic the hosted server otherwise loses. Batch
 # 2's `set_spine_element` is live-rows-only (the UPDATE policy says
 # `status='live'`), so its element-level fields DIVERGE across an element's
-# history. These verbs do NOT have that gap: the function writes every version
-# row, so hosted and stdio agree exactly — a source link attached here rides the
-# whole history, which is what makes `versions_updated > 1` on an element with
-# versions the assertion worth making.
+# history. Detach and provenance write every version row, so hosted and stdio
+# agree exactly. `add_element_source` writes the LIVE row only since #352 item
+# 3 (`versions_updated == 1`): a source attached today did not feed the
+# versions already written.
 
 
 @mcp_server.tool()
 @_names_its_level
 def add_element_source(
-    project_code: str, key: str, source_title: str
+    project_code: str, key: str, source_title: str,
+    for_next_version: bool | None = None,
 ) -> dict[str, Any]:
     """Attach an ingested source document to a spine element (#143 batch 3).
 
@@ -5830,10 +5946,14 @@ def add_element_source(
     with their ids and nothing is guessed — attaching the wrong provenance is
     worse than attaching none.
 
-    Writes the typed link `{"type": "rag_asset", "id", "title"}` into `sources`
-    on EVERY version row, exactly as the stdio verb and MC-2's dashboard do:
-    a source is an element-level fact, like `serves`, so a partial write would
-    scatter one element's provenance across its own history. Deduped by
+    Writes the typed link `{"type": "rag_asset", "id", "title"}` into
+    `sources` on the LIVE version row only (#352 item 3): superseded versions
+    keep the sources they actually drew on. When the live version has SHIPPED
+    — a deliverable with an active `absorbed_by` seal recorded on/after the
+    live version's date — the link carries `"for_next": true` — it
+    arrived after that version went out and is an input to the NEXT one;
+    `add_spine_version` clears the flag on the copy it carries forward. Pass
+    `for_next_version` true/false to override the inference. Deduped by
     (type, id); re-attaching is a no-op reported as `already: true`.
 
     Use it to close attach-as-source loops — an Agreement whose body says
@@ -5845,7 +5965,12 @@ def add_element_source(
         key: the element (est_item_id, bare slug, or unique framing substring).
         source_title: the ingested source's title or rag_asset id (see
             `list_project_sources`).
+        for_next_version: True marks the link as an input to the NEXT
+            version, False as one to the live version; omit to infer (True
+            exactly when the live version was sealed — see above).
     """
+    from cp_engine.seal_sweep import live_version_shipped
+
     client = user_client()
     scope = resolve_write_scope(client, project_code)
     if scope is None:
@@ -5864,7 +5989,15 @@ def add_element_source(
         return note
 
     entry = {"type": "rag_asset", "id": asset["id"], "title": asset.get("title")}
-    return _modify_element_sources(
+    seal_error: str | None = None
+    if for_next_version is None:
+        for_next, seal_error = live_version_shipped(
+            client, scope["id"], _live_row(versions) or {})
+    else:
+        for_next = bool(for_next_version)
+    if for_next:
+        entry["for_next"] = True
+    out = _modify_element_sources(
         client,
         project_code,
         key,
@@ -5876,11 +6009,24 @@ def add_element_source(
             "key": key,
             "source_title": source_title,
             "asset_id": asset["id"],
+            **({"for_next_version": for_next_version}
+               if for_next_version is not None else {}),
         },
         scope=scope,
         est_item_id=est_item_id,
         versions=versions,
+        live_only=True,
     )
+    if for_next and out.get("attached"):
+        out["for_next"] = True
+        out["for_next_note"] = (
+            "attached for the NEXT version: the live version already shipped, "
+            "so this input did not feed it. add_spine_version clears the flag."
+        )
+    if seal_error and out.get("attached"):
+        # The default could not be checked: attached to the live version.
+        out["for_next_unverified"] = seal_error
+    return out
 
 
 @mcp_server.tool()
@@ -6874,6 +7020,7 @@ def create_spine_element(
     important: bool = False,
     note: str | None = None,
     sources: list[dict[str, Any]] | None = None,
+    replaces_key: str | None = None,
 ) -> dict[str, Any]:
     """Create a new AUTHORED spine element (live v1), under the caller's identity.
 
@@ -6926,6 +7073,13 @@ def create_spine_element(
         slug: optional explicit slug; defaults to `slugify(framing)`.
         important: element-level importance flag.
         note: optional element-level annotation.
+        replaces_key: optional live element this one REPLACES (#352). After
+            the insert, an ACTIVE `supersedes` edge new -> old is written
+            through the same path `promote_to_canon(replaces_key=)` uses, and
+            returned under `replaces`; list/pull then mark the old element
+            `superseded_by` this one. Resolved like every other key; one that
+            does not resolve to a single live element is refused BEFORE the
+            insert, so nothing is half-written.
     """
     label = (framing or "").strip()
     if not label:
@@ -6948,6 +7102,26 @@ def create_spine_element(
     element_slug = slugify(slug or label)
     est_item_id = f"_authored/{element_slug}"
     canonical_code = scope["project_code"]
+
+    # #352: resolve what this element replaces BEFORE anything is written —
+    # a bad key must refuse the whole call, not leave an element with no edge.
+    replaced_eid: str | None = None
+    email: str | None = None
+    if replaces_key is not None:
+        replaced_eid, err = resolve_live_element_id(client, scope["id"], replaces_key)
+        if err is not None:
+            return {"error": f"replaces_key {replaces_key!r}: {err.get('error') or err}"}
+        if replaced_eid is None:
+            return {
+                "error": f"replaces_key {replaces_key!r} matches no single live "
+                f"element in {project_code!r} — nothing was created"
+            }
+        if replaced_eid == est_item_id:
+            return {"error": f"replaces_key {replaces_key!r} is the element being created"}
+        email = caller_email()
+        if not email:
+            return {"error": "no email claim on the caller's token — "
+                    "supersedes edges are attributed."}
 
     # Collision guard, scoped by UUID (see docstring).
     try:
@@ -7025,10 +7199,11 @@ def create_spine_element(
             "layer": row["layer"],
             "body": body,
             "framing": label,
+            **({"replaces_key": replaces_key} if replaces_key is not None else {}),
         },
         1,
     )
-    return {
+    out: dict[str, Any] = {
         "row_id": created.get("id", row["id"]),
         "element_id": est_item_id,
         "project_code": canonical_code,
@@ -7041,6 +7216,29 @@ def create_spine_element(
         "framing": label,
         "body_chars": len(body),
     }
+    if replaced_eid is not None:
+        # The author asserted the replacement, so the edge is ACTIVE (design
+        # note (c) 3) — the same writer promote_to_canon uses. A failed edge
+        # write cannot un-create the element (no DELETE path): it is reported.
+        edge = _insert_lifecycle_edge(
+            client, scope, "supersedes", est_item_id, replaced_eid, email,
+            note or "replaced at create",
+        )
+        out["replaces"] = {
+            "superseded": replaced_eid,
+            "supersedes_edge": {
+                **edge,
+                "kind": "supersedes",
+                "from": est_item_id,
+                "to": replaced_eid,
+            },
+        }
+        if edge.get("error"):
+            out["warning"] = (
+                f"element created, but the supersedes edge to {replaced_eid!r} "
+                f"failed: {edge['error']} — retry with create_spine_relation"
+            )
+    return out
 
 
 @mcp_server.tool()
@@ -7162,7 +7360,9 @@ def add_spine_version(
         "status": "live",
         "framing": base.get("framing"),
         "body": body,
-        "sources": base.get("sources") or [],
+        # Carried forward with `for_next` cleared (#352 item 3): an input
+        # attached after the prior version shipped feeds THIS one.
+        "sources": _clear_for_next(base.get("sources")),
         "origin": base.get("origin") or "authored",
         "version_note": version_note,
         "rel_path": None,
@@ -7290,6 +7490,7 @@ def add_spine_document(
     content: str | None = None,
     source_title: str | None = None,
     type: str = "synthesis",
+    replaces_key: str | None = None,
 ) -> dict[str, Any]:
     """Author a whole DOCUMENT into the spine as a new element (#140).
 
@@ -7312,6 +7513,12 @@ def add_spine_document(
     `create_spine_element`'s `layer` — `feedback` for client input; an
     unknown kind is refused before anything is read. To UPDATE an existing
     element from a document, use `add_spine_version` instead.
+
+    `replaces_key` (#352): the live element this document REPLACES — a
+    different element it overtakes (the talking-points v03 that obsoletes
+    v02). Writes an ACTIVE `supersedes` edge new -> old, exactly as
+    `create_spine_element(replaces_key=)`; a key that does not resolve is
+    refused before anything is written.
     """
     if bool(content and content.strip()) == bool(source_title and source_title.strip()):
         return {"error": "provide exactly one of content or source_title"}
@@ -7323,6 +7530,15 @@ def add_spine_document(
     scope = resolve_write_scope(client, project_code)
     if scope is None:
         return {"error": f"no project or initiative resolves for code {project_code!r}"}
+    if replaces_key is not None:
+        # Fail fast, before a source pull — create_spine_element re-checks.
+        old_eid, err = resolve_live_element_id(client, scope["id"], replaces_key)
+        if err is not None or old_eid is None:
+            return {
+                "error": f"replaces_key {replaces_key!r} matches no single live "
+                f"element in {project_code!r} — nothing was created",
+                **({"detail": err} if err else {}),
+            }
 
     sources_link: list[dict[str, Any]] | None = None
     if source_title:
@@ -7361,6 +7577,7 @@ def add_spine_document(
         body=content or "",
         layer=type,
         sources=sources_link,
+        replaces_key=replaces_key,
     )
     if "error" in created:
         return created
@@ -10243,6 +10460,15 @@ def _round_dict(rnd: Any) -> dict[str, Any]:
         "version_label": getattr(rnd, "version_label", ""),
         "version_date": when.isoformat() if when else None,
         "already_absorbed": getattr(rnd, "already_absorbed", 0),
+        # #352 item 3: what fed this version vs what is waiting for the next.
+        "sources": [
+            {"id": s.get("id"), "title": s.get("title")}
+            for s in (getattr(rnd, "sources", []) or [])
+        ],
+        "sources_for_next_version": [
+            {"id": s.get("id"), "title": s.get("title")}
+            for s in (getattr(rnd, "next_sources", []) or [])
+        ],
         "candidates": [
             {
                 "est_item_id": getattr(c, "est_item_id", None),

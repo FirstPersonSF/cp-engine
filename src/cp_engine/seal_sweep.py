@@ -85,7 +85,7 @@ DELIVERABLE_LAYERS = ("deliverables", "output")
 
 
 def read_lifecycle_edges(
-    client, project_ids: Iterable[str]
+    client, project_ids: Iterable[str], challenges: list | None = None,
 ) -> tuple[dict[str, str], set[str]]:
     """``(absorbed_into, canon_ids)`` from the ACTIVE lifecycle edges of
     ``project_ids`` — the one read both servers' ``list_spine_elements`` use.
@@ -104,6 +104,12 @@ def read_lifecycle_edges(
     It lived inline in the hosted server alone until #330 gave the stdio
     listing the same ``include_absorbed`` flag; one reader keeps "what counts
     as absorbed" from drifting between the two.
+
+    ``challenges`` (#352): pass a list and the SAME query also reads the
+    active ``supersedes`` / ``contradicts`` edges, appended to it as raw
+    ``{kind, from_item_id, to_item_id, created_at, note}`` dicts for
+    :func:`challenge_marks`. One read, one failure mode: a caller that
+    degrades on a failed lifecycle read degrades on this too.
     """
     from cp_engine.mc2_db import Tables  # lazy: this module is otherwise pure
 
@@ -112,21 +118,112 @@ def read_lifecycle_edges(
     ids = sorted({p for p in project_ids if p})
     if not ids:
         return absorbed_into, canon_ids
+    kinds = ["canon_of", "absorbed_by"]
+    if challenges is not None:
+        kinds += list(CHALLENGE_KINDS)
     for e in (
         client.table(Tables.SPINE_RELATIONS)
-        .select("kind, from_item_id, to_item_id")
+        .select("kind, from_item_id, to_item_id, created_at, note")
         .in_("project_id", ids)
         .eq("status", "active")
-        .in_("kind", ["canon_of", "absorbed_by"])
+        .in_("kind", kinds)
         .execute()
         .data
         or []
     ):
         if e["kind"] == "canon_of":
             canon_ids.add(e["from_item_id"])
-        else:
+        elif e["kind"] == "absorbed_by":
             absorbed_into[e["from_item_id"]] = e["to_item_id"]
+        elif challenges is not None:
+            challenges.append(e)
     return absorbed_into, canon_ids
+
+
+# ── "This was replaced" (#352 item 1) ──────────────────────────────────────
+#
+# Both edge kinds point FROM the newer element TO the one it overtakes:
+# `supersedes` is new -> old (what `promote_to_canon(replaces_key=)` writes),
+# and every live `contradicts` edge (6 of 6, 2026-10-22) runs challenger ->
+# challenged. So the TARGET is the element a reader must be warned about.
+CHALLENGE_KINDS = ("supersedes", "contradicts")
+
+
+def _pointer(edge: dict, live: dict[str, dict],
+             absorbed_into: dict[str, str], *, with_note: bool) -> dict:
+    src = edge.get("from_item_id")
+    row = live.get(src) or {}
+    out = {
+        "key": src,
+        "framing": row.get("framing") or src,
+        "date": str(edge.get("created_at") or "")[:10] or None,
+    }
+    # A successor sealed into a deliverable is hidden from the default
+    # listing (2 of the 5 live successors are) — say where it went, or the
+    # pointer leads nowhere the reader can see.
+    if src in absorbed_into:
+        out["absorbed_by"] = absorbed_into[src]
+    if with_note and edge.get("note"):
+        out["note"] = edge["note"]
+    return out
+
+
+def challenge_marks(
+    challenges: Iterable[dict], live: dict[str, dict],
+    absorbed_into: dict[str, str] | None = None, *, with_note: bool = False,
+) -> dict[str, dict]:
+    """Per-target read-side markers from active supersedes/contradicts edges.
+
+    ``live`` maps est_item_id -> a live row (``framing`` used); an edge whose
+    SOURCE is not live marks nothing — a retired successor cannot be "read
+    that first". Returns ``{target_id: {...}}`` with, each omitted when absent:
+
+      - ``superseded_by``: the NEWEST successor ``{key, framing, date}``
+        (``date`` = when the edge was recorded), plus ``superseded_by_all``
+        newest-first when more than one replaced it;
+      - ``contradicted_by``: every live challenger, newest first.
+
+    ``with_note`` adds the edge's ``note`` (the pull shows it; listings stay
+    short). Pure: no I/O.
+    """
+    absorbed_into = absorbed_into or {}
+    grouped: dict[str, dict[str, list[dict]]] = {}
+    for e in challenges:
+        if e.get("kind") not in CHALLENGE_KINDS or e.get("from_item_id") not in live:
+            continue
+        grouped.setdefault(e.get("to_item_id"), {}).setdefault(
+            e["kind"], []).append(e)
+    marks: dict[str, dict] = {}
+    for target, by_kind in grouped.items():
+        mark: dict[str, Any] = {}
+        sup = sorted(by_kind.get("supersedes", []),
+                     key=lambda e: str(e.get("created_at") or ""), reverse=True)
+        if sup:
+            ptrs = [_pointer(e, live, absorbed_into, with_note=with_note)
+                    for e in sup]
+            mark["superseded_by"] = ptrs[0]
+            if len(ptrs) > 1:
+                mark["superseded_by_all"] = ptrs
+        con = sorted(by_kind.get("contradicts", []),
+                     key=lambda e: str(e.get("created_at") or ""), reverse=True)
+        if con:
+            mark["contradicted_by"] = [
+                _pointer(e, live, absorbed_into, with_note=with_note)
+                for e in con]
+        marks[target] = mark
+    return marks
+
+
+def supersession_warning(mark: dict) -> str | None:
+    """The one line a pull leads with, or None when nothing replaced it."""
+    sup = mark.get("superseded_by")
+    if not sup:
+        return None
+    when = f" on {sup['date']}" if sup.get("date") else ""
+    where = (f", sealed into {sup['absorbed_by']}"
+             if sup.get("absorbed_by") else "")
+    return (f"Superseded by '{sup['framing']}' ({sup['key']}{where})"
+            f"{when} — read that first.")
 
 def _norm(value: str | None) -> str:
     return (value or "").strip().lower()
@@ -146,6 +243,97 @@ def _is_deliverable(row: dict) -> bool:
     if not classify_is_inferred(row):
         return classify(row) is CardKind.DELIVERABLE
     return _norm(row.get("layer")) in DELIVERABLE_LAYERS
+
+
+def is_shipped_deliverable(row: dict) -> bool:
+    """`build_rounds`' `shipped_ids` predicate: a deliverable with a version
+    label. Loose by design for the sweep's recency window — it does NOT mean
+    this version shipped. The attach verbs' `for_next` default asks the
+    stricter `version_shipped` instead (#352 item 3)."""
+    return _is_deliverable(row) and bool(row.get("version_label"))
+
+
+def version_shipped(live_row: dict, edges: Iterable[dict]) -> bool:
+    """Has the LIVE version of this deliverable actually shipped? (#352 item 3)
+
+    A shipped version is a sealed one: `seal_to_deliverable` writes an
+    `absorbed_by` edge INTO the deliverable when a round goes out. So the
+    version shipped when the element is a deliverable AND an ACTIVE
+    `absorbed_by` edge points at it, recorded on or after the live version's
+    `version_date` (same day counts). A seal older than the live version
+    belonged to an earlier round; the live one is still in progress. No seal
+    -> not shipped -> a new source feeds the live version.
+    """
+    if not _is_deliverable(live_row):
+        return False
+    eid = live_row.get("est_item_id")
+    vdate = _as_date(live_row.get("version_date"))
+    for edge in edges or ():
+        if (edge.get("kind") != "absorbed_by"
+                or edge.get("status") != "active"
+                or edge.get("to_item_id") != eid):
+            continue
+        sealed = _as_date(edge.get("created_at"))
+        if sealed is not None and (vdate is None or sealed >= vdate):
+            return True
+    return False
+
+
+def read_version_seals(client, project_id: str, est_item_id: str) -> list[dict]:
+    """The ACTIVE `absorbed_by` edges into one element — `version_shipped`'s
+    input. One narrow read; callers decide what a failure means."""
+    from cp_engine.mc2_db import Tables
+
+    return (
+        client.table(Tables.SPINE_RELATIONS)
+        .select("kind, status, to_item_id, created_at")
+        .eq("project_id", project_id)
+        .eq("kind", "absorbed_by")
+        .eq("to_item_id", est_item_id)
+        .eq("status", "active")
+        .execute()
+        .data
+    ) or []
+
+
+def live_version_shipped(client, project_id: str, live_row: dict) -> tuple[bool, str | None]:
+    """``(shipped, error)`` for the attach verbs' `for_next` default. A failed
+    seal read defaults to NOT shipped (the source feeds the live version) and
+    returns the error so the verb can say the default was unverified."""
+    if not _is_deliverable(live_row):
+        return False, None
+    try:
+        edges = read_version_seals(
+            client, live_row.get("project_id") or project_id,
+            live_row.get("est_item_id"))
+    except Exception as exc:  # noqa: BLE001 — reported, never raised
+        return False, f"{type(exc).__name__}: {str(exc)[:200]}"
+    return version_shipped(live_row, edges), None
+
+
+def split_for_next(sources: Any) -> tuple[list, list]:
+    """``(consumed, pending)`` — a version's typed source links, split on the
+    `for_next` flag (#352 item 3). A `for_next` link was attached after the
+    version shipped: it has NOT fed this version, so no reader may count it as
+    having done so. Non-dict entries (legacy string refs) count as consumed."""
+    consumed: list = []
+    pending: list = []
+    for entry in sources or []:
+        if isinstance(entry, dict) and entry.get("for_next"):
+            pending.append(entry)
+        else:
+            consumed.append(entry)
+    return consumed, pending
+
+
+def clear_for_next(sources: Any) -> list:
+    """The sources a NEW version carries forward: every link, `for_next`
+    dropped — the input now feeds the version being written (#352 item 3)."""
+    return [
+        {k: v for k, v in entry.items() if k != "for_next"}
+        if isinstance(entry, dict) else entry
+        for entry in (sources or [])
+    ]
 
 
 def _as_date(value: Any) -> date | None:
@@ -201,6 +389,11 @@ class Round:
     version_date: date | None
     candidates: list[Candidate] = field(default_factory=list)
     already_absorbed: int = 0
+    # Attached source links on the shipped version (#352 item 3): `sources`
+    # fed it; `next_sources` (`for_next`) arrived after it shipped and feed
+    # the NEXT version — never evidence about this one.
+    sources: list[dict] = field(default_factory=list)
+    next_sources: list[dict] = field(default_factory=list)
 
 
 def _feeds_index(
@@ -261,9 +454,7 @@ def build_rounds(
     # An input still feeding a deliverable that has NOT shipped is live work
     # for that other round — never propose closing it (#164 step 2).
     shipped_ids = {
-        eid
-        for eid, r in by_id.items()
-        if _is_deliverable(r) and r.get("version_label")
+        eid for eid, r in by_id.items() if is_shipped_deliverable(r)
     }
     feeding_unshipped: set[str] = set()
     for dst, sources in into.items():
@@ -329,6 +520,7 @@ def build_rounds(
             and src not in feeding_unshipped
         )
         candidates.sort(key=lambda c: (-c.weight, bool(c.via), c.framing.lower()))
+        fed, pending = split_for_next(row.get("sources"))
         rounds.append(
             Round(
                 est_item_id=eid,
@@ -337,6 +529,8 @@ def build_rounds(
                 version_date=vdate,
                 candidates=candidates,
                 already_absorbed=sum(1 for s in sources if s in absorbed),
+                sources=[e for e in fed if isinstance(e, dict)],
+                next_sources=pending,
             )
         )
 
@@ -361,6 +555,13 @@ def render_sweep(rounds: list[Round], *, code: str) -> str:
         out.append(head)
         if r.already_absorbed:
             out.append(f"  {r.already_absorbed} input(s) already absorbed.")
+        if r.next_sources:
+            titles = ", ".join(
+                str(s.get("title") or s.get("id")) for s in r.next_sources)
+            out.append(
+                f"  {len(r.next_sources)} source(s) attached after this "
+                f"version shipped — inputs to the next version, not this "
+                f"one: {titles}")
         if not r.candidates:
             # "Already compressed" and "nothing ever recorded what fed this"
             # are opposite states that both produce an empty candidate list.
