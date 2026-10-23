@@ -13,5 +13,6 @@ from spine_authoring.authored_element import (  # noqa: F401
     build_version_rows,
     card_kind_for,
     canon_layer,
+    resolve_layer,
     slugify,
 )

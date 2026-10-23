@@ -157,6 +157,17 @@ def test_client_feedback_outranks_an_unmapped_layer() -> None:
     assert feedback > unmapped
 
 
+def test_feedback_alias_ranks_as_client_feedback_above_note() -> None:
+    """#352 item 2. Authority precedence puts stakeholder signals above
+    working notes; a `feedback`-spelled element must score as `Client
+    feedback`, not fall to the unmapped default it shares with `Note`."""
+    alias = score_element(_el(layer="Feedback"), active=set(), today=TODAY)
+    feedback = score_element(_el(layer="Client feedback"), active=set(), today=TODAY)
+    note = score_element(_el(layer="Note"), active=set(), today=TODAY)
+    assert alias == feedback
+    assert feedback > note
+
+
 def test_a_lowercased_framing_layer_is_still_ambient() -> None:
     """`FRAMING_LAYERS` was compared with a bare `in` against TitleCase, so
     `layer: brief` silently lost its always-ambient treatment."""

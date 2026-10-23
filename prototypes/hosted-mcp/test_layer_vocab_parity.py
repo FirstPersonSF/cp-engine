@@ -26,6 +26,7 @@ def test_layer_aliases_and_canon_layer_are_the_engines(server):
 
     assert server._LAYER_ALIASES is authored_element.LAYER_ALIASES
     assert server.canon_layer is authored_element.canon_layer
+    assert server.resolve_layer is authored_element.resolve_layer
 
 
 @pytest.mark.parametrize("value", ["output", "Output", "Client Feedback", "source material",
