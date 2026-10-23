@@ -22,6 +22,7 @@ divergent ``cli.py`` copy were deleted in favor of :func:`get_client`.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import tomllib
@@ -490,7 +491,28 @@ def load_drive_creds(config: "TenantConfig") -> None:
         os.environ[key] = value
 
 
-def _export_supabase_creds(url: str, key: str) -> None:
+# Where the service key in use came from, for the one-line "MC-2 rejected the
+# Supabase key" error at the CLI boundary (`cxp` names the rung to fix rather
+# than making the user guess). Set by `load_supabase_creds`; never holds or
+# prints any part of the key itself.
+_creds_source: str | None = None
+# (key value, source label) for a key a tier-2/3 rung exported into
+# os.environ — so a later env-tier read of that same value still reports the
+# rung it really came from, not "env var".
+_exported_key: tuple[str, str] | None = None
+
+
+def creds_source() -> str | None:
+    """Human label for the rung that supplied the current Supabase key."""
+    return _creds_source
+
+
+def _set_creds_source(label: str) -> None:
+    global _creds_source
+    _creds_source = label
+
+
+def _export_supabase_creds(url: str, key: str, source: str | None = None) -> None:
     """Publish resolved creds into `os.environ` so later callers can find them.
 
     `load_supabase_creds` resolves through three tiers, but only tier 1 reads
@@ -507,6 +529,9 @@ def _export_supabase_creds(url: str, key: str) -> None:
     if url:
         os.environ.setdefault("SUPABASE_URL", url)
     if key:
+        if source and not os.environ.get("SUPABASE_SERVICE_KEY"):
+            global _exported_key
+            _exported_key = (key, source)
         os.environ.setdefault("SUPABASE_SERVICE_KEY", key)
 
 
@@ -536,14 +561,19 @@ def load_supabase_creds(config: "TenantConfig | None" = None) -> tuple[str, str]
     """
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_SERVICE_KEY")
+    env_source = "SUPABASE_SERVICE_KEY env var"
     if not key and os.environ.get("SUPABASE_KEY"):
         key = os.environ.get("SUPABASE_KEY")
+        env_source = "SUPABASE_KEY env var"
         print(
             "Using legacy SUPABASE_KEY env var as the service key "
             "(set SUPABASE_SERVICE_KEY to silence this)",
             file=sys.stderr,
         )
     if url and key:
+        if _exported_key is not None and _exported_key[0] == key:
+            env_source = _exported_key[1]
+        _set_creds_source(env_source)
         return url, key
 
     if config is None:
@@ -556,16 +586,23 @@ def load_supabase_creds(config: "TenantConfig | None" = None) -> tuple[str, str]
     op_creds = _resolve_op_creds(config)
     if op_creds is not None:
         print("Resolved SUPABASE_* from 1Password (op://)", file=sys.stderr)
-        _export_supabase_creds(*op_creds)
+        source = "1Password op:// refs in .cp-engine.local.toml"
+        _set_creds_source(source)
+        _export_supabase_creds(*op_creds, source=source)
         return op_creds
 
     env_file = _mc2_env_file(config)
     file_creds = _read_dotenv(env_file, _SUPABASE_KEYS) if env_file else {}
+    key_from_env = bool(key)
     url = url or file_creds.get("SUPABASE_URL")
     key = key or file_creds.get("SUPABASE_SERVICE_KEY")
     if url and key:
         print(f"Loaded SUPABASE_* from {env_file}", file=sys.stderr)
-        _export_supabase_creds(url, key)
+        # The key may still be from the env tier (only the URL was missing
+        # there); name the file only when it actually supplied the key.
+        source = env_source if key_from_env else str(env_file)
+        _set_creds_source(source)
+        _export_supabase_creds(url, key, source=source)
         return url, key
 
     tried = "environment"
@@ -581,6 +618,64 @@ def load_supabase_creds(config: "TenantConfig | None" = None) -> tuple[str, str]
         "(op:// references) to .cp-engine.local.toml. For the GitHub Action, "
         "configure repo secrets."
     )
+
+
+# Phrases PostgREST/Supabase put in the body when the API key itself is
+# refused. Matched case-insensitively anywhere in the error's text fields.
+_KEY_REJECTION_PHRASES = (
+    "legacy api keys are disabled",
+    "invalid api key",
+)
+_JSON_MESSAGE_RE = re.compile(r'"message"\s*:\s*"([^"]+)"')
+
+
+def _api_error_rejection(exc: BaseException) -> str | None:
+    """Reason text if ``exc`` is a postgrest APIError refusing the key."""
+    try:
+        from postgrest.exceptions import APIError
+    except ImportError:  # pragma: no cover — postgrest ships with supabase
+        return None
+    if not isinstance(exc, APIError):
+        return None
+    fields = [str(f) for f in (exc.message, exc.details, exc.hint) if f]
+    blob = " ".join(fields).lower()
+    is_401 = str(exc.code).strip() == "401"
+    if not is_401 and not any(p in blob for p in _KEY_REJECTION_PHRASES):
+        return None
+    # Prefer the inner message Supabase's gateway wraps in `details`
+    # (b'{"message":"Legacy API keys are disabled",...}'), since the outer
+    # message is just "JSON could not be generated".
+    for field in (exc.details, exc.message, exc.hint):
+        if not field:
+            continue
+        m = _JSON_MESSAGE_RE.search(str(field))
+        if m:
+            return m.group(1)
+    joined = " ".join(fields)
+    for phrase in _KEY_REJECTION_PHRASES:
+        i = joined.lower().find(phrase)
+        if i >= 0:
+            return joined[i : i + len(phrase)]
+    return str(exc.message or "HTTP 401 Unauthorized")
+
+
+def supabase_key_rejection(exc: BaseException) -> str | None:
+    """Return a short reason if ``exc`` means MC-2 refused the Supabase key.
+
+    True for a postgrest ``APIError`` with code 401, or one whose message /
+    details / hint says "Legacy API keys are disabled" or "Invalid API key".
+    Follows ``__cause__`` / ``__context__`` so a wrapped error still counts.
+    Anything else returns ``None`` — callers must re-raise it untouched.
+    """
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        reason = _api_error_rejection(cur)
+        if reason:
+            return reason
+        cur = cur.__cause__ or cur.__context__
+    return None
 
 
 def _resolve_op_creds(config: "TenantConfig") -> tuple[str, str] | None:
@@ -1029,8 +1124,11 @@ def get_client(
 
 def reset_client_cache() -> None:
     """Drop cached clients + resolved creds (tests; after cred swaps)."""
+    global _creds_source, _exported_key
     _client_cache.clear()
     _creds_cache.clear()
+    _creds_source = None
+    _exported_key = None
     for _k in _client_stats:
         _client_stats[_k] = 0
 

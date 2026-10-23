@@ -11,6 +11,7 @@ Subcommands per spec v02 §2.1:
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -22,8 +23,50 @@ from cp_engine.config import CommittedConfigMissing, ConfigError, load
 # monkeypatch cp_engine.cli.fetch_project_assets — keep it importable here.
 from cp_engine.spine_sources import fetch_project_assets  # noqa: F401
 
+# Exit status for "MC-2 refused the Supabase key". Distinct from 1 (general
+# failure) and 2 (usage error) so scripts can tell a credential problem apart.
+EXIT_SUPABASE_KEY_REJECTED = 3
 
-@click.group()
+
+def _key_rejected_line(reason: str) -> str:
+    from cp_engine import mc2_db
+
+    source = mc2_db.creds_source() or "an unknown source"
+    # Belt and braces: the reason is server text, but never let any part of
+    # the key reach the terminal.
+    key = os.environ.get("SUPABASE_SERVICE_KEY") or os.environ.get("SUPABASE_KEY")
+    if key and len(key) >= 8 and key in reason:
+        reason = reason.replace(key, "<redacted>")
+    return (
+        f"cxp: MC-2 rejected the Supabase key ({reason}) — it came from "
+        f"{source}. Use the new sb_secret_ key: put it in SUPABASE_SERVICE_KEY "
+        "or the [supabase] 1Password refs in .cp-engine.local.toml."
+    )
+
+
+class _CxpGroup(click.Group):
+    """The `cxp` group: turns a refused Supabase key into one clear line.
+
+    Without this, every command that reads MC-2 died with a long
+    postgrest/pydantic traceback when the key was rejected (2026-10-22:
+    Supabase disabled the legacy anon/service_role keys). Only auth refusals
+    are caught — every other exception propagates exactly as before.
+    """
+
+    def invoke(self, ctx: click.Context):
+        try:
+            return super().invoke(ctx)
+        except Exception as exc:
+            from cp_engine.mc2_db import supabase_key_rejection
+
+            reason = supabase_key_rejection(exc)
+            if reason is None:
+                raise
+            print(_key_rejected_line(reason), file=sys.stderr)
+            sys.exit(EXIT_SUPABASE_KEY_REJECTED)
+
+
+@click.group(cls=_CxpGroup)
 @click.version_option(package_name="cp-engine")
 def main() -> None:
     """Context Protocol Engine — tenant operations."""

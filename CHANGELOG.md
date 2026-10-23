@@ -36,6 +36,13 @@ under `sources_for_next_version`; `for_next_version` overrides either way.
 `add_spine_version` clears the mark, so the source counts toward the version
 it fed. mc-2 migration 202 is applied.
 
+*A refused Supabase key says so in one line.* When MC-2 rejects the key
+(Supabase's "Legacy API keys are disabled", "Invalid API key", or any 401),
+`cxp` commands now print one line naming the reason and where the key came
+from (env var, 1Password refs, or the mc-2 `.env` path), then exit with
+status 3. Before, they died with a long postgrest traceback. No part of the
+key is printed. Other database errors are reported as before.
+
 ## v0.131.14 — 2026-10-22
 
 **Leftovers from Waves 1 and 2: whole documents, readable images, and state
