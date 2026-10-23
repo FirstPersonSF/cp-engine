@@ -207,8 +207,16 @@ def _deliverable_versions(layer="Deliverables"):
         {"id": "d/v1", "est_item_id": "_authored/deck", "status": "superseded",
          "layer": layer, "version_label": "v1", "sources": []},
         {"id": "d/v2", "est_item_id": "_authored/deck", "status": "live",
-         "layer": layer, "version_label": "v2", "sources": []},
+         "layer": layer, "version_label": "v2", "version_date": "2026-10-10",
+         "sources": []},
     ]
+
+
+def _seal(db, created_at="2026-10-12T09:00:00Z"):
+    db.tables["spine_relations"].append(
+        {"project_id": PID, "kind": "absorbed_by", "status": "active",
+         "from_item_id": "_authored/r2-feedback", "to_item_id": "_authored/deck",
+         "created_at": created_at})
 
 
 def _attach(server, monkeypatch, versions, **kw):
@@ -227,7 +235,22 @@ def test_attach_asks_for_the_live_row_only(server, db, monkeypatch):
     assert "for_next" not in params["p_entry"]
 
 
+def test_attach_to_an_unsealed_deliverable_is_not_for_next(server, db, monkeypatch):
+    """An in-progress deliverable version has not shipped — no seal, no flag."""
+    out = _attach(server, monkeypatch, _deliverable_versions())
+    ((_, params),) = db.rpcs
+    assert "for_next" not in params["p_entry"]
+    assert not out.get("for_next")
+
+
+def test_a_seal_older_than_the_live_version_is_not_for_next(server, db, monkeypatch):
+    _seal(db, "2026-10-01T00:00:00Z")
+    _attach(server, monkeypatch, _deliverable_versions())
+    assert "for_next" not in db.rpcs[-1][1]["p_entry"]
+
+
 def test_attach_to_a_shipped_deliverable_is_for_next(server, db, monkeypatch):
+    _seal(db)
     out = _attach(server, monkeypatch, _deliverable_versions())
     ((_, params),) = db.rpcs
     assert params["p_entry"]["for_next"] is True
@@ -235,6 +258,7 @@ def test_attach_to_a_shipped_deliverable_is_for_next(server, db, monkeypatch):
 
 
 def test_for_next_version_overrides(server, db, monkeypatch):
+    _seal(db)
     _attach(server, monkeypatch, _deliverable_versions(), for_next_version=False)
     assert "for_next" not in db.rpcs[-1][1]["p_entry"]
     _attach(server, monkeypatch, _deliverable_versions("Synthesis"),

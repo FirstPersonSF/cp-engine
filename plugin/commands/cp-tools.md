@@ -194,7 +194,8 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
 - `add_element_source(project_code, key, source_title, for_next_version?)` — attach an
   INGESTED source (a rag_asset, resolved like `list_project_sources`) to `key`,
   writing the typed link onto the LIVE version only (older versions keep what
-  they actually drew on). When the live version is a SHIPPED deliverable the
+  they actually drew on). When the live version has SHIPPED (a deliverable
+  sealed — active `absorbed_by` — on/after that version's date) the
   link is marked `for_next: true` — an input to the next version, not the one
   out the door; `for_next_version` true/false overrides. `add_spine_version`
   clears the mark on the copy it carries forward; pull lists such links under

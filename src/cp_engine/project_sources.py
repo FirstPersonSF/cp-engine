@@ -1298,16 +1298,17 @@ def modify_element_sources(client, project_id: str, key: str,
     SOURCES ARE PER VERSION (#352 item 3). An ADD writes the typed link
     `{"type": "rag_asset", "id", "title"}` onto the LIVE row only: superseded
     rows keep the sources they actually had, so history stays truthful. When
-    the live version is a shipped deliverable (`seal_sweep.
-    is_shipped_deliverable`) the link carries `"for_next": true` — it arrived
-    after that version shipped and feeds the next one; `for_next_version`
-    True/False overrides the inference. A REMOVE strips every version (a wrong
+    the live version has SHIPPED (`seal_sweep.version_shipped`: a deliverable
+    with an active `absorbed_by` seal recorded on/after the live version's
+    date) the link carries `"for_next": true` — it arrived after that version
+    shipped and feeds the next one; `for_next_version` True/False overrides
+    the inference. A REMOVE strips every version (a wrong
     attach is wrong everywhere). Deduped by asset id. Adding an
     already-attached id is a no-op (`already: true`); removing an id that
     isn't attached returns a structured note. Never raises past the MCP
     boundary.
     """
-    from cp_engine.seal_sweep import is_shipped_deliverable
+    from cp_engine.seal_sweep import live_version_shipped
 
     est_item_id, versions = resolve_element_versions(
         client, project_id, key,
@@ -1340,9 +1341,13 @@ def modify_element_sources(client, project_id: str, key: str,
                         f"'{est_item_id}'"}
 
     for_next = False
+    seal_error: str | None = None
     if add:
-        for_next = (is_shipped_deliverable(live or {})
-                    if for_next_version is None else bool(for_next_version))
+        if for_next_version is None:
+            for_next, seal_error = live_version_shipped(
+                client, project_id, live or {})
+        else:
+            for_next = bool(for_next_version)
         if for_next:
             link = {**link, "for_next": True}
 
@@ -1363,6 +1368,7 @@ def modify_element_sources(client, project_id: str, key: str,
     return {"est_item_id": est_item_id, "source": link,
             "attached" if add else "removed": True,
             **({"for_next": True} if for_next else {}),
+            **({"for_next_unverified": seal_error} if seal_error else {}),
             "versions_updated": len(targets),
             "sources": result_sources}
 

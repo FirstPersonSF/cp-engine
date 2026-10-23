@@ -3441,7 +3441,7 @@ def resolve_live_element_id(client, project_id: str, key: str) -> tuple[str | No
 # #352 item 3 (mc-2 migration 202) adds `p_live_only boolean default false`:
 # `add_element_source` passes true and writes the LIVE row only, because a
 # source attached after a version shipped did not feed that version (and is
-# marked `for_next` when the live version is a shipped deliverable). Detach
+# marked `for_next` when the live version was sealed, i.e. shipped). Detach
 # and provenance keep the every-version write and the 4-argument call.
 
 
@@ -5930,8 +5930,9 @@ def add_element_source(
 
     Writes the typed link `{"type": "rag_asset", "id", "title"}` into
     `sources` on the LIVE version row only (#352 item 3): superseded versions
-    keep the sources they actually drew on. When the live version is a SHIPPED
-    deliverable (seal-sweep's test), the link carries `"for_next": true` — it
+    keep the sources they actually drew on. When the live version has SHIPPED
+    — a deliverable with an active `absorbed_by` seal recorded on/after the
+    live version's date — the link carries `"for_next": true` — it
     arrived after that version went out and is an input to the NEXT one;
     `add_spine_version` clears the flag on the copy it carries forward. Pass
     `for_next_version` true/false to override the inference. Deduped by
@@ -5948,9 +5949,9 @@ def add_element_source(
             `list_project_sources`).
         for_next_version: True marks the link as an input to the NEXT
             version, False as one to the live version; omit to infer (True
-            exactly when the live version is a shipped deliverable).
+            exactly when the live version was sealed — see above).
     """
-    from cp_engine.seal_sweep import is_shipped_deliverable
+    from cp_engine.seal_sweep import live_version_shipped
 
     client = user_client()
     scope = resolve_write_scope(client, project_code)
@@ -5970,11 +5971,12 @@ def add_element_source(
         return note
 
     entry = {"type": "rag_asset", "id": asset["id"], "title": asset.get("title")}
-    for_next = (
-        is_shipped_deliverable(_live_row(versions) or {})
-        if for_next_version is None
-        else bool(for_next_version)
-    )
+    seal_error: str | None = None
+    if for_next_version is None:
+        for_next, seal_error = live_version_shipped(
+            client, scope["id"], _live_row(versions) or {})
+    else:
+        for_next = bool(for_next_version)
     if for_next:
         entry["for_next"] = True
     out = _modify_element_sources(
@@ -6003,6 +6005,9 @@ def add_element_source(
             "attached for the NEXT version: the live version already shipped, "
             "so this input did not feed it. add_spine_version clears the flag."
         )
+    if seal_error and out.get("attached"):
+        # The default could not be checked: attached to the live version.
+        out["for_next_unverified"] = seal_error
     return out
 
 

@@ -38,38 +38,58 @@ def _version(vid, status="live", sources=None, layer="Deliverables",
             "status": status, "archived": False, "scope": None,
             "company_id": None, "project_id": "pid", "layer": layer,
             "card_kind": None, "version_label": label,
-            "sources": sources or []}
+            "version_date": "2026-10-10", "sources": sources or []}
+
+
+def _seal(created_at="2026-10-12T09:00:00Z", status="active"):
+    """An `absorbed_by` edge INTO the deck — the version was sealed."""
+    return {"kind": "absorbed_by", "from_item_id": "_authored/r2-feedback",
+            "to_item_id": "_authored/deck", "status": status,
+            "project_id": "pid", "created_at": created_at}
 
 
 class _Client:
-    def __init__(self):
+    def __init__(self, relations=()):
         self.updates = []
+        self.relations = list(relations)
 
     def table(self, name):
         client = self
 
         class _T:
+            def __init__(self):
+                self._f = []
+
             def update(self, patch):
                 self._patch = patch
                 return self
-            def select(self, c): return self
+            def select(self, c):
+                assert "*" not in c
+                return self
             def eq(self, c, v):
                 if hasattr(self, "_patch"):
                     client.updates.append((v, self._patch))
+                self._f.append(lambda r: r.get(c) == v)
                 return self
             def order(self, *a, **k): return self
-            def execute(self): return type("R", (), {"data": []})()
+            def execute(self):
+                rows = client.relations if name == "spine_relations" else []
+                data = [dict(r) for r in rows if all(f(r) for f in self._f)]
+                return type("R", (), {"data": data})()
         return _T()
 
 
-def _run(monkeypatch, versions, *, add=True, **kw):
+_SEALED = (_seal(),)
+
+
+def _run(monkeypatch, versions, *, add=True, relations=_SEALED, **kw):
     monkeypatch.setattr(
         ps, "resolve_element_versions",
         lambda client, pid, key, *, columns, company_id=None:
         ("_authored/deck", versions))
     monkeypatch.setattr(ps, "list_sources",
                         lambda c, p, cid, **k: [_asset("a1", "Round 3 notes")])
-    client = _Client()
+    client = _Client(relations)
     out = ps.modify_element_sources(client, "pid", "deck", "Round 3 notes",
                                     add=add, **kw)
     return out, client
@@ -90,6 +110,36 @@ def test_attach_to_a_shipped_deliverable_is_for_the_next_version(monkeypatch):
     assert written == [{"type": "rag_asset", "id": "a1",
                         "title": "Round 3 notes", "for_next": True}]
     assert out["for_next"] is True
+
+
+def test_attach_to_an_unsealed_deliverable_is_a_normal_source(monkeypatch):
+    """An in-progress v1 has not shipped: no `absorbed_by` seal, no for_next."""
+    out, client = _run(monkeypatch, [_version("v1", label="v1")], relations=())
+    assert "for_next" not in client.updates[0][1]["sources"][0]
+    assert not out.get("for_next")
+
+
+def test_a_seal_older_than_the_live_version_does_not_ship_it(monkeypatch):
+    """v1 was sealed; v2 (live, dated after the seal) is still in progress."""
+    _, client = _run(monkeypatch, [_version("v2")],
+                     relations=(_seal("2026-10-01T00:00:00Z"),))
+    assert "for_next" not in client.updates[0][1]["sources"][0]
+
+
+def test_a_retired_seal_does_not_ship_it(monkeypatch):
+    _, client = _run(monkeypatch, [_version("v2")],
+                     relations=(_seal(status="retired"),))
+    assert "for_next" not in client.updates[0][1]["sources"][0]
+
+
+def test_version_shipped_is_pure():
+    live = {"est_item_id": "_authored/deck", "layer": "Deliverables",
+            "version_label": "v2", "version_date": "2026-10-10"}
+    assert ss.version_shipped(live, [_seal()])
+    assert ss.version_shipped(live, [_seal("2026-10-10T00:00:01Z")])  # same day
+    assert not ss.version_shipped(live, [])
+    assert not ss.version_shipped(live, [_seal("2026-10-09T23:00:00Z")])
+    assert not ss.version_shipped(dict(live, layer="Synthesis"), [_seal()])
 
 
 def test_attach_to_a_non_deliverable_is_a_normal_source(monkeypatch):

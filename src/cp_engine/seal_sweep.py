@@ -246,14 +246,69 @@ def _is_deliverable(row: dict) -> bool:
 
 
 def is_shipped_deliverable(row: dict) -> bool:
-    """The "shipped" test (#352 item 3): a deliverable with a version label.
-
-    The same predicate `build_rounds` uses for `shipped_ids`, named so the
-    source-attach verbs can ask it of an element's LIVE row: an input attached
-    to a shipped deliverable arrived after that version and is an input to the
-    NEXT one (`for_next`), not to the version already out the door.
-    """
+    """`build_rounds`' `shipped_ids` predicate: a deliverable with a version
+    label. Loose by design for the sweep's recency window — it does NOT mean
+    this version shipped. The attach verbs' `for_next` default asks the
+    stricter `version_shipped` instead (#352 item 3)."""
     return _is_deliverable(row) and bool(row.get("version_label"))
+
+
+def version_shipped(live_row: dict, edges: Iterable[dict]) -> bool:
+    """Has the LIVE version of this deliverable actually shipped? (#352 item 3)
+
+    A shipped version is a sealed one: `seal_to_deliverable` writes an
+    `absorbed_by` edge INTO the deliverable when a round goes out. So the
+    version shipped when the element is a deliverable AND an ACTIVE
+    `absorbed_by` edge points at it, recorded on or after the live version's
+    `version_date` (same day counts). A seal older than the live version
+    belonged to an earlier round; the live one is still in progress. No seal
+    -> not shipped -> a new source feeds the live version.
+    """
+    if not _is_deliverable(live_row):
+        return False
+    eid = live_row.get("est_item_id")
+    vdate = _as_date(live_row.get("version_date"))
+    for edge in edges or ():
+        if (edge.get("kind") != "absorbed_by"
+                or edge.get("status") != "active"
+                or edge.get("to_item_id") != eid):
+            continue
+        sealed = _as_date(edge.get("created_at"))
+        if sealed is not None and (vdate is None or sealed >= vdate):
+            return True
+    return False
+
+
+def read_version_seals(client, project_id: str, est_item_id: str) -> list[dict]:
+    """The ACTIVE `absorbed_by` edges into one element — `version_shipped`'s
+    input. One narrow read; callers decide what a failure means."""
+    from cp_engine.mc2_db import Tables
+
+    return (
+        client.table(Tables.SPINE_RELATIONS)
+        .select("kind, status, to_item_id, created_at")
+        .eq("project_id", project_id)
+        .eq("kind", "absorbed_by")
+        .eq("to_item_id", est_item_id)
+        .eq("status", "active")
+        .execute()
+        .data
+    ) or []
+
+
+def live_version_shipped(client, project_id: str, live_row: dict) -> tuple[bool, str | None]:
+    """``(shipped, error)`` for the attach verbs' `for_next` default. A failed
+    seal read defaults to NOT shipped (the source feeds the live version) and
+    returns the error so the verb can say the default was unverified."""
+    if not _is_deliverable(live_row):
+        return False, None
+    try:
+        edges = read_version_seals(
+            client, live_row.get("project_id") or project_id,
+            live_row.get("est_item_id"))
+    except Exception as exc:  # noqa: BLE001 — reported, never raised
+        return False, f"{type(exc).__name__}: {str(exc)[:200]}"
+    return version_shipped(live_row, edges), None
 
 
 def split_for_next(sources: Any) -> tuple[list, list]:
