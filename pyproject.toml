@@ -30,7 +30,7 @@ dependencies = [
     "cloud-storage[all] @ git+https://github.com/FirstPersonSF/1p-component-library.git@58626fc#subdirectory=integrations/cloud-storage",
     "resilience @ git+https://github.com/FirstPersonSF/1p-component-library.git@94eb35a#subdirectory=patterns/resilience",
     "visual-document-capture @ git+https://github.com/FirstPersonSF/1p-component-library.git@58626fc#subdirectory=processors/visual-document-capture",
-    "spine-authoring @ git+https://github.com/FirstPersonSF/1p-component-library.git@ee8a235#subdirectory=services/spine-authoring",
+    "spine-authoring @ git+https://github.com/FirstPersonSF/1p-component-library.git@a9b3f4e#subdirectory=services/spine-authoring",
     "voyageai>=0.4",
     # Floor is 2.0 and the bound is deliberate: mcp 2.x renamed
     # FastMCP -> MCPServer. Keep the upper bound — an unbounded floor is what

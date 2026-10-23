@@ -4,6 +4,38 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.131.15 — 2026-10-22
+
+**Wave 3: say when an element was replaced, and which version a source
+fed.** Patch.
+
+*Client feedback has a name that works (#352 item 2).* Writing an element
+as layer `feedback` now files it as Client feedback (and `draft`/`drafts` as
+Drafts) instead of failing with a raw database error and getting re-filed as
+a Note. `create_spine_element`, `set_spine_element` and `add_spine_document`
+refuse an unknown layer before writing anything, and the error lists the
+valid layers. spine-authoring a9b3f4e.
+
+*Replaced elements say so (#352 item 1).* `list_spine_elements` and the
+engine's `list_spine` add `superseded_by: {key, framing, date}` when a live
+element has replaced this one, and `contradicted_by` when one challenges it.
+`pull_spine_element` / `pull_spine` lead with `warning: "Superseded by
+'<framing>' (<key>) on <date> — read that first."` A hint only: nothing is
+hidden or refused.
+
+*Name what a new element replaces (#352 item 3).* `create_spine_element` and
+`add_spine_document` take `replaces_key`. The key is checked before anything
+is written; a bad key refuses the whole call. On success the new element is
+recorded as replacing the old one, the same way `promote_to_canon` does.
+
+*Sources belong to a version (#352 item 3).* `add_element_source` attaches to
+the live version only; earlier versions keep the sources they actually had.
+When the live version has already been sealed into a shipped deliverable, the
+source is marked `for_next` (input for the next version) and pull lists it
+under `sources_for_next_version`; `for_next_version` overrides either way.
+`add_spine_version` clears the mark, so the source counts toward the version
+it fed. mc-2 migration 202 is applied.
+
 ## v0.131.14 — 2026-10-22
 
 **Leftovers from Waves 1 and 2: whole documents, readable images, and state
