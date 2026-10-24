@@ -290,6 +290,50 @@ def test_github_get_uses_the_repos_own_token_for_its_own_repo(monkeypatch):
     assert seen[1][1] == "Bearer pat"
 
 
+_GH_ENV = ("GITHUB_REPOSITORY", "GITHUB_REPO_TOKEN", "GH_TOKEN", "GITHUB_TOKEN",
+           "GH_PAT", "gh_token")
+
+
+def test_github_get_reads_railways_lowercase_build_token(monkeypatch):
+    """10-24: the webhook lost GH_PAT and kept only `gh_token` (the Dockerfile's
+    build ARG). CI main went ⚠️ unreadable though the token was right there."""
+    import cp_engine.daily_health as dh
+
+    seen = []
+
+    class _Resp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return b"{}"
+
+    def fake_urlopen(req, timeout=0):
+        seen.append(req.headers["Authorization"])
+        return _Resp()
+
+    for k in _GH_ENV:
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setattr(dh.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setenv("gh_token", "build")
+    dh.github_get("/repos/FirstPersonSF/cp-engine/actions/workflows/tests.yml/runs")
+    assert seen == ["Bearer build"]
+
+
+def test_github_get_without_token_or_gh_names_the_missing_token(monkeypatch):
+    """No token and no `gh` binary (Railway) reported `FileNotFoundError: 'gh'`,
+    which hides the real cause: the token variable is gone."""
+    import cp_engine.daily_health as dh
+
+    for k in _GH_ENV:
+        monkeypatch.delenv(k, raising=False)
+
+    def no_gh(*a, **k):
+        raise FileNotFoundError(2, "No such file or directory", "gh")
+
+    monkeypatch.setattr(dh.subprocess, "run", no_gh)
+    with pytest.raises(RuntimeError, match="GH_PAT"):
+        dh.github_get("/repos/FirstPersonSF/cp-engine/actions/workflows/tests.yml/runs")
+
+
 # ── Sync line from Railway: git fallback when Actions is unreadable ────────
 
 

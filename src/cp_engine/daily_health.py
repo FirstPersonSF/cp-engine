@@ -120,8 +120,8 @@ GitHubGet = Callable[[str], Any]
 
 
 def github_get(path: str) -> Any:
-    """GET api.github.com<path>. Token from GH_TOKEN/GITHUB_TOKEN/GH_PAT; falls
-    back to the `gh` CLI (a local dry run). Raises on failure — callers
+    """GET api.github.com<path>. Token from GH_TOKEN/GITHUB_TOKEN/GH_PAT/gh_token;
+    falls back to the `gh` CLI (a local dry run). Raises on failure — callers
     render the failure, they never hide it."""
     # The workflow's own token (`GITHUB_REPO_TOKEN: ${{ github.token }}`) can
     # read this repo's Actions but no other; GH_PAT reads cp-engine but not
@@ -132,8 +132,11 @@ def github_get(path: str) -> Any:
     if own_repo and own_token and path.startswith(f"/repos/{own_repo}/"):
         token = own_token
     else:
+        # `gh_token` (lowercase) is the webhook Dockerfile's build ARG; on
+        # Railway it is a service variable, so it is in the runtime env too.
+        # The webhook lost GH_PAT on 10-24 and kept only this one.
         token = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-                 or os.environ.get("GH_PAT"))
+                 or os.environ.get("GH_PAT") or os.environ.get("gh_token"))
     if token:
         req = urllib.request.Request(
             f"https://api.github.com{path}",
@@ -143,7 +146,11 @@ def github_get(path: str) -> Any:
         )
         with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 — fixed host
             return json.loads(resp.read().decode("utf-8"))
-    out = subprocess.run(["gh", "api", path], capture_output=True, text=True, timeout=30)
+    try:
+        out = subprocess.run(["gh", "api", path], capture_output=True, text=True, timeout=30)
+    except FileNotFoundError:
+        raise RuntimeError("no GitHub token in env (GH_PAT / GH_TOKEN / GITHUB_TOKEN "
+                           "/ gh_token) and no `gh` CLI to fall back on") from None
     if out.returncode != 0:
         raise RuntimeError(out.stderr.strip() or "gh api failed (no token in env)")
     return json.loads(out.stdout)
