@@ -4,6 +4,18 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.131.16 — 2026-10-24
+
+**The daily health check finds the webhook's GitHub token.** Patch.
+
+*CI main no longer goes ⚠️ unreadable when only `gh_token` is set.* The
+webhook lost its `GH_PAT` variable and kept only the lowercase `gh_token`
+its Dockerfile uses to install private dependencies, so the morning post
+read "CI main · unreadable" while CI was green. `daily_health.github_get`
+now accepts `gh_token` after `GH_TOKEN` / `GITHUB_TOKEN` / `GH_PAT`. With
+no token and no `gh` CLI (Railway), the error now names the missing token
+instead of `FileNotFoundError: 'gh'`.
+
 ## v0.131.15 — 2026-10-22
 
 **Wave 3: say when an element was replaced, and which version a source
