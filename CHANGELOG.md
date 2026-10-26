@@ -4,6 +4,23 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.131.17 — 2026-10-26
+
+**A stale signing secret or a locked 1Password now says so.** Patch.
+
+*A rejected cron warns, and alerts at once (#361).* After the ~10-22
+webhook signing-secret change each cron was rejected 11× with `invalid
+signature` for days; the health line counted them as a plain number, and
+on 10-23 the rejected cron was the health cron itself, so nothing posted.
+A rejected `/api/cron/*` run now turns the Webhook line ⚠ ("N cron
+rejected"), and the rejection posts one Slack line per job per day naming
+`WEBHOOK_HMAC_SECRET` and the redeploy. Other routes' rejections stay
+informational; unknown jobs never alert.
+
+*A locked 1Password fails in 30s instead of hanging (#362).* `op read` had
+no timeout, so an unlock prompt nobody answered blocked every MC-2 command.
+It now gives up after 30s and says to run `op signin`.
+
 ## v0.131.16 — 2026-10-24
 
 **The daily health check finds the webhook's GitHub token.** Patch.
