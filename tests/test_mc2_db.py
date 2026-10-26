@@ -105,6 +105,32 @@ def test_op_tier_between_env_and_dotenv(
     assert mc2_db.load_supabase_creds(config) == ("https://op.supabase.co", "op-key")
 
 
+def test_op_read_that_never_answers_fails_fast_naming_op_signin(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#362: a locked 1Password (an unlock prompt nobody answers) must not hang
+    every MC-2 command. A fake `op` that sleeps stands in for the prompt."""
+    import time
+
+    _clear_env(monkeypatch)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    fake = bindir / "op"
+    fake.write_text("#!/bin/sh\nsleep 10\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(mc2_db, "OP_READ_TIMEOUT_S", 1, raising=False)
+    (tmp_path / ".cp-engine.local.toml").write_text(
+        "[supabase]\nurl_ref = \"op://v/i/url\"\nservice_key_ref = \"op://v/i/key\"\n"
+    )
+    started = time.monotonic()
+    with pytest.raises(BackendUnavailable) as excinfo:
+        mc2_db.load_supabase_creds(_make_config(tmp_path))
+    assert time.monotonic() - started < 5
+    assert "op signin" in str(excinfo.value)
+    assert "didn't answer" in str(excinfo.value)
+
+
 def test_missing_everywhere_raises_backend_unavailable(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

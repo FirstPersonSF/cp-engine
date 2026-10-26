@@ -734,19 +734,33 @@ def _resolve_op_creds(config: "TenantConfig") -> tuple[str, str] | None:
     return url, key
 
 
+# Long enough to approve a 1Password unlock prompt, short enough that a prompt
+# nobody is watching fails the command instead of hanging it (#362).
+OP_READ_TIMEOUT_S = 30
+
+
 def _op_read(reference: str) -> str:
     """Return the secret at an `op://vault/item/field` reference via `op read`.
 
     Thin wrapper around the 1Password CLI so the resolver stays testable
     (tests monkeypatch this). Raises on a non-zero exit (e.g. `op` missing,
-    not signed in, or the reference doesn't resolve).
+    not signed in, or the reference doesn't resolve), and on an `op` that
+    doesn't answer within OP_READ_TIMEOUT_S — a locked 1Password waiting on
+    an unlock prompt.
     """
-    result = subprocess.run(
-        ["op", "read", reference],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    try:
+        result = subprocess.run(
+            ["op", "read", reference],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=OP_READ_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            f"1Password didn't answer within {OP_READ_TIMEOUT_S}s "
+            "(locked, or an unlock prompt is waiting)"
+        ) from None
     return result.stdout.strip()
 
 
