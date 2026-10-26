@@ -129,6 +129,30 @@ def test_webhook_counts_failures_across_tables():
     assert c.text == "2 failed · 1 partial"
 
 
+def test_webhook_cron_signature_rejections_warn():
+    """#361: after the ~10-22 secret change each cron was rejected 11× with
+    `invalid signature` and the line still read ok — a rejected cron is a job
+    that did not run."""
+    rejected = [{"route": "/api/cron/draft-summaries", "status": "rejected",
+                 "error": "invalid signature"}] * 11
+    client = _Client({"webhook_runs": rejected,
+                      "spine_promote_runs": [], "asset_ingest_runs": []})
+    c = dh.check_webhook(client, NOW)
+    assert not c.ok
+    assert "11 cron rejected" in c.text
+    assert "/api/cron/draft-summaries: invalid signature" in c.detail["error"]
+
+
+def test_webhook_non_cron_rejections_stay_informational():
+    """A stray inbound-email or ClickUp retry with a bad signature is noise,
+    not a broken job: counted, but the line stays ok."""
+    client = _Client({"webhook_runs": [{"route": "/api/inbound-email", "status": "rejected",
+                                        "error": "invalid signature"}],
+                      "spine_promote_runs": [], "asset_ingest_runs": []})
+    c = dh.check_webhook(client, NOW)
+    assert c.ok and c.text == "0 failed · 0 partial · 1 rejected"
+
+
 def test_unbound_flags_only_floating():
     rows = [
         {"project_id": "p", "est_item_id": "a", "important": False, "serves": []},

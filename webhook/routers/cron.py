@@ -75,6 +75,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import subprocess
 import threading
@@ -497,14 +498,63 @@ JOBS: dict[str, Callable[[dict], tuple]] = {
 }
 
 
+# ── a rejected cron says so at once (#361) ───────────────────────────────
+
+# (job, tenant day) already alerted. Railway retries a failed cron 10x; one line.
+_reject_alerted: set[tuple[str, str]] = set()
+_reject_lock = threading.Lock()
+
+
+def _send_alert(text: str) -> None:
+    """Post one line to the health line's channel with the webhook's own bot
+    token. A seam for tests. Raises when there is nowhere to post."""
+    from cp_engine import slack as slack_mod
+    from slack_sdk import WebClient
+
+    channel = os.environ.get("CP_HEALTH_CHANNEL") or None
+    client = mc2_db.get_client(required=False)
+    if not channel and client is not None:
+        channel = daily_health._partners_channel(client)
+    token = os.environ.get("SLACK_BOT_TOKEN")
+    if not channel or not token:
+        raise RuntimeError("no channel or SLACK_BOT_TOKEN for the alert")
+    slack_mod.post_channel(WebClient(token=token), channel_id=channel, text=text)
+
+
+def _alert_rejected(job: str, reason: str) -> None:
+    """A cron whose signature is rejected is a scheduled job that did not run;
+    when it is the health cron, the line that would report it never posts
+    (10-23). Say so once per job per tenant day. Only known jobs alert, so an
+    unsigned stranger can cost at most one line per job per day."""
+    if job not in JOBS:
+        return
+    key = (job, _now().date().isoformat())
+    with _reject_lock:
+        if key in _reject_alerted:
+            return
+        _reject_alerted.add(key)
+    text = (f":warning: cron {job} rejected ({reason}) and did not run. "
+            "Check WEBHOOK_HMAC_SECRET on its cp-cron service, then redeploy it.")
+    try:
+        _send_alert(text)
+    except Exception as exc:  # noqa: BLE001 — the 401 still stands; say why no alert
+        observability.capture(exc, area="cron_reject_alert")
+        log.error("cron %s rejected; alert NOT posted: %s", job, exc)
+
+
 @router.post("/api/cron/{job}")
 async def cron_job(job: str, request: Request) -> JSONResponse:
     raw_body = await request.body()
-    signatures._verify_signature(
-        raw_body,
-        request.headers.get("x-webhook-signature", ""),
-        request.headers.get("x-webhook-timestamp", ""),
-    )
+    try:
+        signatures._verify_signature(
+            raw_body,
+            request.headers.get("x-webhook-signature", ""),
+            request.headers.get("x-webhook-timestamp", ""),
+        )
+    except HTTPException as exc:
+        if exc.status_code == 401:
+            await asyncio.to_thread(_alert_rejected, job, str(exc.detail))
+        raise
     fn = JOBS.get(job)
     if fn is None:
         raise HTTPException(status_code=404, detail=f"unknown cron job {job!r}")

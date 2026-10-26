@@ -211,3 +211,34 @@ def test_check_errors_reach_the_run_row_and_body_not_the_line(env):
     assert "404" not in env.posts[0] and "✅ Sync · 05:08 · via git" in env.posts[0]
     assert resp.json()["check_errors"] == {"Sync": "Actions: HTTPError: 404"}
     assert env.ledger.runs()[-1]["detail"]["check_errors"] == {"Sync": "Actions: HTTPError: 404"}
+
+
+def test_a_rejected_cron_alerts_once_per_job_per_day(env):
+    """#361: on 10-23 the health cron itself was rejected 11x (stale signing
+    secret), so no line posted and nothing said so. A rejected cron must say
+    so at once — once, not once per Railway retry."""
+    alerts: list[str] = []
+    env.mp.setattr(cron_router, "_send_alert", alerts.append)
+    cron_router._reject_alerted.clear()
+    raw = json.dumps({"slot": "23 12 * * *"}).encode()
+    for _ in range(11):
+        ts = str(int(time.time()))
+        stale = hmac.new(b"the-old-secret", f"{ts}.".encode() + raw,
+                         hashlib.sha256).hexdigest()
+        resp = TestClient(webhook_main.app, raise_server_exceptions=False).post(
+            "/api/cron/health", content=raw,
+            headers={"x-webhook-timestamp": ts, "x-webhook-signature": stale})
+        assert resp.status_code == 401
+    assert len(alerts) == 1
+    assert "health" in alerts[0] and "invalid signature" in alerts[0]
+    assert "WEBHOOK_HMAC_SECRET" in alerts[0]
+
+
+def test_a_rejected_unknown_job_does_not_alert(env):
+    """Unsigned requests can come from anyone; only the known jobs may page,
+    which bounds the alerts at one per job per day."""
+    alerts: list[str] = []
+    env.mp.setattr(cron_router, "_send_alert", alerts.append)
+    cron_router._reject_alerted.clear()
+    assert _post({"slot": "23 12 * * *"}, sign=False, job="nope").status_code == 401
+    assert alerts == []

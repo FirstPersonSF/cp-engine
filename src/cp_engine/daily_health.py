@@ -362,8 +362,8 @@ def check_webhook(client, now: datetime) -> Check:
     if client is None:
         return _unreadable(label, _NO_CLIENT, "no client")
     since = _since(now)
-    failed = partial = rejected = 0
-    last_err = None
+    failed = partial = rejected = cron_rejected = 0
+    last_err = last_cron_reject = None
     notes: list[str] = []
     errors: list[str] = []
     try:
@@ -376,6 +376,13 @@ def check_webhook(client, now: datetime) -> Check:
             failed += st == "failed"
             partial += st == "partial"
             rejected += st == "rejected"
+            # A rejected cron is a scheduled job that did not run (#361: a
+            # stale signing secret, 11x per slot). Other routes' rejections
+            # are stray retries — counted, not alarming.
+            if st == "rejected" and str(r.get("route") or "").startswith("/api/cron/"):
+                cron_rejected += 1
+                if last_cron_reject is None:
+                    last_cron_reject = f"{r.get('route')}: {r.get('error') or st}"
             if last_err is None and st in ("failed", "partial"):
                 last_err = f"{r.get('route')}: {r.get('error') or st}"
     except Exception as exc:  # noqa: BLE001 — named, not hidden
@@ -398,15 +405,21 @@ def check_webhook(client, now: datetime) -> Check:
         if rows and last_err is None:
             last_err = f"{table}: {rows[0].get('error') or 'failed'}"
     parts = [f"{failed} failed", f"{partial} partial"]
-    if rejected:
-        parts.append(f"{rejected} rejected")
+    if cron_rejected:
+        parts.append(f"{cron_rejected} cron rejected")
+    if rejected - cron_rejected:
+        parts.append(f"{rejected - cron_rejected} rejected")
     text = " · ".join(parts + notes)
-    detail = {"failed": failed, "partial": partial, "rejected": rejected}
+    detail = {"failed": failed, "partial": partial, "rejected": rejected,
+              "cron_rejected": cron_rejected}
+    if last_cron_reject:
+        errors.insert(0, _clip(last_cron_reject))
     if last_err:
         errors.insert(0, _clip(last_err))
     if errors:
         detail["error"] = "; ".join(errors)
-    return Check(label, failed == 0 and partial == 0 and not notes, text, detail)
+    return Check(label, failed == 0 and partial == 0 and cron_rejected == 0 and not notes,
+                 text, detail)
 
 
 def check_unbound(client) -> Check:
