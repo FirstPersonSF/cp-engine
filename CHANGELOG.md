@@ -4,6 +4,33 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.132.0 — 2026-10-27
+
+**A URL can become a source, and an upload says it isn't one yet.** Minor (new hosted verb).
+
+*`ingest_url` (#350).* A client's web link had no path into the source
+store, and form-gated pages landed as a landing-page abstract stored as if
+it were the document. The new hosted verb fetches the page (HTML to
+markdown, PDF as-is), detects a capture-form gate, uploads to the project's
+Dropbox and queues the ingest under your own identity. A gated page's
+`status_note` reads "form-gated — landing-page abstract, not the document".
+`push_to_dropbox` now returns `ingested: false` with a hint, and takes
+`ingest=True`. Hosted surface 58→59 tools.
+
+*Ingest reads its credentials from 1Password (#364).* Local
+`cxp ingest-assets` takes Drive, Dropbox, OpenAI and Voyage keys from
+`1p-op` when the environment lacks them, and a Dropbox auth failure now
+counts as failed instead of reporting `failed=0`.
+
+*Source listings can be narrowed (#363).* `list_project_sources` takes
+`title_contains` and `limit` (newest first) — a mature project's full list
+overran the tool-result limit. An unscoped `semantic_search` that times out
+says to pass `project_code` instead of returning a raw `57014`.
+
+*Install plan closed (#296).* The hosted server drifts from the CLI and
+`cxp doctor` says so; mc-2's `CLAUDE.md` now points cold sessions at
+`docs/install.md`.
+
 ## v0.131.17 — 2026-10-26
 
 **A stale signing secret or a locked 1Password now says so.** Patch.
