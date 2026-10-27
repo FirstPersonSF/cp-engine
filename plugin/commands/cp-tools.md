@@ -44,7 +44,7 @@ result adds `project_note` (and `archived: true`); `semantic_search` marks each 
 worked — not as current direction. `Holding` carries its status and no note.
 
 **1 — RAG source store** (ingested Drive/Dropbox docs: briefs, decks, research):
-- `list_project_sources(project_code)` — live list of a project's ingested docs,
+- `list_project_sources(project_code, title_contains?, limit?)` — live list of a project's ingested docs, newest first; `title_contains` finds one doc by title, `limit` keeps the newest N (a mature project's full list outgrows a tool result),
   each with its `asset_id`.
 - `pull_project_source(asset_id, max_chars?)` — a doc's extracted text, by the
   `asset_id` from `list_project_sources` (no title lookup). A trailing

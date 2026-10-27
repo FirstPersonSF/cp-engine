@@ -428,6 +428,17 @@ def load_ingest_creds(config: "TenantConfig") -> None:
     `<mc-2 clone>/backend/.env`. No clone configured → no-op (never raises): the
     keys may legitimately come from the real process environment in production.
     """
+    if all(os.environ.get(k) for k in _INGEST_KEYS):
+        return
+    # #364: a `[ingest]` op:// block wins over the `.env` copy, which drifted
+    # (an invalid VOYAGE key there failed every local embed).
+    op_creds = _resolve_block_op_refs(config, "ingest", _INGEST_OP_REFS)
+    if op_creds is not None:
+        for key, value in op_creds.items():
+            if not os.environ.get(key):
+                os.environ[key] = value
+        print("Resolved OPENAI/VOYAGE keys from 1Password (op://)", file=sys.stderr)
+        return
     env_file = _mc2_env_file(config)
     if env_file is None:
         return
@@ -437,25 +448,117 @@ def load_ingest_creds(config: "TenantConfig") -> None:
             os.environ[key] = file_creds[key]
 
 
-def load_dropbox_creds(config: "TenantConfig") -> None:
+# `[dropbox]` keys in `.cp-engine.local.toml` → the env var each op:// ref fills
+# (#364). The access token is optional: the connector prefers refresh-token auth.
+_DROPBOX_OP_REFS = (
+    ("app_key_ref", "DROPBOX_APP_KEY", True),
+    ("app_secret_ref", "DROPBOX_APP_SECRET", True),
+    ("refresh_token_ref", "DROPBOX_REFRESH_TOKEN", True),
+    ("access_token_ref", "DROPBOX_ACCESS_TOKEN", False),
+)
+
+
+_INGEST_OP_REFS = (
+    ("openai_api_key_ref", "OPENAI_API_KEY", True),
+    ("voyage_api_key_ref", "VOYAGE_API_KEY", True),
+)
+
+
+def _resolve_block_op_refs(
+    config: "TenantConfig", block_name: str, refs: tuple
+) -> dict[str, str] | None:
+    """Env values from a `[<block_name>]` op:// block in `.cp-engine.local.toml`.
+
+    Mirrors `_resolve_op_creds` for Supabase: `None` when no block is
+    configured (the caller falls through to the `.env` copy); a block that is
+    present but incomplete, or whose refs fail to resolve, RAISES — a
+    configured 1Password ref is explicit intent, and silently using the stale
+    `.env` copy instead is exactly the #364 failure. `refs` is a tuple of
+    `(toml_key, env_key, required)`.
+    """
+    root = getattr(config, "root", None)
+    if root is None:
+        return None
+    local_path = Path(root) / ".cp-engine.local.toml"
+    if not local_path.exists():
+        return None
+    try:
+        with local_path.open("rb") as fh:
+            data = tomllib.load(fh)
+    except (tomllib.TOMLDecodeError, OSError):
+        return None
+    block = data.get(block_name)
+    if not isinstance(block, dict):
+        return None
+
+    missing = [
+        name for name, _env, required in refs
+        if required and not (isinstance(block.get(name), str) and block.get(name))
+    ]
+    if missing:
+        raise _backend_unavailable(
+            f"[{block_name}] in {local_path} is incomplete: missing "
+            f"{', '.join(missing)} (op:// references)."
+        )
+
+    creds: dict[str, str] = {}
+    try:
+        for name, env_key, _required in refs:
+            ref = block.get(name)
+            if isinstance(ref, str) and ref:
+                creds[env_key] = _op_read(ref)
+    except Exception as exc:  # noqa: BLE001 — surface ANY op failure loudly
+        raise _backend_unavailable(
+            f"Failed to resolve [{block_name}] from 1Password (op://) refs in "
+            f"{local_path}: {exc}. Is the `op` CLI signed in (`op signin`)?"
+        ) from exc
+    empty = [k for k, v in creds.items() if not v]
+    if empty:
+        raise _backend_unavailable(
+            f"1Password (op://) refs in {local_path} resolved to empty values for "
+            f"{', '.join(empty)}. Check the item field names in [{block_name}]."
+        )
+    return creds
+
+
+def load_dropbox_creds(config: "TenantConfig") -> str | None:
     """Export DROPBOX_* creds into `os.environ` for the `DropboxConnector`.
 
-    The Dropbox connector self-configures from `os.getenv` (refresh-token path
-    preferred). A `push_to_dropbox` call made from a local MCP session has the
-    MC-2 `.env` on disk but not necessarily the DROPBOX_* vars in its own
-    process environment, so the connector would authenticate as nobody and
-    fail. This mirrors `load_ingest_creds` exactly: an already-set env var WINS
-    (CI / explicit exports), otherwise fill from `<mc-2 clone>/backend/.env`.
-    No clone configured → no-op (never raises): the creds may legitimately come
-    from the real process environment in production (the ingest webhook).
+    The connector self-configures from `os.getenv` (refresh-token path
+    preferred), so a local CLI or MCP process needs the vars exported first.
+    Order, matching `load_supabase_creds`:
+
+      1. `os.environ` — an already-set refresh token WINS (CI, Railway,
+         explicit exports); nothing is read.
+      2. A `[dropbox]` block of `op://` refs in `.cp-engine.local.toml`,
+         resolved live via `op read` (#364). Authoritative when present: a
+         failure raises rather than falling through to the `.env` copy.
+      3. `<mc-2 clone>/backend/.env` — fills only keys not already set.
+
+    Returns a short label naming the source used (for error messages that
+    need to say WHICH creds were rejected), or None when nothing was loaded.
+    No clone and no op block → no-op (never raises).
     """
+    if os.environ.get("DROPBOX_REFRESH_TOKEN") or os.environ.get("DROPBOX_ACCESS_TOKEN"):
+        return "environment"
+
+    op_creds = _resolve_block_op_refs(config, "dropbox", _DROPBOX_OP_REFS)
+    if op_creds is not None:
+        for key, value in op_creds.items():
+            os.environ[key] = value
+        print("Resolved DROPBOX_* from 1Password (op://)", file=sys.stderr)
+        return "1Password op:// refs in .cp-engine.local.toml"
+
     env_file = _mc2_env_file(config)
     if env_file is None:
-        return
+        return None
     file_creds = _read_dotenv(env_file, _DROPBOX_KEYS)
+    loaded = False
     for key in _DROPBOX_KEYS:
         if not os.environ.get(key) and file_creds.get(key):
             os.environ[key] = file_creds[key]
+            loaded = True
+    return str(env_file) if loaded else None
 
 
 # Google Drive creds the `GoogleDriveConnector` reads via `os.getenv` (#324):
@@ -470,18 +573,35 @@ DRIVE_CRED_KEYS = (
 )
 
 
-def load_drive_creds(config: "TenantConfig") -> None:
+_DRIVE_OP_REFS = (
+    ("service_account_json_ref", "GOOGLE_SERVICE_ACCOUNT_JSON", True),
+)
+
+
+def load_drive_creds(config: "TenantConfig") -> str | None:
     """Export Google Drive creds into `os.environ` for the Drive connector.
 
-    Mirrors `load_dropbox_creds`: an already-set env var WINS, otherwise fill
-    from `<mc-2 clone>/backend/.env`; no clone configured → no-op. A relative
+    Mirrors `load_dropbox_creds`: an already-set env var WINS; then a
+    `[drive]` op:// block in `.cp-engine.local.toml` (#364 — authoritative,
+    raises on failure rather than using the `.env` copy); then
+    `<mc-2 clone>/backend/.env`; no clone configured → no-op. A relative
     file path in that .env is relative to the backend dir, so it is resolved
-    there — the MCP process's cwd is the tenant, not mc-2.
+    there — the MCP process's cwd is the tenant, not mc-2. Returns a label for
+    the source used, or None.
     """
+    if any(os.environ.get(k) for k in DRIVE_CRED_KEYS):
+        return "environment"
+    op_creds = _resolve_block_op_refs(config, "drive", _DRIVE_OP_REFS)
+    if op_creds is not None:
+        for key, value in op_creds.items():
+            os.environ[key] = value
+        print("Resolved Google Drive creds from 1Password (op://)", file=sys.stderr)
+        return "1Password op:// refs in .cp-engine.local.toml"
     env_file = _mc2_env_file(config)
     if env_file is None:
-        return
+        return None
     file_creds = _read_dotenv(env_file, DRIVE_CRED_KEYS)
+    loaded = False
     for key in DRIVE_CRED_KEYS:
         value = file_creds.get(key)
         if os.environ.get(key) or not value:
@@ -489,6 +609,8 @@ def load_drive_creds(config: "TenantConfig") -> None:
         if key != "GOOGLE_SERVICE_ACCOUNT_JSON" and not Path(value).is_absolute():
             value = str(env_file.parent / value)
         os.environ[key] = value
+        loaded = True
+    return str(env_file) if loaded else None
 
 
 # Where the service key in use came from, for the one-line "MC-2 rejected the

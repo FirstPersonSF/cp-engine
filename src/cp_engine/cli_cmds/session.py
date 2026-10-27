@@ -173,8 +173,11 @@ def capture_session_cmd(
         if result.cp_md_updated:
             click.echo("Updated cp.md Last session line.")
         if result.extra_files_committed:
+            # #364: with --no-commit nothing was committed; say what a commit
+            # WOULD carry instead of claiming it happened.
+            verb = "Also committed" if result.commit_sha else "A commit would also include"
             click.echo(
-                f"Also committed {len(result.extra_files_committed)} other file(s) "
+                f"{verb} {len(result.extra_files_committed)} other file(s) "
                 f"in the working dir (binaries excluded by .gitignore):"
             )
             wd = result.cp_working_dir

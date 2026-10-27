@@ -25,6 +25,10 @@ def _echo_run_summary(code: str, run) -> None:
     )
     for name, err in run.failures:
         click.echo(f"  FAIL {name}: {err}", err=True)
+    # #364: a source that could not be listed is a failed run, not a quiet
+    # zero — the counts above say nothing about files we never saw.
+    for e in getattr(run, "source_errors", None) or []:
+        click.echo(f"  UNREACHABLE {e['source']}: {e['note']}", err=True)
 
 
 @click.command(name="ingest-assets")
@@ -135,7 +139,7 @@ def ingest_assets_cmd(
             click.echo(f"{code}: SKIPPED — {run.unconfigured_reason}")
             return
         _echo_run_summary(code, run)
-        if run.failed or run.failures:
+        if run.failed or run.failures or run.source_errors:
             sys.exit(1)
         return
 

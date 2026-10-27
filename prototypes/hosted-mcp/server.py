@@ -2237,8 +2237,17 @@ def get_service(ref_id: str) -> dict[str, Any]:
 
 
 @mcp_server.tool()
-def list_project_sources(project_code: str) -> dict[str, Any]:
+def list_project_sources(
+    project_code: str, title_contains: str | None = None, limit: int | None = None
+) -> dict[str, Any]:
     """List a project's ingested RAG source documents, under the caller's identity.
+
+    Newest first. On a mature project the full manifest outgrows a tool
+    result (ibx-5153: ~83K characters, #363), so two narrowing arguments:
+    `title_contains` keeps sources whose title contains the text (case-
+    insensitive) — "find this doc" in one call; `limit` keeps the newest N —
+    "what just landed". When either narrows the list, `filtered_from` says how
+    many sources the project holds in all.
 
     Mirrors `cp_engine.mc2_db.RAG_ASSET_LIST_COLUMNS`. `meta` (JSONB, up to
     megabytes per row) is never selected — this is the table the "never SELECT *"
@@ -2250,6 +2259,8 @@ def list_project_sources(project_code: str) -> dict[str, Any]:
 
     Args:
         project_code: engagement, initiative, or standalone-repo code.
+        title_contains: keep only sources whose title contains this text.
+        limit: keep only the newest N sources (after `title_contains`).
     """
     client = user_client()
     project_id = resolve_project_id(client, project_code)
@@ -2306,6 +2317,16 @@ def list_project_sources(project_code: str) -> dict[str, Any]:
     superseded = {r["prev_asset_id"] for r in rows if r.get("prev_asset_id")}
     rows = [r for r in _engine_project_sources.drop_superseded_assets(rows)
             if r.get("status") != "archived"]
+    # #363: narrow BEFORE the per-asset chunk check, so a one-title lookup on a
+    # 140-doc project reads chunks for one asset, not all of them.
+    total_sources = len(rows)
+    narrowed = bool(title_contains) or limit is not None
+    if title_contains:
+        needle = title_contains.casefold()
+        rows = [r for r in rows if needle in str(r.get("title") or "").casefold()]
+    if limit is not None:
+        rows = sorted(rows, key=lambda r: str(r.get("created_at") or ""),
+                      reverse=True)[:max(int(limit), 0)]
     # "Exists but empty" (#324): a zero-chunk asset is flagged, never
     # mistaken for a readable source. The check fails OPEN — when it cannot
     # run, nothing is flagged (we never call a document empty on a failed read).
@@ -2341,15 +2362,24 @@ def list_project_sources(project_code: str) -> dict[str, Any]:
     ]
     sources.sort(key=lambda s: str(s.get("created_at") or ""), reverse=True)
 
-    audit(client, "list_project_sources", {"project_code": project_code}, len(sources))
+    audit(client, "list_project_sources",
+          {"project_code": project_code, "title_contains": title_contains,
+           "limit": limit}, len(sources))
+    if not sources and narrowed and total_sources:
+        empty_note = (f"no source title contains {title_contains!r} "
+                      f"({total_sources} sources in all)") if title_contains \
+            else f"limit={limit} kept nothing ({total_sources} sources in all)"
+    else:
+        empty_note = TEAM_EMPTY_HINT
     return _with_project_status({
         "project_code": project_code,
         "project_id": project_id,
         "caller": caller_subject(),
         "count": len(sources),
+        **({"filtered_from": total_sources} if narrowed else {}),
         "superseded_hidden": len(superseded),
         "sources": sources,
-        **({"note": TEAM_EMPTY_HINT} if not sources else {}),
+        **({"note": empty_note} if not sources else {}),
     }, client, project_id, project_code)
 
 
@@ -2933,10 +2963,18 @@ def semantic_search(
             or []
         )
     except Exception as exc:  # noqa: BLE001
+        error = f"match_chunks_for_project failed: {type(exc).__name__}: {exc}"
+        # #363: a corpus-wide vector scan can outrun Postgres' statement
+        # timeout (57014) while the same query scoped to one project returns
+        # in seconds. Say so, instead of leaving a raw RPC error to decode.
+        if project_id is None and ("57014" in str(exc) or "statement timeout" in str(exc)):
+            error = ("corpus-wide search timed out (Postgres 57014); pass "
+                     "project_code to scope it to one workstream — scoped "
+                     f"searches return in seconds. ({error})")
         return {
             "query_len": len(query),
             "caller": caller_subject(),
-            "error": f"match_chunks_for_project failed: {type(exc).__name__}: {exc}",
+            "error": error,
             "results": [],
         }
 

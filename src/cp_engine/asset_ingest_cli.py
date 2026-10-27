@@ -108,6 +108,8 @@ class _ProjectOutcome:
     # ENABLED source has a folder configured. NOT a failure — the sweep must
     # keep going — but the CLI prints a visible per-project SKIPPED note.
     unconfigured: str | None = None
+    # #364: sources whose listing raised (auth, outage) — a failure.
+    source_errors: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -155,8 +157,11 @@ class FanOutResult:
 
     @property
     def any_failures(self) -> bool:
-        """True if any per-file failure OR any whole-project error occurred."""
-        return any(o.failed or o.failures or o.error for o in self.outcomes)
+        """True if any per-file failure, whole-project error, or unreachable source."""
+        return any(
+            o.failed or o.failures or o.error or o.source_errors
+            for o in self.outcomes
+        )
 
 
 def fan_out_ingest(
@@ -194,6 +199,7 @@ def fan_out_ingest(
             outcome.failed = run.failed
             outcome.failures = list(run.failures)
             outcome.unconfigured = run.unconfigured_reason
+            outcome.source_errors = list(run.source_errors)
         except Exception as exc:  # noqa: BLE001 — collect, keep going
             outcome.error = str(exc)
         result.outcomes.append(outcome)
