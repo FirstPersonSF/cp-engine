@@ -59,7 +59,7 @@ spine note that the client confirmed the Q4 date". Under the hood:
 |---|---|
 | Project state | `get_project_state` (Exec Summary + current sprint file), `read_project_file` |
 | Search | `semantic_search` (vector search over the ingested corpus) |
-| Sources & meetings | `list_project_sources`, `pull_project_source`, `fetch_project_source` (the original file), `compare_project_sources`, `pull_document_comments`, `push_to_dropbox`, `list_project_meetings` |
+| Sources & meetings | `list_project_sources`, `pull_project_source`, `fetch_project_source` (the original file), `compare_project_sources`, `pull_document_comments`, `push_to_dropbox`, `ingest_url` (a web page into the store, gating flagged), `list_project_meetings` |
 | Drafting readiness | `preflight` (run before an RFP/SOW/brief/estimate), `list_vendors`, `list_rfp_respondents` |
 | Spine — read | `list_spine_elements`, `pull_spine_element` |
 | Spine — author | `create_spine_element`, `set_spine_element`, `add_spine_version`, `add_spine_document`, `promote_spine_transcript` |
@@ -107,5 +107,7 @@ URL `https://cp.mc-2.1p.is/mcp` (alias: `mcp.mc-2.1p.is`). Source:
 `cp-engine/prototypes/hosted-mcp/`. Auth: Supabase OAuth 2.1 (PKCE), ES256
 JWTs verified against the project JWKS. No service-role credentials anywhere
 in the hosted path; the Drive/Dropbox connector credentials that
-`fetch_project_source`, `pull_document_comments` and `push_to_dropbox` need
-are the service's own, and those verbs are team-members only.*
+`fetch_project_source`, `pull_document_comments`, `push_to_dropbox` and
+`ingest_url` need are the service's own, and those verbs are team-members
+only. An ingest those verbs queue goes upstream under YOUR identity (mc-2 →
+cp-engine-webhook), never with a key held here.*

@@ -9,6 +9,7 @@ function — the implementation lives in `cp_engine`, not here:
   compare_project_sources  project_sources.fetch_source + source_compare.compare_files
   pull_document_comments   project_sources.pull_document_comments
   push_to_dropbox          project_sources.push_to_dropbox / dropbox_destination
+  ingest_url (#350)        url_source.fetch_url + prepare, then push_to_dropbox
   preflight                preflight.read_tree_context + read_mc2_titles + run_preflight
   list_vendors             rfp_pipeline.read_vendors
   list_rfp_respondents     rfp_pipeline.read_respondents
@@ -78,6 +79,9 @@ def register(server_module) -> None:
 
 # Where generated work belongs in a project's Dropbox (Drew, 2026-08-03).
 SPINE_OUTPUT_DIR = "03 Assets/06 Spine"
+# Where a web page a client pointed us at lands (#350): it is client-supplied
+# material, not our output.
+URL_SOURCE_DIR = "03 Assets/01 Client Assets"
 
 # Bytes are carried inline only up to a point: base64 lands in the caller's
 # context, where a large file is expensive and a huge one is unusable.
@@ -357,7 +361,59 @@ def pull_document_comments(project_code: str, doc_title: str) -> dict[str, Any]:
     return {"project_code": project_code, **result}
 
 
-# ── the one writer ────────────────────────────────────────────────────
+# ── an upload is not an ingest (#350) ─────────────────────────────────
+
+_NOT_INGESTED = (
+    "uploaded — not yet ingested: add_element_source, pull_project_source and "
+    "semantic_search cannot see this file until it is. Call push_to_dropbox "
+    "again with ingest=True (overwrite=True), or run Ingest assets on the MC-2 "
+    "project page."
+)
+_NOT_INGESTED_LINK = (
+    "not yet ingested — after the upload, run Ingest assets on the MC-2 project "
+    "page (or `cxp ingest-assets <code>`); until then add_element_source cannot "
+    "resolve the file."
+)
+
+
+def _queue_ingest(project_code: str, pid: str, folders, dropbox_path: str,
+                  project_root: str | None = None) -> dict[str, Any]:
+    """Queue the ingest of ONE pushed file, upstream under the caller's identity.
+
+    Checks first that a scan would actually reach the file
+    (`asset_ingest.ingest_reach_gap`) — a run queued for a file the listing
+    cannot see finishes "done" with nothing ingested, which is the 08-21
+    failure again with an extra step.
+    """
+    from cp_engine.asset_ingest import ingest_reach_gap
+
+    gap = ingest_reach_gap(folders, dropbox_path, project_root)
+    if gap:
+        return {"queued": False, "reason": f"not queued — {gap}"}
+    hop = _srv.call_mc2_ingest_assets(_srv.upstream_code(project_code), pid, [dropbox_path])
+    if not hop.get("ok"):
+        return {"queued": False, "reason": hop.get("reason") or "mc-2 did not queue it"}
+    name = dropbox_path.rsplit("/", 1)[-1]
+    return {
+        "queued": True,
+        "run_id": hop.get("run_id"),
+        "check": (f"runs in the background (usually a minute or two): "
+                  f"list_project_sources(project_code, title_contains={name!r}) "
+                  "shows it once it lands — only then can add_element_source "
+                  "resolve it"),
+    }
+
+
+def _project_root(engine, connector, folder_id: str, dest_path: str | None) -> str | None:
+    """The project's Dropbox folder path — needed only to check an absolute
+    `dest_path` against it. None when not needed or not resolvable."""
+    if not dest_path:
+        return None
+    probe = engine.dropbox_destination(connector, folder_id, "_")
+    return None if isinstance(probe, dict) else probe[:-2]
+
+
+# ── the Dropbox writers ───────────────────────────────────────────────
 
 
 @hosted_tool
@@ -368,6 +424,7 @@ def push_to_dropbox(
     dest_name: str | None = None,
     overwrite: bool = False,
     dest_path: str | None = None,
+    ingest: bool = False,
 ) -> dict[str, Any]:
     """Put a file INTO a project's Dropbox folder (the write-back path).
 
@@ -389,6 +446,12 @@ def push_to_dropbox(
     (the upload link is no-clobber the same way). The connector has no delete
     or move, so a misplaced copy is removed by hand: when `source_path` is
     None, ASK where it goes, never guess.
+
+    **AN UPLOAD IS NOT AN INGEST.** The file is in Dropbox, not in the source
+    store: `add_element_source` and `pull_project_source` cannot see it yet.
+    Pass **`ingest=True`** (with `content_base64`) to queue the ingest of
+    exactly this file — upstream, under your identity — and get a `run_id`;
+    otherwise the result says `ingested: false` and how to get there.
 
     A WRITE with the service's Dropbox credentials, so it needs team
     membership and is not served on the read-only endpoint.
@@ -461,6 +524,10 @@ def push_to_dropbox(
             "how": ("curl -X POST '<upload_url>' --header "
                     "'Content-Type: application/octet-stream' "
                     "--data-binary @<local file>"),
+            # The bytes do not exist yet, so nothing can be queued now —
+            # whatever `ingest` said.
+            "ingested": False,
+            "next": _NOT_INGESTED_LINK,
         }
 
     try:
@@ -480,9 +547,138 @@ def push_to_dropbox(
         )
     if result.get("error"):
         return _fail(result["error"])
+    out: dict[str, Any] = {"project_code": project_code, **result, "ingested": False}
+    if ingest:
+        out["ingest"] = _queue_ingest(
+            project_code, pid, folders, result.get("dropbox_path") or "",
+            _project_root(engine, connector, folder_id, dest_path),
+        )
+    else:
+        out["next"] = _NOT_INGESTED
     _srv.audit(client, tool, {"project_code": project_code,
-                              "path": result.get("dropbox_path")}, 1)
-    return {"project_code": project_code, **result}
+                              "path": result.get("dropbox_path"),
+                              "ingest": bool(out.get("ingest", {}).get("queued"))}, 1)
+    return out
+
+
+@hosted_tool
+def ingest_url(
+    project_code: str,
+    url: str,
+    filename: str | None = None,
+    dest_path: str | None = None,
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """Bring a web page (or a PDF at a URL) into a project's source store.
+
+    Fetches `url`, turns an HTML page into markdown (a PDF passes through as
+    the document), uploads it to the project's Dropbox at
+    `03 Assets/01 Client Assets/<filename>` (or the absolute folder
+    `dest_path`), and queues the ingest of exactly that file — upstream,
+    under your identity. The ingest runs in the background: the result's
+    `ingest.run_id` is a receipt, not a finished source; `title` is the name
+    `list_project_sources` will show once it lands.
+
+    **GATING.** A form-gated landing page is the abstract, not the document.
+    When the page carries the shape of a gate (an email-capture or
+    marketing-automation form, "download the guide" wording, a thin body, a
+    PDF link not fetched) the result says `gated: true` with the `signals`,
+    and the ingested source gets the `status_note` shown — so it never reads
+    as the document at the point of use. Then get the real document (try the
+    `pdf_links`, or ask the client) and ingest that.
+
+    Detection reads the HTML that was served: a gate drawn entirely by
+    JavaScript can be missed — a thin `words` count is the tell. Private and
+    internal hosts are refused. `filename` overrides the derived bare name;
+    `overwrite=True` replaces an earlier fetch of the same page. Needs team
+    membership (the upload uses the service's Dropbox credentials).
+    """
+    tool = "ingest_url"
+    refused = _team_gate(tool, project_code)
+    if refused:
+        return refused
+    client = _srv.user_client()
+
+    def _fail(error: str) -> dict[str, Any]:
+        _srv.audit(client, tool, {"project_code": project_code, "url": url,
+                                  "result": "error"}, 0)
+        return {"project_code": project_code, "url": url, "error": error}
+
+    name = (filename or "").strip()
+    if name and ("/" in name or "\\" in name or name in (".", "..")):
+        return _fail("filename must be a bare file name (no folders) — "
+                     "put the folder in dest_path")
+    gap = dropbox_credential_gap()
+    if gap:
+        return _fail(gap)
+    resolved = _resolve(client, project_code)
+    if resolved is None:
+        return _not_found(client, tool, project_code)
+    pid, _cid = resolved
+
+    from cp_engine import url_source
+    from cp_engine.asset_ingest import resolve_project_folders_by_id
+    from cp_engine.clock import tenant_today
+
+    folders = resolve_project_folders_by_id(client, pid)
+    if dest_path is None and (folders is None or not folders.mc_dropbox_folder_id):
+        return _fail(f"{project_code!r} has no Dropbox folder configured in MC-2 — "
+                     "nowhere to put the page (pass dest_path to name one)")
+    folder_id = folders.mc_dropbox_folder_id if folders is not None else ""
+
+    try:
+        fetched = url_source.fetch_url(url)
+        prepared = url_source.prepare(fetched, fetched_on=tenant_today().isoformat())
+    except url_source.UrlFetchError as exc:
+        return _fail(str(exc))
+
+    if name and "." not in name:
+        name = f"{name}.{prepared.filename.rsplit('.', 1)[-1]}"
+    name = name or prepared.filename
+    dest_name = name if dest_path else f"{URL_SOURCE_DIR}/{name}"
+
+    try:
+        from cloud_storage.dropbox_connector import DropboxConnector
+
+        connector = DropboxConnector()
+    except Exception as exc:  # noqa: BLE001 — auth/config: a named error
+        return _fail(f"Dropbox connector failed: {type(exc).__name__}: {exc}")
+
+    engine = _srv._engine_project_sources
+    with tempfile.TemporaryDirectory(prefix="cp-url-") as tmp:
+        local = Path(tmp) / name
+        local.write_bytes(prepared.data)
+        result = engine.push_to_dropbox(
+            connector, folder_id, str(local),
+            dest_name=dest_name, overwrite=overwrite, dest_path=dest_path,
+        )
+    if result.get("error"):
+        return _fail(result["error"])
+    dropbox_path = result.get("dropbox_path") or ""
+
+    out: dict[str, Any] = {
+        "project_code": project_code,
+        "url": url,
+        "final_url": fetched.url,
+        "title": name,
+        "kind": prepared.kind,
+        "words": prepared.words,
+        "gated": prepared.gating.gated,
+        "status_note": prepared.gating.note,
+        "signals": prepared.gating.signals,
+        "pdf_links": prepared.gating.pdf_links,
+        "dropbox_path": dropbox_path,
+        "ingest": _queue_ingest(project_code, pid, folders, dropbox_path,
+                                _project_root(engine, connector, folder_id, dest_path)),
+    }
+    if prepared.gating.gated:
+        out["next"] = ("this is the landing-page abstract, not the document — get "
+                       "the document itself (try pdf_links, or ask the client) and "
+                       "ingest that; the note above rides on this source until then")
+    _srv.audit(client, tool, {"project_code": project_code, "url": url,
+                              "path": dropbox_path, "gated": prepared.gating.gated,
+                              "ingest": bool(out["ingest"].get("queued"))}, 1)
+    return out
 
 
 # ── pure reads ────────────────────────────────────────────────────────

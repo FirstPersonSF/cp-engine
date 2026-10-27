@@ -616,16 +616,20 @@ mcp_server = MCPServer(
         "sequence for a session like this one, which has no `cxp` and no file "
         "editing. Read `master-cp.md` for the project index; get each "
         "project's path from there rather than constructing it.\n\n"
-        "MOST TOOLS READ; 29 OF THEM WRITE. The writers are the `create_*`, `set_*`, "
+        "MOST TOOLS READ; 30 OF THEM WRITE. The writers are the `create_*`, `set_*`, "
         "`add_*`, `remove_*`, `promote_*`, `retire_*`, `resolve_*`, "
         "`route_*`, `rotate_*`, `seal_to_*` and `capture_*` verbs, plus "
-        "`log_improvement` and `push_to_dropbox` — a name that sounds like a "
-        "mutation is one (a read-only endpoint, `/mcp/read`, carries none of "
-        "them). Every tenant write is delegated upstream under YOUR identity; "
-        "the server holds no MC-2 write key, which is why authorship is real "
-        "and why nothing here can be undone by the server on your behalf. The "
-        "one exception is `push_to_dropbox`, which writes into Dropbox with "
-        "the service's own credentials (team members only). When refreshing an Exec "
+        "`log_improvement`, `push_to_dropbox` and `ingest_url` — a name that "
+        "sounds like a mutation is one (a read-only endpoint, `/mcp/read`, "
+        "carries none of them). Every tenant write is delegated upstream under "
+        "YOUR identity; the server holds no MC-2 write key, which is why "
+        "authorship is real and why nothing here can be undone by the server on "
+        "your behalf. The one exception is the Dropbox upload in "
+        "`push_to_dropbox` and `ingest_url`, made with the service's own "
+        "credentials (team members only). An upload is NOT an ingest: a pushed "
+        "file reaches the source store only when its ingest is queued "
+        "(`ingest_url` always queues it; `push_to_dropbox` with `ingest=True`). "
+        "When refreshing an Exec "
         "Summary with `capture_project_state`, pass "
         "every field you mean to be current, not just `status`: omitted fields "
         "are left as they were, so a status-only refresh advances the "
@@ -8916,6 +8920,76 @@ def call_mc2_rotate_word_count(project_code: str) -> dict[str, Any]:
     return {"ok": False, "status": resp.status_code, "reason": detail}
 
 
+def call_mc2_ingest_assets(
+    project_code: str, mc_project_id: str, file_ids: list[str]
+) -> dict[str, Any]:
+    """Queue the ingest of named Dropbox files via mc-2, under the CALLER'S OWN JWT.
+
+    The source store (`rag_assets` + `asset_chunks` + embeddings) is written
+    only by the asset-ingest pipeline, which runs on cp-engine-webhook with the
+    service key and the Drive/Dropbox/Voyage credentials. This server holds
+    none of that, so `ingest_url` and `push_to_dropbox(ingest=True)` reach it
+    the way the MC-2 "Ingest assets" picker does: mc-2
+    `POST /api/projects/{code}/ingest-assets` verifies who is asking and signs
+    the hop to the webhook, which ingests ONLY `file_ids` (Dropbox
+    path_display keys — `asset_ingest.file_selection_key`). Fire-and-forget:
+    a 2xx means queued (`run_id`), not ingested.
+
+    Never raises — returns `{ok: False, reason}` like its siblings.
+    """
+    if not MC2_API_BASE:
+        return {
+            "ok": False,
+            "reason": "ingest unavailable: MC2_API_BASE not configured",
+            "degraded": True,
+        }
+    try:
+        token = caller_jwt()
+    except RuntimeError as exc:
+        return {"ok": False, "reason": f"no authenticated caller: {exc}"}
+
+    try:
+        resp = httpx.post(
+            f"{MC2_API_BASE}/api/projects/{project_code}/ingest-assets",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"mc_project_id": mc_project_id, "file_ids": list(file_ids)},
+            timeout=MC2_TIMEOUT_SECONDS,
+        )
+    except httpx.TimeoutException:
+        return {
+            "ok": False,
+            "reason": (
+                f"mc-2 did not respond within {MC2_TIMEOUT_SECONDS:.0f}s. The ingest "
+                "may or may not have been queued — check list_project_sources "
+                "before queueing again (a re-ingest of an unchanged file is skipped)."
+            ),
+            "timeout": True,
+        }
+    except httpx.HTTPError as exc:
+        return {"ok": False, "reason": f"could not reach mc-2: {type(exc).__name__}: {exc}"}
+
+    try:
+        body: Any = resp.json()
+    except ValueError:
+        body = resp.text[:400]
+
+    if 200 <= resp.status_code < 300:
+        body = body if isinstance(body, dict) else {}
+        return {"ok": True, "run_id": body.get("run_id"), "status": body.get("status")}
+
+    detail = body.get("detail") if isinstance(body, dict) else str(body)
+    detail = str(detail)[:400]
+    if resp.status_code in (401, 403):
+        return {
+            "ok": False,
+            "status": resp.status_code,
+            "reason": f"mc-2 refused the caller's token: {detail}",
+            "unauthorized": True,
+        }
+    return {"ok": False, "status": resp.status_code,
+            "reason": f"mc-2 did not queue the ingest ({resp.status_code}): {detail}"}
+
+
 @mcp_server.tool()
 def log_improvement(area: str, observation: str) -> dict[str, Any]:
     """Log one friction observation to the tenant's `improvements.md` (#282).
@@ -11217,8 +11291,10 @@ MAIN_ONLY_TOOLS: dict[str, str] = {
     "capture_project_state": "POST mc-2 -> cp.md Exec Summary commit",
     "promote_uphill": "INSERT commitments/spine + POST mc-2",
     "rotate_word_count": "POST mc-2 -> tenant rotation commit",
-    # ported (step 5b): the one writer, with the service's Dropbox credentials
-    "push_to_dropbox": "Dropbox upload / upload link (service credentials)",
+    # ported (step 5b): the Dropbox writers, with the service's Dropbox credentials
+    "push_to_dropbox": "Dropbox upload / upload link (service credentials) "
+                       "+ optional POST mc-2 -> asset ingest",
+    "ingest_url": "Dropbox upload (service credentials) + POST mc-2 -> asset ingest",
 }
 
 READ_INSTRUCTIONS = (

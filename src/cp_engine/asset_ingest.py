@@ -634,6 +634,40 @@ def _list_dropbox(connector, folder: str) -> list[FileRef]:
 # ──────────────────────────────────────────────────────────────────────
 
 
+def ingest_reach_gap(
+    folders: ProjectFolders | None, dropbox_path: str, project_root: str | None = None
+) -> str | None:
+    """Why a scan of this project would NOT pick up the Dropbox file at
+    `dropbox_path`, or None when it would (#350).
+
+    The hosted `ingest_url` / `push_to_dropbox(ingest=True)` queue a
+    file-scoped run, and `only_file_ids` only NARROWS what `list_files` sees —
+    so a file outside the project's Dropbox folder, outside its
+    `asset_ingest_folders` allowlist, or in a project whose Dropbox source is
+    off would be "queued" and then silently ingest nothing. Same rules as
+    `list_files`, checked before the hop. `project_root` (the resolved folder
+    path) is needed only when the caller chose an absolute destination.
+    """
+    if folders is None:
+        return "no MC-2 folder configuration for this project"
+    if _out_of_scope(folders):
+        return ("a self-company workstream with an agreement is not an "
+                "asset-ingest target")
+    if not folders.enable_dropbox or not folders.mc_dropbox_folder_id:
+        return "the project's Dropbox source is not enabled in MC-2"
+    if project_root:
+        root = project_root.rstrip("/").lower() + "/"
+        if not dropbox_path.lower().startswith(root):
+            return f"{dropbox_path} is outside the project's Dropbox folder ({project_root})"
+    allow = folders.asset_ingest_folders
+    ref = FileRef(source="dropbox", id="", name=dropbox_path.rsplit("/", 1)[-1],
+                  mime_type=None, size=None, modified=None, path=dropbox_path)
+    if allow and not _matches_allowlist(ref, allow):
+        return (f"{dropbox_path} is not in the project's ingest folders "
+                f"({', '.join(allow)}) — push it into one of them")
+    return None
+
+
 def _folder_segments(ref: FileRef) -> list[str]:
     """The FOLDER name segments of a ref — its ancestry, NOT the filename.
 
@@ -1919,6 +1953,11 @@ def _flag_confidentiality(
     """Scan the just-ingested asset's chunks for confidentiality markings and
     record them in `status_note` when it is empty (#324 part b).
 
+    Also records the caveat cp wrote into a document it made itself (#350): a
+    page `ingest_url` detected as form-gated carries a `CP-INGEST-NOTE:` line,
+    and that note leads (joined with any marking note) — so the landing-page
+    abstract never reads as the document at the point of use.
+
     Located by the same dedup key `_stamp_scope` uses. A note already on the
     row — a human's `set_source_status`, or a prior detection — is NEVER
     overwritten: a hand-written caveat outranks a detected one, and a
@@ -1928,7 +1967,7 @@ def _flag_confidentiality(
     Returns the note written, or None (no row, no markings, or a note already
     present). Raises on a read/write error; the caller surfaces it.
     """
-    from cp_engine.source_markers import detect_markings, status_note_for
+    from cp_engine.source_markers import detect_markings, ingest_note_in, status_note_for
 
     owner_col, owner_val = _owner_filter(folders)
     rows = (
@@ -1957,9 +1996,11 @@ def _flag_confidentiality(
         if len(page) < _CHUNK_PAGE:
             break
         start += _CHUNK_PAGE
-    note = status_note_for(detect_markings("\n\n".join(texts)))
-    if note is None:
+    body = "\n\n".join(texts)
+    notes = [n for n in (ingest_note_in(body), status_note_for(detect_markings(body))) if n]
+    if not notes:
         return None
+    note = "; ".join(notes)
     client.table(Tables.RAG_ASSETS).update({"status_note": note}).eq(
         "id", asset_id
     ).is_("status_note", "null").execute()

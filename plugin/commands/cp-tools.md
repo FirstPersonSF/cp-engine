@@ -88,7 +88,7 @@ worked — not as current direction. `Holding` carries its status and no note.
   `overall_similarity` (the duplicate check). Each side is an INGESTED title —
   the server cannot read a local file; ingest the revised copy first. The read
   for feedback that arrives as a REVISED COPY.
-- `push_to_dropbox(project_code, filename, content_base64?, dest_name?, overwrite?, dest_path?)` —
+- `push_to_dropbox(project_code, filename, content_base64?, dest_name?, overwrite?, dest_path?, ingest?)` —
   the WRITE-BACK inverse of `fetch_project_source`: put a document you generated
   (a `.pptx` deck, `.docx`, PDF) INTO the project's Dropbox folder, so the
   humans find it where they expect. Pass the bytes as `content_base64` (max
@@ -99,7 +99,21 @@ worked — not as current direction. `Holding` carries its status and no note.
   correction back where the original lives. Refuses to clobber an existing
   name unless `overwrite=true`. No delete or move exists, so when you do not
   know where a file goes, ASK. Team members only; writes with the service's
-  Dropbox credentials.
+  Dropbox credentials. **An upload is not an ingest** (#350): the file is not
+  in the source store, so `add_element_source` cannot resolve it yet. Pass
+  `ingest=true` (with `content_base64`) to queue the ingest of exactly that
+  file and get a `run_id`; without it the result says `ingested: false`.
+- `ingest_url(project_code, url, filename?, dest_path?, overwrite?)` — bring a
+  web page (or a PDF at a URL) into the source store: fetches it, turns HTML
+  into markdown, uploads to `03 Assets/01 Client Assets/` (or `dest_path`) and
+  queues the ingest of that file under your identity. The ingest runs in the
+  background — check with `list_project_sources(title_contains=<title>)`
+  before `add_element_source`. **Detects form gating** (a capture form, "download
+  the guide" wording, a thin body, an unfetched PDF link): the result says
+  `gated: true` with its `signals`, and the source gets the `status_note`
+  "form-gated — landing-page abstract, not the document (detected at ingest…)".
+  A gated result means you have the abstract — get the document itself (try
+  `pdf_links`, or ask the client) and ingest that. Team members only.
 
 The `_sources.md` manifest in each working dir names what exists; these tools
 fetch content. Both project-scoped and shared account-scoped docs are surfaced.
