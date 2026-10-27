@@ -634,6 +634,40 @@ def _list_dropbox(connector, folder: str) -> list[FileRef]:
 # ──────────────────────────────────────────────────────────────────────
 
 
+def ingest_reach_gap(
+    folders: ProjectFolders | None, dropbox_path: str, project_root: str | None = None
+) -> str | None:
+    """Why a scan of this project would NOT pick up the Dropbox file at
+    `dropbox_path`, or None when it would (#350).
+
+    The hosted `ingest_url` / `push_to_dropbox(ingest=True)` queue a
+    file-scoped run, and `only_file_ids` only NARROWS what `list_files` sees —
+    so a file outside the project's Dropbox folder, outside its
+    `asset_ingest_folders` allowlist, or in a project whose Dropbox source is
+    off would be "queued" and then silently ingest nothing. Same rules as
+    `list_files`, checked before the hop. `project_root` (the resolved folder
+    path) is needed only when the caller chose an absolute destination.
+    """
+    if folders is None:
+        return "no MC-2 folder configuration for this project"
+    if _out_of_scope(folders):
+        return ("a self-company workstream with an agreement is not an "
+                "asset-ingest target")
+    if not folders.enable_dropbox or not folders.mc_dropbox_folder_id:
+        return "the project's Dropbox source is not enabled in MC-2"
+    if project_root:
+        root = project_root.rstrip("/").lower() + "/"
+        if not dropbox_path.lower().startswith(root):
+            return f"{dropbox_path} is outside the project's Dropbox folder ({project_root})"
+    allow = folders.asset_ingest_folders
+    ref = FileRef(source="dropbox", id="", name=dropbox_path.rsplit("/", 1)[-1],
+                  mime_type=None, size=None, modified=None, path=dropbox_path)
+    if allow and not _matches_allowlist(ref, allow):
+        return (f"{dropbox_path} is not in the project's ingest folders "
+                f"({', '.join(allow)}) — push it into one of them")
+    return None
+
+
 def _folder_segments(ref: FileRef) -> list[str]:
     """The FOLDER name segments of a ref — its ancestry, NOT the filename.
 
@@ -727,6 +761,38 @@ def _effective_allowlist(
     return (only_folder,) if permitted else _MATCH_NOTHING
 
 
+# Where the last `_drive_connector()` got its Google creds (#364).
+_drive_creds_source: str | None = None
+
+
+def _drive_connector():
+    """Construct a `GoogleDriveConnector` with Drive creds loaded first (#364).
+
+    The Drive twin of `_dropbox_connector`: every ingest construction used to
+    call `GoogleDriveConnector(service_account_file=None)` straight off the
+    ambient env, so a local run never saw the creds a `[drive]` op:// block
+    (or the mc-2 `.env`) holds. Loader errors are printed, never silent.
+    """
+    from cloud_storage.google_drive_connector import GoogleDriveConnector
+
+    global _drive_creds_source
+    try:
+        from cp_engine import config as cp_config
+        from cp_engine.capture_session import find_tenant_root
+
+        root = find_tenant_root(Path.cwd()) or Path.cwd()
+        _drive_creds_source = mc2_db.load_drive_creds(cp_config.load(root))
+    except Exception as exc:  # noqa: BLE001 — creds loading is optional enrichment
+        print(f"[asset-ingest] Drive creds not loaded: {exc}", file=sys.stderr)
+    return GoogleDriveConnector(service_account_file=None)
+
+
+# Where the last `_dropbox_connector()` got its DROPBOX_* creds (#364), so a
+# rejected-token note can say which copy was rejected. None = ambient env /
+# unknown.
+_dropbox_creds_source: str | None = None
+
+
 def _dropbox_connector():
     """Construct a `DropboxConnector` with DROPBOX_* creds ensured first (#154).
 
@@ -742,15 +808,19 @@ def _dropbox_connector():
     """
     from cloud_storage.dropbox_connector import DropboxConnector
 
+    global _dropbox_creds_source
     try:
         from cp_engine import config as cp_config
         from cp_engine import mc2_db
         from cp_engine.capture_session import find_tenant_root
 
         root = find_tenant_root(Path.cwd()) or Path.cwd()
-        mc2_db.load_dropbox_creds(cp_config.load(root))
-    except Exception:  # noqa: BLE001 — creds loading is optional enrichment
-        pass
+        _dropbox_creds_source = mc2_db.load_dropbox_creds(cp_config.load(root))
+    except Exception as exc:  # noqa: BLE001 — creds loading is optional enrichment
+        # Optional, but never silent (#364): a configured 1Password ref that
+        # fails raises here, and the reader needs to know why the connector
+        # then authenticated as nobody.
+        print(f"[asset-ingest] Dropbox creds not loaded: {exc}", file=sys.stderr)
     return DropboxConnector()
 
 
@@ -812,11 +882,7 @@ def list_files(
         if folders.google_drive_folder_id:
             try:
                 if drive_connector is None:
-                    from cloud_storage.google_drive_connector import (
-                        GoogleDriveConnector,
-                    )
-
-                    drive_connector = GoogleDriveConnector(service_account_file=None)
+                    drive_connector = _drive_connector()
                 _conn = drive_connector
                 _fid = folders.google_drive_folder_id
                 results.extend(
@@ -829,7 +895,8 @@ def list_files(
                 )
             except Exception as exc:  # noqa: BLE001 — a dead Drive source must not kill Dropbox; record + continue
                 source_notes.append(
-                    {"source": "drive", "note": f"{type(exc).__name__}: {exc}"}
+                    {"source": "drive", "note": f"{type(exc).__name__}: {exc}",
+                     "kind": "error"}
                 )
                 print(
                     f"[asset-ingest] drive source failed, continuing: {exc}",
@@ -858,9 +925,10 @@ def list_files(
                     )
                 )
             except Exception as exc:  # noqa: BLE001 — a dead Dropbox source must not kill Drive; record + continue
-                source_notes.append(
-                    {"source": "dropbox", "note": f"{type(exc).__name__}: {exc}"}
-                )
+                note = f"{type(exc).__name__}: {exc}"
+                if _dropbox_creds_source:
+                    note += f" (creds from {_dropbox_creds_source})"
+                source_notes.append({"source": "dropbox", "note": note, "kind": "error"})
                 print(
                     f"[asset-ingest] dropbox source failed, continuing: {exc}",
                     file=sys.stderr,
@@ -922,9 +990,7 @@ def download_file(
     """
     if file_ref.source == "drive":
         if drive_connector is None:
-            from cloud_storage.google_drive_connector import GoogleDriveConnector
-
-            drive_connector = GoogleDriveConnector(service_account_file=None)
+            drive_connector = _drive_connector()
         # download_file auto-exports Google-native files and RETURNS the actual
         # written path (it may add `.docx`/`.pdf`/etc. when exporting). Trust the
         # returned path — do NOT assume it equals the destination we passed in.
@@ -1030,6 +1096,16 @@ class IngestRunResult:
     # fan-out skips with a visible note, and the webhook records a structured
     # refusal on the run row. None on every configured (or not-found) run.
     unconfigured_reason: str | None = None
+
+    @property
+    def source_errors(self) -> list[dict[str, str]]:
+        """Sources whose listing RAISED (#364) — auth, bad folder, outage.
+
+        Distinct from config notes (a disabled source, an allowlist summary):
+        a source that could not be reached means the run cannot vouch that
+        nothing was there, so callers count it as a failure.
+        """
+        return [n for n in self.source_notes if n.get("kind") == "error"]
 
 
 # configure_ingest() wires document-ingest's module-level singletons (settings +
@@ -1250,8 +1326,6 @@ def ingest_project_assets(
     # test path (injected client + pipeline) never touches cp config / Supabase.
     # Build the MC-2 client up front (needed for resolve + the scope stamp).
     if client is None:
-        from cp_engine import mc2_db
-
         if supabase_url is not None and supabase_key is not None:
             client = mc2_db.get_client(url=supabase_url, key=supabase_key)
         else:
@@ -1300,9 +1374,7 @@ def ingest_project_assets(
     # here a missing connector just yields url=None for link generation.
     if drive_connector is None and getattr(folders, "enable_google_drive", False):
         try:
-            from cloud_storage.google_drive_connector import GoogleDriveConnector
-
-            drive_connector = GoogleDriveConnector(service_account_file=None)
+            drive_connector = _drive_connector()
         except Exception:  # noqa: BLE001 — list_files handles + notes the failure
             drive_connector = None
     if dropbox_connector is None and getattr(folders, "enable_dropbox", False):
@@ -1333,11 +1405,23 @@ def ingest_project_assets(
         return IngestRunResult(source_notes=source_notes)
 
     if pipeline is None:
-        # Only now (real files, no injected pipeline) do we need Supabase coords.
+        # Only now (real files, no injected pipeline) do we need Supabase coords
+        # — and the pipeline's OPENAI/VOYAGE keys. The ingest path loaded only
+        # SUPABASE_*, which stayed hidden while a dead Dropbox source meant no
+        # local run ever reached this line (#364).
+        from cp_engine import config as cp_config
+
         if supabase_url is None or supabase_key is None:
             supabase_url, supabase_key = mc2_db.load_supabase_creds(
                 cp_config.load(Path.cwd())
             )
+        # Best-effort: the webhook passes its creds in and runs with no tenant
+        # on disk (its keys are already in the environment), so a missing
+        # tenant must not fail the run here.
+        try:
+            mc2_db.load_ingest_creds(cp_config.load(Path.cwd()))
+        except cp_config.CommittedConfigMissing:
+            pass
         _configure_pipeline_once()
         factory = pipeline_factory or _build_pipeline
         pipeline = factory(folders.project_id, supabase_url, supabase_key)
@@ -1869,6 +1953,11 @@ def _flag_confidentiality(
     """Scan the just-ingested asset's chunks for confidentiality markings and
     record them in `status_note` when it is empty (#324 part b).
 
+    Also records the caveat cp wrote into a document it made itself (#350): a
+    page `ingest_url` detected as form-gated carries a `CP-INGEST-NOTE:` line,
+    and that note leads (joined with any marking note) — so the landing-page
+    abstract never reads as the document at the point of use.
+
     Located by the same dedup key `_stamp_scope` uses. A note already on the
     row — a human's `set_source_status`, or a prior detection — is NEVER
     overwritten: a hand-written caveat outranks a detected one, and a
@@ -1878,7 +1967,7 @@ def _flag_confidentiality(
     Returns the note written, or None (no row, no markings, or a note already
     present). Raises on a read/write error; the caller surfaces it.
     """
-    from cp_engine.source_markers import detect_markings, status_note_for
+    from cp_engine.source_markers import detect_markings, ingest_note_in, status_note_for
 
     owner_col, owner_val = _owner_filter(folders)
     rows = (
@@ -1907,9 +1996,11 @@ def _flag_confidentiality(
         if len(page) < _CHUNK_PAGE:
             break
         start += _CHUNK_PAGE
-    note = status_note_for(detect_markings("\n\n".join(texts)))
-    if note is None:
+    body = "\n\n".join(texts)
+    notes = [n for n in (ingest_note_in(body), status_note_for(detect_markings(body))) if n]
+    if not notes:
         return None
+    note = "; ".join(notes)
     client.table(Tables.RAG_ASSETS).update({"status_note": note}).eq(
         "id", asset_id
     ).is_("status_note", "null").execute()
@@ -2080,9 +2171,7 @@ def list_project_files_annotated(
     dropbox_connector = None
     if getattr(folders, "enable_google_drive", False):
         try:
-            from cloud_storage.google_drive_connector import GoogleDriveConnector
-
-            drive_connector = GoogleDriveConnector(service_account_file=None)
+            drive_connector = _drive_connector()
         except Exception:  # noqa: BLE001 — list_files notes the per-source failure
             drive_connector = None
     if getattr(folders, "enable_dropbox", False):

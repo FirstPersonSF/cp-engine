@@ -387,9 +387,9 @@ def lint_curation(rows: list[dict], *, today=None,
                           "hold the raw material")
             else:
                 remedy = ("this card may be the only copy of the raw text — "
-                          "land it as a source first (push_to_dropbox, "
-                          "ingest, then add_element_source), then distill "
-                          "the card")
+                          "land it as a source first (push_to_dropbox "
+                          "with ingest=True, then add_element_source once "
+                          "it lists), then distill the card")
             out.append(
                 f"⚠ undistilled capture: '{title}' ({eid}) is "
                 f"{len(body):,} chars on the {layer} layer — {remedy}")

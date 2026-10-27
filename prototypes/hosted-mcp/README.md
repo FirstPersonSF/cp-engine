@@ -138,7 +138,7 @@ only**, and write an audit row on success.
 | `list_spine_relations(project_code, element_key?)` | `spine_relations` | Active edges — one element's (both directions, retired-tolerant key) or the whole project's; endpoints annotated with live framings (#125). |
 | `pull_spine_element(element_id, project_code?)` | `spine_substance` | Body + metadata; newest version wins. |
 | `list_commitments(project_code)` | `commitments` | Real rows since the team-keyed policy pass. |
-| `list_project_sources(project_code)` | `rag_assets` | Manifest shape; drops superseded assets. |
+| `list_project_sources(project_code, title_contains?, limit?)` | `rag_assets` | Manifest shape, newest first; drops superseded assets; narrows by title or to the newest N (#363). |
 | `pull_project_source(asset_id, max_chars=40000)` | `asset_chunks` | Assembles document text — see below. |
 | `list_project_meetings(project_code)` | `fathom_meetings` | List shape; excludes `transcript`/`summary`. **Returns the uuid `id` as `meeting_id`, NOT `recording_id`** — see batch 5. |
 | `semantic_search(query, project_code?, limit=10)` | `match_chunks_simple` RPC | Voyage-embedded query. |

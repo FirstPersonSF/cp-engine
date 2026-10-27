@@ -112,6 +112,21 @@ def detect_markings(text: str | None) -> list[Marking]:
     return [mk for _, mk in found]
 
 
+# A caveat cp itself wrote INTO a document it made (#350): `ingest_url` puts
+# one line `CP-INGEST-NOTE: <note>` in the body of a page it detected as
+# form-gated, and ingest records `<note>` as `status_note`. The tag is ours,
+# not a marking a document carries — `url_source.prepare` defangs any copy of
+# it in third-party page text, so a page cannot write its own caveat.
+INGEST_NOTE_TAG = "CP-INGEST-NOTE:"
+_INGEST_NOTE_RE = re.compile(re.escape(INGEST_NOTE_TAG) + r"[ \t]*(\S[^\n]*)")
+
+
+def ingest_note_in(text: str | None) -> str | None:
+    """The note cp wrote into this body at ingest, or None."""
+    m = _INGEST_NOTE_RE.search(text or "")
+    return _squash(m.group(1)) if m else None
+
+
 def status_note_for(markings: list[Marking]) -> str | None:
     """The `status_note` a detected marking earns, or None for no markings.
 

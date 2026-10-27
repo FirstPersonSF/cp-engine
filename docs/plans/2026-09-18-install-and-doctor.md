@@ -408,9 +408,14 @@ unsupported configuration came to exist.
    It has never committed a hook change because the packaged and tenant hooks
    are byte-identical — nothing to deliver since 2026-08-22. Benign silence, not
    a dead path.
-3. **`hosted_vs_local`** — does hosted deployment pin to the CLI, or can they
-   drift? Whichever is true should be written down.
-4. **The marketplace tracks `ref: "main"`; the CLI installs from a tag.** Two
-   halves with structurally different update semantics. Raised by the gap
-   analysis, not yet addressed anywhere.
+3. ~~`hosted_vs_local`~~ **Resolved: they drift.** Deployment does not pin the
+   hosted server to the CLI — step 5's first live run found hosted at 0.120.2
+   against a 0.120.5 engine. `hosted_vs_local` in `cxp doctor` (full mode) is
+   what says so.
+4. ~~The marketplace tracks `ref: "main"`; the CLI installs from a tag.~~
+   **Resolved by detection, not by aligning them (2026-10-27).** The two halves
+   still update differently, but the drift they produce is the plugin and the
+   CLI disagreeing — which `plugin_vs_cli` reports in both directions, every
+   session — and `cxp doctor` prints the marketplace clone's HEAD and fetch age,
+   so a lagging clone is visible rather than inferred.
 5. **Marcello is unaudited.** Two machines refuted two versions of this plan.
