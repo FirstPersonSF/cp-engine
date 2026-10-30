@@ -1,5 +1,5 @@
 {
-  "description": "SessionStart: ONE entry. Claude Code runs same-matcher hooks in parallel with no ordering guarantee, so the two scripts are chained by session-start.sh in a fixed order: CLI-version observe/sync, then the tenant-clone freshness gate (#296). A fourth child prints the one-line skills hint (#395). SessionEnd drops the session from the tenant clone's session registry (#394).",
+  "description": "SessionStart: ONE entry. Claude Code runs same-matcher hooks in parallel with no ordering guarantee, so the two scripts are chained by session-start.sh in a fixed order: CLI-version observe/sync, then the tenant-clone freshness gate (#296). A fourth child prints the one-line skills hint (#395); the chain emits it as the user-visible systemMessage and everything else as additionalContext (#402). SessionEnd drops the session from the tenant clone's session registry (#394).",
   "hooks": {
     "SessionStart": [
       {
