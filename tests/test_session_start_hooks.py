@@ -337,3 +337,142 @@ def test_chain_drains_stdin_and_both_children_run(tmp_path: Path):
     r = _run(CHAIN, _tenant(tmp_path), _env(tmp_path, b, _plugin_root(tmp_path, "0.120.5")))
     assert r.returncode == 0
     assert (tmp_path / "git.log").exists(), "tenant-freshness.sh never ran"
+
+
+# ── #402: the skills hint is shown to the PERSON (systemMessage) ─────────
+#
+# Plain SessionStart stdout reaches Claude only. The chain now captures every
+# child's stdout and prints ONE JSON object: the hint as `systemMessage`
+# (shown to the user) and everything it used to print plainly as
+# `hookSpecificOutput.additionalContext` (Claude's context). Anything short of
+# a hint — or any failure to build the JSON — falls back to the old plain text.
+
+HINT = 'cp skills: wrap up · prep sprint planning — /cp-help for "details" \\ ok'
+
+
+def _hint_bin(tmp: Path, cli_version: str = "0.119.0", hint: str = HINT,
+              skills_fails: bool = False) -> Path:
+    """A fake `cxp` that also answers `skills --hint` and `session register`
+    (the latter prints a line, so the registrar's output is visible too)."""
+    b = tmp / "bin"
+    b.mkdir(exist_ok=True)
+    (tmp / "hint.txt").write_text(hint + "\n")
+    cxp = b / "cxp"
+    cxp.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "${1:-}" in\n'
+        f'  --version) echo "cxp, version {cli_version}";;\n'
+        + ("  skills) echo 'Error: No such command skills' >&2; exit 2;;\n" if skills_fails else
+           f'  skills) cat "{tmp}/hint.txt";;\n')
+        + "  session) cat >/dev/null; echo '[cp] 1 other cp session is active.';;\n"
+        "  *) exit 1;;\n"
+        "esac\n"
+    )
+    cxp.chmod(0o755)
+    return b
+
+
+def _old_chain_stdout(tmp: Path, cwd: Path, env: dict) -> str:
+    """CONTROL: the chain as released in v0.133.0 (plain stdout), run beside
+    the CURRENT children (unchanged since then) on the same fixture."""
+    old = subprocess.run(
+        ["git", "-C", str(REPO), "show", "v0.133.0:plugin/hooks/session-start.sh"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert "systemMessage" not in old, "v0.133.0 predates #402 by construction"
+    d = tmp / "old-hooks"; d.mkdir(exist_ok=True)
+    for child in ("sync-cli-version.sh", "tenant-freshness.sh", "session-register.sh", "skills-hint.sh"):
+        (d / child).write_text((HOOKS / child).read_text())
+    (d / "session-start.sh").write_text(old)
+    r = _run(d / "session-start.sh", cwd, env)
+    assert r.returncode == 0
+    return r.stdout
+
+
+def test_402_inside_a_tenant_emits_one_json_object_with_a_visible_hint(tmp_path: Path):
+    t = _tenant(tmp_path)
+    env = _env(tmp_path, _hint_bin(tmp_path), _plugin_root(tmp_path, "0.120.5"))
+    r = _run(CHAIN, t, env)
+    assert r.returncode == 0
+    out = json.loads(r.stdout)  # the WHOLE stdout must be one object, or Claude Code reads it as text
+    assert out["systemMessage"] == HINT
+    assert "\n" not in out["systemMessage"]
+    hso = out["hookSpecificOutput"]
+    assert hso["hookEventName"] == "SessionStart"
+    ctx = hso["additionalContext"]
+    # Everything the chain used to feed Claude still reaches Claude: the
+    # version observe line, the registrar's line, and the hint itself.
+    assert ctx.splitlines()[0] == WARN_FIRST_LINE
+    assert "[cp] 1 other cp session is active." in ctx
+    assert ctx.splitlines()[-1] == HINT
+    # And byte-for-byte what the pre-#402 chain printed as plain stdout.
+    assert ctx == _old_chain_stdout(tmp_path, t, env).rstrip("\n")
+
+
+def test_402_hint_alone_still_reaches_claude(tmp_path: Path):
+    """A healthy session: no other child prints, so additionalContext is
+    the hint alone — Claude kept seeing it before #402 and still does."""
+    env = _env(tmp_path, _hint_bin(tmp_path, cli_version="0.120.5"), _plugin_root(tmp_path, "0.120.5"))
+    # No registrar line either: a fake whose `session` is silent.
+    cxp = tmp_path / "bin" / "cxp"
+    cxp.write_text(cxp.read_text().replace("echo '[cp] 1 other cp session is active.'", "true"))
+    out = json.loads(_run(CHAIN, _tenant(tmp_path), env).stdout)
+    assert out["systemMessage"] == HINT
+    assert out["hookSpecificOutput"]["additionalContext"] == HINT
+
+
+def test_402_outside_a_tenant_prints_no_json(tmp_path: Path):
+    outside = tmp_path / "not-a-tenant"; outside.mkdir()
+    b = _hint_bin(tmp_path, cli_version="0.120.5")
+    r = _run(CHAIN, outside, _env(tmp_path, b, _plugin_root(tmp_path, "0.120.5")))
+    assert r.returncode == 0
+    assert r.stdout == ""
+
+
+@pytest.mark.parametrize("case", ["cxp_missing", "cxp_too_old"])
+def test_402_no_hint_means_the_old_plain_output(tmp_path: Path, case: str):
+    t = _tenant(tmp_path)
+    if case == "cxp_missing":
+        b = tmp_path / "emptybin"; b.mkdir()
+    else:
+        b = _hint_bin(tmp_path, skills_fails=True)
+    env = _env(tmp_path, b, _plugin_root(tmp_path, "0.120.5"))
+    r = _run(CHAIN, t, env)
+    assert r.returncode == 0
+    assert not r.stdout.lstrip().startswith("{"), "no hint → no JSON"
+    assert r.stdout == _old_chain_stdout(tmp_path, t, env)
+    if case == "cxp_too_old":
+        assert r.stdout.splitlines()[0] == WARN_FIRST_LINE
+
+
+@pytest.mark.parametrize("broken", ["exits_nonzero", "prints_garbage"])
+def test_402_json_build_failure_falls_back_to_plain_output(tmp_path: Path, broken: str):
+    """No usable python3 → the pre-#402 plain text, never a half-built object
+    (stdout that fails to parse is dropped from Claude's context entirely)."""
+    t = _tenant(tmp_path)
+    b = _hint_bin(tmp_path)
+    py = b / "python3"
+    py.write_text("#!/usr/bin/env bash\n" + ("exit 1\n" if broken == "exits_nonzero" else "echo 'not json'\n"))
+    py.chmod(0o755)
+    env = _env(tmp_path, b, _plugin_root(tmp_path, "0.120.5"))
+    r = _run(CHAIN, t, env)
+    assert r.returncode == 0
+    assert not r.stdout.startswith("{")
+    assert r.stdout == _old_chain_stdout(tmp_path, t, env)
+    assert r.stdout.splitlines()[-1] == HINT
+
+
+def test_402_visible_message_stays_one_line(tmp_path: Path):
+    b = _hint_bin(tmp_path, hint="cp skills: wrap up\nsecond line must not show")
+    r = _run(CHAIN, _tenant(tmp_path), _env(tmp_path, b, _plugin_root(tmp_path, "0.120.5")))
+    out = json.loads(r.stdout)
+    assert out["systemMessage"] == "cp skills: wrap up"
+
+
+def test_402_a_planted_json_module_in_the_tenant_cannot_break_encoding(tmp_path: Path):
+    """The encoder runs with cwd inside the tenant; `python3 -I` keeps a
+    stray json.py there off sys.path."""
+    t = _tenant(tmp_path)
+    (t / "json.py").write_text("raise SystemExit('planted')\n")
+    r = _run(CHAIN, t, _env(tmp_path, _hint_bin(tmp_path), _plugin_root(tmp_path, "0.120.5")))
+    assert json.loads(r.stdout)["systemMessage"] == HINT

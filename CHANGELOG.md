@@ -12,6 +12,15 @@ Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automat
 EXISTS` instead of `ON CONFLICT`, which `project_integrations` (no unique key
 on project/service/label) rejects with 42P10.
 
+*Skills hint shown to the person (#402).* The start-of-session skills line
+(#395) now reaches the person as the SessionStart hook's `systemMessage`
+instead of only Claude's context. `session-start.sh` captures its children's
+stdout and prints one JSON object; everything it used to print plainly
+(version and freshness warnings, the session registrar's line, the hint) is
+passed to Claude unchanged as `hookSpecificOutput.additionalContext`. No hint
+(outside a tenant, no `cxp`, a `cxp` without `skills`) or any failure to
+build the JSON falls back to the old plain output.
+
 ## v0.133.0 — 2026-10-30
 
 **Several sessions at once, a skill guide, folder rules, email attachments, and a cleaner commitments sweep.** Minor: new `cxp session`, `cxp skills`, `cxp folders` and `cxp aliases` commands, new hosted `add_project_link`; mc-2 mig 206 (already applied) makes corpus-wide search index-first.

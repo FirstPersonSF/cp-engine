@@ -325,7 +325,8 @@ def test_hook_survives_a_cxp_without_skills(tmp_path: Path):
 
 def test_hook_is_chained_last_parses_and_is_executable():
     src = CHAIN.read_text()
-    assert 'bash "$here/skills-hint.sh" </dev/null || true' in src
+    # #402: captured (and trimmed to one line) rather than printed directly.
+    assert 'bash "$here/skills-hint.sh" </dev/null | head -n 1 || true' in src
     assert src.index("session-register.sh") < src.index("skills-hint.sh")
     r = subprocess.run(["bash", "-n", str(HOOK)], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
