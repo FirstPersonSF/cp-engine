@@ -63,6 +63,30 @@ over the 8s timeout cold, now about 95 ms; project-scoped search unchanged).
 The interim switch to `match_chunks` from #384 is reverted, so both scopes
 use the one RPC.
 
+**Email attachments land in the project (#376).** Patch (no new verb, command or table).
+
+*Attachments on a `cp+<code>@` email are filed and ingested.* They used to be
+dropped. The cp-email-worker now carries each one as base64 in the signed
+payload, and lists the ones it leaves out with a reason: images under 2 KB
+(tracking pixels), inline images under 40 KB (signature logos), files over
+15 MB, and anything past 25 MB in total. For an address that resolves to a
+project, `/api/inbound-email` uploads each file to the project's Dropbox at
+`03 Assets/01 Client Assets/Email/<YYYY-MM-DD> <subject-slug>/<filename>`
+with the engine's `push_to_dropbox`, checks it with `ingest_reach_gap`, and
+queues one file-scoped asset-ingest run for the reachable files (the same
+`asset_ingest_runs` row and background ingest as `/api/assets/ingest`). A
+file outside the project's `asset_ingest_folders` is uploaded anyway and
+reported `uploaded, not queued: <reason>`. The response's `attachments` and
+the parked email's `## Attachments` section list every file with its path and
+status. A re-delivered message does not upload twice: the folder comes from
+the email's Date header, and a file whose Dropbox `content_hash` already
+matches is reported `already filed`; a different file under the same name
+becomes `name (2).ext`. An attachment failure never fails the email. Emails
+that are not filed (bare `cp@`, unknown code, account/planning addresses) name
+their attachments under `attachments_not_filed`. Payloads without the new
+fields are handled as before, so the webhook and the Worker deploy in either
+order.
+
 **A date written into a commitment's text is flagged when its due date disagrees.** Patch (no new verb, command or table).
 
 *Date drift in the sweep (#366).* `set_commitment_date` moves a row's
