@@ -209,3 +209,39 @@ def archive_project_assets_cmd(code: str) -> None:
     )
 
 
+
+
+@click.command(name="folders")
+@click.option("--write-sql", "write_sql", is_flag=True,
+              help="Also print (never run) project_integrations SQL for "
+              "convention folders that exist.")
+@click.option("--offline", is_flag=True,
+              help="Skip Dropbox/Drive; provider columns read 'unchecked'.")
+def folders_cmd(write_sql: bool, offline: bool) -> None:
+    """Audit Dropbox/Drive folders for every active workstream (#396).
+
+    Read-only: per workstream, which sources are on, the bound folder (and
+    whether it exists), the folder inherited from a parent, and the
+    convention folder (`/1P Active Projects/<code> <name>`, `/1P Internal/…`,
+    `/Canonic/…`) with whether Dropbox has it. Nothing is written anywhere.
+    """
+    from cp_engine import asset_ingest, folder_rules
+
+    client = _cli.build_mc2_client()
+    connectors: dict = {"dropbox": None, "drive": None}
+    if not offline:
+        for source, factory in (("dropbox", asset_ingest._dropbox_connector),
+                                ("drive", asset_ingest._drive_connector)):
+            try:
+                connectors[source] = factory()
+            except Exception as exc:  # noqa: BLE001 — that source reads 'unchecked'
+                click.echo(f"{source}: unchecked ({type(exc).__name__}: {exc})", err=True)
+    tree = folder_rules.read_tree(client)
+    rows = folder_rules.audit_folders(client, connectors=connectors, tree=tree)
+    click.echo(folder_rules.render_audit(rows))
+    unbound = folder_rules.unbound_workstreams(tree)
+    click.echo(f"\n{len(rows)} active · {len(unbound)} with a source on and no folder")
+    if write_sql:
+        stmts = folder_rules.fill_sql(rows)
+        click.echo("\n-- project_integrations fill (#396) — review, then apply by hand")
+        click.echo("\n".join(stmts) if stmts else "-- nothing: no convention folder found to bind")

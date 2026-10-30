@@ -499,6 +499,35 @@ def check_unbound(client) -> Check:
     return Check(label, not floating, text, detail, items)
 
 
+FOLDERS_LISTED = 10  # sub-lines under "Folders"; the rest are counted
+
+
+def check_folders(client) -> Check:
+    """Workstreams with Dropbox or Drive on and no folder to read (#396).
+
+    Active (Deal/Open), ingestable workstreams with a source enabled, no
+    folder bound, and no ancestor folder to inherit from — each one ingests
+    nothing, silently. Named under the line, code + the unbound sources;
+    `detail["unbound"]` has all. MC-2 only: an ancestor with a folder counts
+    as inheritable without listing it (`cxp folders` checks the subfolder)."""
+    label = "Folders"
+    if client is None:
+        return _unreadable(label, _NO_CLIENT, "no client")
+    try:
+        from cp_engine import folder_rules
+
+        unbound = folder_rules.unbound_workstreams(folder_rules.read_tree(client))
+    except Exception as exc:  # noqa: BLE001
+        return _unreadable(label, exc)
+    if not unbound:
+        return Check(label, True, "all bound", {"unbound": []})
+    detail = {"unbound": [{"code": c, "sources": s} for c, s in unbound]}
+    items = [f"{c} · {'+'.join(s)}" for c, s in unbound[:FOLDERS_LISTED]]
+    if len(unbound) > FOLDERS_LISTED:
+        items.append(f"…and {len(unbound) - FOLDERS_LISTED} more")
+    return Check(label, False, f"{len(unbound)} unbound", detail, items)
+
+
 def _project_codes(client, ids: set) -> dict:
     """{project_id: code} for `ids`; {} when the read fails."""
     try:
@@ -684,6 +713,7 @@ def gather(
         check_hosted(hosted, hosted_err),
         check_ci(github, now),
         check_unbound(client),
+        check_folders(client),
         check_stale_summaries(tenant_root),
         check_copies(hosted, cp_engine.__version__, current_sprint_week_iso(now)),
     ]

@@ -230,12 +230,12 @@ def test_gather_never_raises_and_renders_every_line(tmp_path: Path):
     rep = dh.gather(tenant_root=tmp_path, client=None, github=boom,
                     hosted_fetch=boom, now=NOW)
     text = rep.render()
-    assert len(rep.checks) == 8 and not rep.ok
+    assert len(rep.checks) == 9 and not rep.ok
     labels = [c.label for c in rep.checks]
     assert labels == ["Sync", "Ingest 24h", "Webhook 24h", "Hosted", "CI main",
-                      "Spine unbound", "Stale summaries", "Copies"]
+                      "Spine unbound", "Folders", "Stale summaries", "Copies"]
     assert all(len(lbl.split()) <= 3 for lbl in labels)  # Tony's rule 1
-    assert text.count("⚠️") == 8 and "✅" not in text
+    assert text.count("⚠️") == 9 and "✅" not in text
 
 
 def test_post_refuses_without_a_partners_channel():

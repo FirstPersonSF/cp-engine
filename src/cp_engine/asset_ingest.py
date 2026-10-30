@@ -54,7 +54,7 @@ from cp_engine.mc2_db import Tables
 # project_integrations bindings (read-flip) — hydrated onto the row by the
 # resolve functions before `_row_to_folders` maps it.
 _PROJECT_COLUMNS = (
-    "id, company_id, deal_stage, parent_id, "
+    "id, company_id, deal_stage, parent_id, number, name, full_job_name, "
     "enable_google_drive, enable_dropbox, asset_ingest_folders, companies(kind)"
 )
 
@@ -93,10 +93,34 @@ class ProjectFolders:
     # `parent_id` — a row read without the column never promotes.
     is_account_node: bool = False
 
+    # Folder rules (#396, `cp_engine.folder_rules`). Identity for matching a
+    # workstream's folder inside its parent's (job number / name), and the
+    # tree position the rules need. All default so every construction site
+    # stays valid.
+    parent_id: str | None = None
+    number: int | None = None
+    name: str | None = None
+    full_job_name: str | None = None
+    code: str | None = None
+    mc_status: str | None = None
+    # source ("dropbox"/"drive") → the ancestor code a folder was INHERITED
+    # from (rule 1); empty when every folder is this row's own binding.
+    inherited_from: dict[str, str] = field(default_factory=dict)
+    # A parent node (has a non-archived child) — account or program. Its own
+    # folder ingests at account scope (rule 2); set by `apply_folder_rules`.
+    is_parent_node: bool = False
+    # The parts of this node's folders that belong to its children (rule 2):
+    # Dropbox paths, and Drive top-level subfolder NAMES. `list_files` drops
+    # files under them so a job's files are never re-filed as company docs.
+    child_dropbox_roots: tuple[str, ...] = ()
+    child_drive_folders: tuple[str, ...] = ()
+
     @property
     def ingest_scope(self) -> str:
-        """The `rag_assets.scope` this workstream's ingests are stamped with."""
-        return "account" if self.is_account_node else "project"
+        """The `rag_assets.scope` this workstream's ingests are stamped with:
+        'account' for an account node or any parent node (#396), else
+        'project'."""
+        return "account" if (self.is_account_node or self.is_parent_node) else "project"
 
 
 @dataclass
@@ -181,12 +205,25 @@ def _row_to_folders(row: dict) -> ProjectFolders:
         and not has_agreement
     )
 
+    full_job_name = row.get("full_job_name") or None
+    code = None
+    if full_job_name:
+        from cp_engine.state import slug_full_job_name
+
+        code = slug_full_job_name(full_job_name) or None
+
     return ProjectFolders(
         project_id=row.get("id"),
         company_id=row.get("company_id"),
         company_kind=company_kind,
         has_agreement=has_agreement,
         is_account_node=is_account_node,
+        parent_id=row.get("parent_id"),
+        number=row.get("number"),
+        name=row.get("name"),
+        full_job_name=full_job_name,
+        code=code,
+        mc_status=row.get("mc_status"),
         google_drive_folder_id=row.get("google_drive_folder_id") or None,
         mc_dropbox_folder_id=row.get("mc_dropbox_folder_id") or None,
         enable_google_drive=bool(row.get("enable_google_drive")),
@@ -939,6 +976,19 @@ def list_files(
             source_notes.append({"source": "dropbox", "note": note})
             print(f"[asset-ingest] {note} — skipping Dropbox", file=sys.stderr)
 
+    # ── Child folders (#396, rule 2) ──
+    # A parent node's folder may hold its children's folders; those files
+    # are the children's, never company documents. Dropped before the
+    # allowlist, after the (shared, cached) listing.
+    from cp_engine.folder_rules import exclude_child_folders
+
+    results, dropped = exclude_child_folders(folders, results)
+    if dropped:
+        source_notes.append({
+            "source": "filter",
+            "note": f"{dropped} files under child workstream folders left to the children",
+        })
+
     # ── Folder allowlist ──
     # Applied AFTER both sources have built `results`, so a single segment-CONTAINS
     # rule covers Drive + Dropbox uniformly. An EMPTY allowlist is a true no-op —
@@ -1370,6 +1420,14 @@ def ingest_project_assets(
         # already printed the reason to stderr.
         return IngestRunResult(project_found=False)
 
+    # Folder rules (#396): an unbound source inherits its parent's subfolder
+    # when one really exists; a parent node's folder ingests at account
+    # scope minus its children's subfolders. Connectors are built only when
+    # a rule needs a listing, and reused below.
+    rule_notes, drive_connector, dropbox_connector = _apply_folder_rules(
+        client, folders, drive_connector, dropbox_connector
+    )
+
     # Confirm gate (#59): a client project whose ENABLED sources have no folder
     # id would silently list nothing — short-circuit BEFORE building connectors
     # or touching a provider, and record the reason so every entry point (CLI,
@@ -1378,13 +1436,18 @@ def ingest_project_assets(
     # existing skip (the reason there is the company kind, not folders).
     unconfigured = folders_unconfigured_reason(folders)
     if unconfigured is not None:
+        # Say why the parent's folder did not serve either (#396).
+        why_not = [n["note"] for n in rule_notes if n.get("kind") != "inherited"
+                   and "inherit" in n.get("note", "")]
+        if why_not:
+            unconfigured = f"{unconfigured}; {'; '.join(why_not)}"
         print(
             f"[asset-ingest] {project_code}: {unconfigured} — nothing to ingest",
             file=sys.stderr,
         )
         return IngestRunResult(
             unconfigured_reason=unconfigured,
-            source_notes=[{"source": "config", "note": unconfigured}],
+            source_notes=[{"source": "config", "note": unconfigured}, *rule_notes],
         )
 
     # Build the connectors ONCE up front (when their source is enabled) so the
@@ -1413,6 +1476,7 @@ def ingest_project_assets(
         allowlist=_effective_allowlist(only_folder, folders.asset_ingest_folders),
         use_cache=use_cache,
     )
+    source_notes = [*rule_notes, *source_notes]
     # File-scoped narrowing (picker's "ingest exactly these"): keep only the
     # listed files whose selection key was chosen. Pure subset of the scan
     # above — never widens. `None` disables; an empty set legitimately scans
@@ -2089,6 +2153,25 @@ def _owner_filter(folders: ProjectFolders) -> tuple[str, str]:
     return "project_id", folders.project_id
 
 
+def _apply_folder_rules(client, folders: ProjectFolders, drive_connector, dropbox_connector):
+    """`folder_rules.apply_folder_rules` for an ingest/listing entry point →
+    ``(notes, drive_connector, dropbox_connector)``. Connectors the caller
+    injected are used as-is; ones a rule had to build come back for reuse.
+    Never raises: a rule that fails leaves the run exactly as before #396."""
+    from cp_engine import folder_rules
+
+    try:
+        res = folder_rules.apply_folder_rules(
+            client, folders,
+            connectors={"drive": drive_connector, "dropbox": dropbox_connector},
+        )
+    except Exception as exc:  # noqa: BLE001 — a rule must never fail the run
+        print(f"[asset-ingest] folder rules skipped: {exc}", file=sys.stderr)
+        return [{"source": "config", "note": f"folder rules skipped: {exc}"}], \
+            drive_connector, dropbox_connector
+    return res.notes, res.connectors.get("drive"), res.connectors.get("dropbox")
+
+
 def _out_of_scope(folders: ProjectFolders) -> bool:
     """True for a self-company workstream that carries an agreement — house
     / framework territory, never an asset-ingest target. Client workstreams
@@ -2181,23 +2264,24 @@ def list_project_files_annotated(
             "files": [],
         }
 
+    rule_notes, drive_connector, dropbox_connector = _apply_folder_rules(
+        client, folders, None, None
+    )
     unconfigured = folders_unconfigured_reason(folders)
     if unconfigured is not None:
         return {
             "project_found": True,
             "unconfigured_reason": unconfigured,
-            "source_notes": [{"source": "config", "note": unconfigured}],
+            "source_notes": [{"source": "config", "note": unconfigured}, *rule_notes],
             "files": [],
         }
 
-    drive_connector = None
-    dropbox_connector = None
-    if getattr(folders, "enable_google_drive", False):
+    if drive_connector is None and getattr(folders, "enable_google_drive", False):
         try:
             drive_connector = _drive_connector()
         except Exception:  # noqa: BLE001 — list_files notes the per-source failure
             drive_connector = None
-    if getattr(folders, "enable_dropbox", False):
+    if dropbox_connector is None and getattr(folders, "enable_dropbox", False):
         try:
             dropbox_connector = _dropbox_connector()
         except Exception:  # noqa: BLE001 — list_files notes the per-source failure
@@ -2210,6 +2294,7 @@ def list_project_files_annotated(
         allowlist=folders.asset_ingest_folders,
         use_cache=use_cache,
     )
+    source_notes = [*rule_notes, *source_notes]
 
     # Batch-join against this owner's active rag_assets. Pull the two match keys
     # (source_file_id and meta.change_token) for every live row ONCE, then set

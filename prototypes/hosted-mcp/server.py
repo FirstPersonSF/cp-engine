@@ -2780,6 +2780,69 @@ def list_project_meetings(project_code: str) -> dict[str, Any]:
     }
 
 
+def merge_account_hits(
+    project_rows: list[dict[str, Any]],
+    account_rows: list[dict[str, Any]],
+    account_ids: set[str],
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Both arms of a project-scoped chunk search, best first (#396).
+
+    `account_rows` came from the RPC scoped to an account/program node, so
+    they also carry that node's PROJECT-scoped chunks: only rows whose asset
+    is account-scoped are kept. Deduped by chunk, ordered by similarity,
+    cut to `limit`.
+    """
+    seen = {r.get("chunk_id") for r in project_rows}
+    merged = list(project_rows)
+    for r in account_rows:
+        if r.get("asset_id") in account_ids and r.get("chunk_id") not in seen:
+            seen.add(r.get("chunk_id"))
+            merged.append(r)
+    merged.sort(key=lambda r: -(r.get("similarity") or 0.0))
+    return merged[:limit]
+
+
+def _with_account_hits(
+    client: Any, project_id: str, rows: list[dict[str, Any]], *,
+    query_embedding: str, limit: int,
+) -> tuple[list[dict[str, Any]], set[str], str | None]:
+    """Add the company's account-scoped chunks to a project-scoped search.
+
+    → ``(rows, account_asset_ids, error)``. One RPC per node that owns
+    account assets (usually the one account node). Fail-soft: an error
+    returns the project rows untouched plus the reason, which the response
+    surfaces — "no company documents matched" and "could not look" must not
+    read the same.
+    """
+    try:
+        proj = (client.table("projects").select("company_id")
+                .eq("id", project_id).limit(1).execute().data or [])
+        company_id = proj[0].get("company_id") if proj else None
+        if not company_id:
+            return rows, set(), None
+        assets = (client.table("rag_assets").select("id, project_id")
+                  .eq("company_id", company_id).eq("scope", "account")
+                  .eq("status", "active").limit(5000).execute().data or [])
+        account_ids = {a.get("id") for a in assets if a.get("id")}
+        owners = sorted({a.get("project_id") for a in assets
+                         if a.get("project_id") and a.get("project_id") != project_id})
+        account_rows: list[dict[str, Any]] = []
+        for owner in owners:
+            account_rows.extend(
+                client.rpc("match_chunks_for_project", {
+                    "query_embedding": query_embedding,
+                    "match_threshold": 0.0,
+                    "match_count": limit,
+                    "filter_project_id": owner,
+                }).execute().data or []
+            )
+        return merge_account_hits(rows, account_rows, account_ids, limit), account_ids, None
+    except Exception as exc:  # noqa: BLE001 — the project's own hits still return
+        log.warning("account-scope search arm failed: %s", exc)
+        return rows, set(), f"{type(exc).__name__}: {exc}"
+
+
 def _hit_project_statuses(
     client, spine: list[dict[str, Any]], rows: list[dict[str, Any]]
 ) -> tuple[dict[str, str | None], dict[str, str | None]]:
@@ -2844,6 +2907,10 @@ def semantic_search(
     RPC. That RPC is SECURITY INVOKER, so PostgREST executes it as the caller
     and RLS applies inside it — the same authorization boundary as a plain
     table read, which is what makes vector search safe to expose here at all.
+
+    A project-scoped search also searches the company's account-scoped
+    documents (files filed under an account or program node, #396); those
+    hits carry `asset_scope: "account"`.
 
     `project_code` filters SERVER-SIDE (mc-2 mig 144), so `limit` means what it
     says. Until that migration the scoped RPC was broken — it joined a relation
@@ -2991,6 +3058,19 @@ def semantic_search(
             "results": [],
         }
 
+    # #396: a project-scoped search also reads the company's ACCOUNT-scoped
+    # assets (filed under an account or program node), the same union
+    # `list_project_sources` and `read_scoped_asset_chunks` already make.
+    # `match_chunks_for_project` filters on `project_id` alone, so without
+    # this a child workstream never found its parent's brand guidelines.
+    account_ids: set[str] = set()
+    account_error: str | None = None
+    if project_id:
+        rows, account_ids, account_error = _with_account_hits(
+            client, project_id, rows, query_embedding="[" + ",".join(str(f) for f in vector) + "]",
+            limit=limit,
+        )
+
     # The RPC returns the asset title with each row (mig 144), so the batched
     # rag_assets read this used to need is gone.
     titles = {r.get("asset_id"): r.get("title") for r in rows if r.get("asset_id")}
@@ -3010,6 +3090,8 @@ def semantic_search(
             "title": titles.get(r.get("asset_id")),
             "similarity": r.get("similarity"),
             "text": (r.get("text") or "")[:2000],
+            # A company document reached from this workstream (#396).
+            **({"asset_scope": "account"} if r.get("asset_id") in account_ids else {}),
             **hit_fields(asset_status.get(str(r.get("asset_id")))),
         }
         for r in rows
@@ -3032,6 +3114,12 @@ def semantic_search(
         "available": True,
         "embed_model": EMBED_MODEL,
         "scope": "project" if project_id else "corpus-wide",
+        **(
+            {"account_search_error": account_error,
+             "note_on_account": "the company's account-scoped documents could "
+             "not be searched — results are this workstream's own only"}
+            if account_error else {}
+        ),
         # What we have ESTABLISHED, read first. Distilled elements carry the
         # judgement; the chunks below are the raw material they were drawn from.
         "spine_context": [
