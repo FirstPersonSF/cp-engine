@@ -1076,6 +1076,17 @@ def count_exceptions_in_window(
     return len(entries)
 
 
+def _claude_md_skill_rows() -> list[dict]:
+    """Trigger-table rows for the plugin's skills (#395), from the committed
+    snapshot of their frontmatter — never `CLAUDE_PLUGIN_ROOT`, so a render is
+    the same on every machine. A phrase the template already carries a
+    hand-written row for (`wrap up`) is skipped, not duplicated."""
+    from cp_engine import skill_guide
+
+    source = (Path(__file__).parent / "templates" / "CLAUDE.md.j2").read_text("utf-8")
+    return skill_guide.claude_md_rows(skill_guide.load_snapshot(), source)
+
+
 def render_claude_md(config: TenantConfig) -> str:
     """Render CLAUDE.md from the tenant config.
 
@@ -1091,6 +1102,7 @@ def render_claude_md(config: TenantConfig) -> str:
     example_code, example_name = _example_for(config)
     template = _env().get_template("CLAUDE.md.j2")
     return template.render(
+        skill_rows=_claude_md_skill_rows(),
         tenant=config,
         engine_version=ENGINE_VERSION,
         today=_today_iso(),

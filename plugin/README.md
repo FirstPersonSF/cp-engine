@@ -49,3 +49,16 @@ Example `[local-repos]`:
 
 ## Commands
 
+
+`/cp-help` lists every cp skill — plugin commands, plugin skills and the
+tenant's own `.claude/skills/` — with what each does, the words that start it,
+and an example (`/cp-help <skill>` for one in detail). It runs `cxp skills`,
+which reads each skill's frontmatter (`label`, `summary`, `triggers`,
+`example`, `hint`), so the list cannot drift from the skills themselves. The
+same source feeds the one-line hint at session start (`cxp skills --hint`),
+the shareable guide page (`cxp skills --html cp-skills.html`) and the skill
+rows of the tenant `CLAUDE.md` trigger table.
+
+After editing a plugin skill's frontmatter, regenerate the snapshot an
+installed `cxp` reads: `python -m cp_engine.skill_guide --write-snapshot`
+(`tests/test_skill_guide.py` fails until you do).

@@ -247,6 +247,15 @@ about.
 | `rotate the CP` | any | Manually trigger archive rotation on the focused CP. |
 | `sweep improvements` | any | Harvest `improvements.md`: cluster entries, propose issues. |
 | `promote uphill <code>` | any | Copy a decision or commitment from `<code>` to its PARENT — the `promote_uphill` verb (`cxp promote-uphill`). One level per call. |
+| `prep sprint planning` | any | Draft next sprint's planning agenda from every active workstream — run `/cp-prep`. |
+| `create a stakeholder for <name>` | any | Build a card for someone on a project, from LinkedIn and our meetings — the `build-stakeholder` skill. |
+| `draft a proposal for <code>` | any | Write a client-ready Engagement Summary from approved services — the `proposal-architect` skill. |
+| `draft an RFP for <code>` | any | Write an anonymised partner RFP from a project's real scope — the `rfp-authoring` skill. |
+| `write the wrap report for <code>` | any | Write the close-out report for a finished engagement — run `/cp-wrap`. |
+| `list the skills` | any | List every cp skill, what it does and how to start it — run `/cp-help`. |
+
+Skill rows above are generated from each skill's own frontmatter; the full
+list, with this tenant's own skills, is `/cp-help` (`cxp skills`).
 
 ## Every capture names its level
 

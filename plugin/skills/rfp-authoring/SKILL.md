@@ -1,6 +1,13 @@
 ---
 name: rfp-authoring
 description: Write a partner RFP from a cp project — running the readiness preflight first, drafting against real scope rather than an empty scaffold, verifying anonymisation as a pass over the finished draft, and persisting the result as a versioned spine element. Use when the user says "write an RFP", "draft an RFP for <code>", "we need a production partner for <project>", or asks to send a brief to outside vendors. Never drafts from a project the preflight refuses.
+label: write an RFP
+summary: Write an anonymised partner RFP from a project's real scope.
+triggers:
+  - draft an RFP for <code>
+  - write an RFP
+  - we need a production partner for <project>
+example: draft an RFP for sap-5198
 ---
 
 # Write a partner RFP

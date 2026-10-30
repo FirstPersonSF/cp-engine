@@ -262,6 +262,12 @@ about.
 | `rotate the CP` | any | Manually trigger archive rotation on the focused CP. |
 | `sweep improvements` | any | Harvest `improvements.md`: cluster entries, propose issues. |
 | `promote uphill <code>` | any | Copy a decision or commitment from `<code>` to its PARENT — the `promote_uphill` verb (`cxp promote-uphill`). One level per call. |
+{%- for row in skill_rows %}
+| `{{ row.phrase }}` | any | {{ row.action }} |
+{%- endfor %}
+
+Skill rows above are generated from each skill's own frontmatter; the full
+list, with this tenant's own skills, is `/cp-help` (`cxp skills`).
 
 ## Every capture names its level
 

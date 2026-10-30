@@ -1,6 +1,12 @@
 ---
 allowed-tools: Bash(cxp:*), Bash(cat:*), Bash(ls:*), Bash(mkdir:*), Bash(date:*), Bash(test:*), Bash(jq:*), Bash(echo:*), Read, Write
 description: Author a close-out wrap report — the learning artifact for a finished engagement.
+label: wrap report
+summary: Write the close-out report for a finished engagement.
+triggers:
+  - write the wrap report for <code>
+  - write a wrap report
+example: /cp-wrap ggl-5168
 ---
 
 # /cp-wrap

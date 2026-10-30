@@ -6,6 +6,32 @@ Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automat
 
 ## Unreleased
 
+*Skill guide: `/cp-help`, a session-start hint, a shareable page (#395).*
+Minor: new `cxp skills` command (cxp_commands ceiling 60→61); no new MC-2
+table or hosted verb.
+- **One source.** `cp_engine.skill_guide` reads each skill's own frontmatter —
+  plugin commands, plugin skills, and the tenant's `.claude/skills/` — and
+  derives a short label, a one-line summary, the phrases that start it, and an
+  example. Plugin entries now carry optional `label` / `summary` / `triggers`
+  / `example` / `hint` fields; a skill without them (every tenant skill today)
+  falls back to its description's first clause and the quoted phrases after
+  "Use when". An installed `cxp` has no plugin directory, so it reads a
+  committed snapshot (`cp_engine/data/plugin_skills.json`) unless
+  `CLAUDE_PLUGIN_ROOT` points at a live plugin; a test fails when the
+  snapshot drifts (`python -m cp_engine.skill_guide --write-snapshot`).
+- **`/cp-help`** (new plugin command) runs `cxp skills` and shows a compact
+  table; `/cp-help <skill>` shows one skill in detail (name, label or trigger
+  phrase).
+- **Session-start hint.** A fourth SessionStart child, `skills-hint.sh`,
+  prints one generated line inside a tenant (`cxp skills --hint`, ≤200 chars,
+  "+N more" on overflow). Silent outside a tenant or with an older `cxp`.
+- **Shareable page.** `cxp skills --html PATH` writes a self-contained guide
+  page (no external assets, light/dark, phone-width).
+- **Tenant `CLAUDE.md`.** The trigger table gains generated rows for each
+  plugin skill's first trigger (`prep sprint planning`, `draft a proposal for
+  <code>`, …, `list the skills`), skipping phrases with a hand-written row
+  (`wrap up`). Goldens regenerated.
+
 *Several cp sessions at once, safely (#394).* Minor: new `cxp session` group
 (start / end / list / commit / register; cxp_commands ceiling 54→60); no new
 MC-2 table or hosted verb.

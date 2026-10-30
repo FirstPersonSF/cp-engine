@@ -1,6 +1,13 @@
 ---
 name: cp-wrapup
 description: Run the per-session `wrap up` ritual in a cp tenant — refresh each touched project's Exec Summary, sweep cross-cutting decisions and open commitments, run spine + word-count checks, then commit and push. Carries a hosted-session branch for sessions that reach the tenant only through the `cp-hosted` MCP server, with no `cxp` and no file access. Use whenever the user says "wrap up", "wrap this up", "let's close out the session", or asks to finalize a cp working session. NOT for closing out a finished engagement — that is `/cp-wrap`.
+label: wrap up
+summary: Close out a working session — refresh summaries, sweep decisions, commit.
+triggers:
+  - wrap up
+  - wrap this up
+  - let's close out the session
+example: wrap up
 ---
 
 # Wrap up a cp working session

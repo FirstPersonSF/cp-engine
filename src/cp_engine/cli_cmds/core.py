@@ -1205,3 +1205,41 @@ def aliases_cmd(accept: tuple[str, ...], reject: tuple[str, ...], scan: bool,
     for heard, target, _kind in result["rejected"]:
         click.echo(f'rejected "{heard}" → {target}')
     click.echo("Commit .cp-engine.toml and alias-candidates.md.")
+
+
+@click.command("skills")
+@click.argument("name", required=False)
+@click.option("--hint", is_flag=True, help="Print the one-line session-start hint.")
+@click.option("--html", "html_path", type=click.Path(dir_okay=False),
+              help="Write the guide as a self-contained web page to this path.")
+@click.option("--json", "as_json", is_flag=True, help="Emit the guide as JSON.")
+def skills_cmd(name: str | None, hint: bool, html_path: str | None, as_json: bool) -> None:
+    """List cp skills: what each does, how to start it, and an example (#395).
+
+    Reads plugin commands and skills (live from CLAUDE_PLUGIN_ROOT, else the
+    snapshot bundled with this release) and the tenant's .claude/skills/.
+    NAME shows one skill in detail (a name, label or trigger phrase).
+    """
+    from datetime import date
+
+    from cp_engine import skill_guide as sg
+
+    entries = sg.all_skills(tenant_root=sg.find_tenant_root())
+    if hint:
+        click.echo(sg.render_hint(entries))
+        return
+    if html_path:
+        Path(html_path).write_text(
+            sg.render_html(entries, generated=date.today().isoformat()), encoding="utf-8"
+        )
+        click.echo(f"Wrote {html_path} ({len(entries)} skills).")
+        return
+    if name:
+        s = sg.find(entries, name)
+        if s is None:
+            click.echo(f"No skill named {name!r}. Known: "
+                       + ", ".join(e.name for e in entries), err=True)
+            sys.exit(1)
+        click.echo(sg.to_json([s]) if as_json else sg.render_detail(s))
+        return
+    click.echo(sg.to_json(entries) if as_json else sg.render_table(entries))

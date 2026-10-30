@@ -1,6 +1,13 @@
 ---
 name: build-stakeholder
 description: Build a cp stakeholder dossier card for a person on an engagement or initiative — reading their LinkedIn through the user's signed-in Chrome (the reliable path; WebFetch and curl are blocked with HTTP 999), plus a mine of the tenant's own transcripts and spine. Use when the user says "create a stakeholder for X", "build a stakeholder card", "add X as a stakeholder", or supplies a LinkedIn URL for someone on a project. Writes the card to MC-2's Stakeholders layer via create_spine_element (+ a propose_spine_step step) — never as a file in spine/, which is generated — and never invents biographical fact.
+label: build a stakeholder
+summary: Build a card for someone on a project, from LinkedIn and our meetings.
+triggers:
+  - create a stakeholder for <name>
+  - build a stakeholder card
+  - add <name> as a stakeholder
+example: build a stakeholder card for Janet on ibx-5153
 ---
 
 # Build a stakeholder card
