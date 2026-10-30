@@ -26,7 +26,11 @@ class _Recorder:
         self._result = result if result is not None else {}
 
     def __call__(self, *args, **kwargs):
-        self.calls.append({"args": args, "kwargs": kwargs})
+        # Read the file while the call holds it: it is removed afterwards.
+        content = None
+        if args and isinstance(args[0], str) and Path(args[0]).is_file():
+            content = Path(args[0]).read_text()
+        self.calls.append({"args": args, "kwargs": kwargs, "content": content})
         return self._result
 
 
@@ -105,7 +109,9 @@ def test_happy_path(tmp_path):
     assert ingest_path.endswith("summary.md")
     assert ingest.calls[0]["args"][2] == "Kickoff"
     # The summary text was actually written there.
-    assert Path(ingest_path).read_text() == "We agreed to ship the thing."
+    assert ingest.calls[0]["content"] == "We agreed to ship the thing."
+    # ...and removed once the stamp is done (#393).
+    assert not Path(ingest_path).exists()
 
     # stamp got the IDENTICAL file_path + the right provenance.
     assert len(stamp.calls) == 1

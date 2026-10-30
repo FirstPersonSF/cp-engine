@@ -6,6 +6,18 @@ Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automat
 
 ## Unreleased
 
+*Fix: concurrent promotions of one meeting no longer overwrite each other (#393).*
+`promote_meeting_transcript` and `embed_meeting_summary` write the text to a
+temp path keyed on the recording id. That path has to stay stable, because
+the ingest pipeline stores it as `rag_assets.file_path` and dedups on it, so
+a random per-call temp dir would add a new row on every re-promote. Two calls
+for one recording at once shared the file, though, and one could read the
+other's text or an empty file mid-write. The write, ingest and stamp now run
+under an exclusive lock on that path (`flock`, plus an in-process lock), and
+the file is removed before the lock is released. New tests run two promotions
+(and two summary embeds) of one recording in parallel threads and check each
+read its own text, whole; both fail without the fix.
+
 *Alias candidates: ingest proposes new `[terms]` / `[names]` aliases for review (#387).*
 One new `cxp aliases` command (cxp_commands ceiling 53→54); no new MC-2 table
 or hosted verb. Every auto-ingest (single workstream, parent workstream and
