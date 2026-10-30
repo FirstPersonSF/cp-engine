@@ -367,6 +367,25 @@ def _parse_client_section(
     return tuple(out), tuple(asks), tuple(inbound)
 
 
+def risk_bracket_parts(parts: list[str]) -> list[str]:
+    """A risk bracket's parts with the optional leading ``risk`` marker
+    dropped, so ``[risk · escalated · schedule · d]`` and
+    ``[escalated · schedule · d]`` both read as ``[severity, category, date]``.
+
+    Both shapes are in the tree. ``record-risk`` writes the bare one into
+    ``## Dependencies & risks``; the carry-forward region writes the prefixed
+    one, and a person (or a model) copying a carried risk back into the live
+    section keeps the prefix. ``attention_digest._RISK_RE`` and the
+    resolve-risk writer already took both; this section's parser read
+    ``risk`` as the SEVERITY, shifting every field one place — severity
+    ``risk``, category ``escalated``, raised date ``schedule`` — so the risk
+    was never open, never carried and never digested (#369).
+    """
+    if parts and parts[0].strip().lower() == "risk":
+        return parts[1:]
+    return parts
+
+
 def _parse_risks(body: str) -> tuple[Risk, ...]:
     section = section_body(body, "Dependencies & risks")
     out: list[Risk] = []
@@ -375,6 +394,7 @@ def _parse_risks(body: str) -> tuple[Risk, ...]:
         if not parsed:
             continue
         parts, text = parsed
+        parts = risk_bracket_parts(parts)
         severity = parts[0] if parts else "watching"
         category = parts[1] if len(parts) > 1 else ""
         raised = parts[2] if len(parts) > 2 else ""

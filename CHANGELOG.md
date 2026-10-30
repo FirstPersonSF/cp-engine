@@ -36,6 +36,20 @@ in the hosted result. Those pairs are never in the ready-to-send
 wording tier finds 17 pairs and the new tier 29, about four in five the
 same obligation.
 
+*The unparsed-bullet warning names the right line (#369).* `cxp render
+--check` compared one count of bullet-shaped lines against one count of
+parsed entries, then quoted the file's first bullet. `[open question · …]`
+lines were never counted and `### Inbound` entries always were, so a healthy
+`[risk · escalated · …]` bullet took the blame. Each marker kind is now
+checked against its own entries, and the warning quotes the line actually
+lost. In the 1P tenant, 30 warnings drop to 1.
+
+*`[risk · <severity> · …]` reads in `## Dependencies & risks`.* The
+prefixed shape that carry-forward writes was parsed with every field
+shifted (severity `risk`), so a risk copied back into the live section
+was never open, carried or digested. Both shapes now read alike there and
+in sprint prep.
+
 ## v0.132.0 — 2026-10-27
 
 **A URL can become a source, and an upload says it isn't one yet.** Minor (new hosted verb).
