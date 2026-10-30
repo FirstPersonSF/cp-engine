@@ -32,6 +32,41 @@ table or hosted verb.
   <code>`, …, `list the skills`), skipping phrases with a hand-written row
   (`wrap up`). Goldens regenerated.
 
+*Folder rules for Dropbox/Drive across accounts, programs, initiatives and
+Canonic (#396).* Minor: new `cxp folders` (cxp_commands ceiling 60→61), a
+`Folders` line on the daily health post; no new MC-2 table or hosted verb,
+nothing written to MC-2 or Dropbox.
+- **Inheritance.** At ingest (and in the picker listing), a workstream with
+  Dropbox or Drive on and no folder bound reads its parent's folder, one
+  level down: the parent folder is listed and the child's subfolder is found
+  by an exact name or its job number as a standalone token (`5239` in
+  `CAN 5239 Canonic Site`). Never a constructed path: no match, or several,
+  inherits nothing, and the refusal says why. The parent's folder may itself
+  be inherited, to any depth. A run note (`kind: "inherited"`) names the
+  ancestor.
+- **Parent-node sources.** An account node or any program (a node with a
+  non-archived child) ingests its own folder at `scope='account'`, readable
+  from every workstream of the company. Files under a child's folder (bound
+  inside the parent's, or matched by name/number) are left out of the
+  parent's listing, so a job's files never become company documents.
+- **Search reads account documents.** Hosted `semantic_search` scoped to a
+  project now adds the company's account-scoped chunks (one extra RPC per
+  node that owns them), marked `asset_scope: "account"`; a failed lookup is
+  reported as `account_search_error`. `list_project_sources`,
+  `read_scoped_asset_chunks` and the fetch resolver already did this.
+- **Health.** `Folders · N unbound` on `cxp health` / the daily post: active,
+  ingestable workstreams with a source on, no folder, and no ancestor folder
+  to inherit from, named underneath (first 10).
+- **`cxp folders [--write-sql] [--offline]`.** Read-only audit of every
+  active workstream: sources on, bound folder (and whether Dropbox has it),
+  inherited folder, and the convention folder — `/1P Active Projects/<full
+  job name>` (clients), `/1P Internal/…` (First Person), `/Canonic/…` —
+  with `exists`, `found: <real folder>`, `missing` or `root missing`.
+  `--write-sql` prints (never runs) `project_integrations` INSERTs for
+  convention folders that exist, and an UPDATE for a bound path Dropbox does
+  not have.
+- Self-company workstreams with an agreement stay out of every rule.
+
 *Several cp sessions at once, safely (#394).* Minor: new `cxp session` group
 (start / end / list / commit / register; cxp_commands ceiling 54→60); no new
 MC-2 table or hosted verb.
