@@ -298,7 +298,54 @@ def _ingest_one_project(
     # The spine-inbox proposed card (one Anthropic distillation per project
     # per meeting) was turned off in architecture step 5a: 128 cards sat
     # `proposed` and unframed. scripts/step5_reject_inbox_cards.py clears them.
+
+    # Alias candidates (#387): near-misses of known terms and people
+    # ("Juul" for Joule) queued in the tenant's `alias-candidates.md` for
+    # `cxp aliases` review. Never edits config or text; never fails the
+    # ingest. The file rides this project's `git add -A` commit.
+    entry["alias_candidates"] = _collect_alias_candidates(
+        config=config, code=code, transcript_path=transcript_path,
+        meeting=meeting, meeting_id=meeting_id, action_items=action_items,
+        roster=roster,
+    )
     return entry
+
+
+def _collect_alias_candidates(
+    *,
+    config: TenantConfig,
+    code: str,
+    transcript_path: Path,
+    meeting: dict | None,
+    meeting_id: str | None,
+    action_items: list[dict] | None,
+    roster: list | None,
+) -> int | str:
+    """Queue alias candidates for one project's ingest. Returns the number
+    of lines added, or "error" (logged; the ingest carries on)."""
+    try:
+        from cp_engine.alias_candidates import collect_for_ingest
+
+        try:
+            project_dir = find_spine_dir(config.root, code)
+        except SpineDirNotFound:
+            project_dir = None
+        texts = [transcript_path.read_text(encoding="utf-8")]
+        texts.append(str((meeting or {}).get("summary") or ""))
+        texts.extend(_action_item_texts(action_items))
+        return collect_for_ingest(
+            config=config,
+            code=code,
+            meeting_id=str(meeting_id or (meeting or {}).get("id") or ""),
+            texts=texts,
+            today=tenant_now().date(),
+            roster=roster,
+            project_dir=project_dir,
+        )
+    except Exception as exc:  # noqa: BLE001 — must never break auto-ingest
+        log.warning("alias candidates failed for %s: %s", code, exc)
+        observability.capture(exc, area="alias_candidates")
+        return "error"
 
 
 def _normalize_transcript(transcript_field) -> str:
@@ -764,7 +811,7 @@ def _perform_auto_ingest(
                 # consumer can tell "transcript only" from "wrote bullets".
                 entry["transcript_persisted"] = transcript_persisted
                 warnings.extend(f"{code}: {w}" for w in entry.get("warnings") or [])
-                for side in ("retrospective",):
+                for side in ("retrospective", "alias_candidates"):
                     if entry.get(side) == "error":
                         warnings.append(f"{code}: {side} write failed (see Sentry)")
 

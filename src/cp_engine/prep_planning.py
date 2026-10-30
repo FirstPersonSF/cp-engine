@@ -267,6 +267,10 @@ class PlanningResult:
     # past the carry cap.
     week_open_questions: tuple[dict, ...] = ()
     week_open_questions_stale: str | None = None
+    # Alias candidates (#387): mis-hearings ingest queued in
+    # `alias-candidates.md`, rendered as lines for the weekly review. Empty on
+    # a scoped (`--projects`) run — the queue is tenant-wide.
+    alias_candidates: tuple[str, ...] = ()
     errors: list[str] = field(default_factory=list)
     generated_at: str = ""
 
@@ -2462,6 +2466,8 @@ def render_planning_bundle(result: PlanningResult) -> str:
         + " · ".join(f"{k} {v}" for k, v in uc.items())
     )
     lines.append("")
+    if result.alias_candidates:
+        lines.extend(result.alias_candidates)
     lines.append("---")
     lines.append("")
     for account_name, blocks in result.blocks_by_account.items():
@@ -2704,6 +2710,16 @@ def build_planning_result(
     week_qs, week_qs_stale = week_open_questions(config.root / "sprints", week_iso)
 
     generated_at = tenant_now().strftime("%Y-%m-%d %H:%M")
+    # Alias candidates (#387) — tenant-wide, so only on an unscoped run.
+    alias_lines: tuple[str, ...] = ()
+    if not project_filter:
+        try:
+            from cp_engine import alias_candidates as _ac
+
+            alias_lines = tuple(_ac.render_review(_ac.grouped(config.root)))
+        except Exception as exc:  # noqa: BLE001 — a review list must not cost prep
+            errors.append(f"alias candidates unreadable: {type(exc).__name__}: {exc}")
+
     return PlanningResult(
         week_iso=week_iso,
         week_dates=week_dates_label,
@@ -2730,6 +2746,7 @@ def build_planning_result(
         week_open_questions_stale=(
             stale_rollup_line(week_qs_stale) if week_qs_stale else None
         ),
+        alias_candidates=alias_lines,
         errors=errors,
         generated_at=generated_at,
     )
