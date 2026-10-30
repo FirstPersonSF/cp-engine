@@ -38,6 +38,7 @@ import re
 
 from cp_engine import mc2_db
 from cp_engine.asks import ask_hash
+from cp_engine.attribution import apply_terms
 from cp_engine.commitments import resolve_commitment_owner, write_commitment
 from cp_engine.ingest import _content_hash
 from cp_engine.ingest_routing import same_project
@@ -220,6 +221,7 @@ def propose_commitments(
     project_codes: list[str],
     roster: list | None = None,
     routing_index=None,
+    term_aliases=None,
 ) -> dict:
     """Insert ``proposed`` commitments for a meeting's Fathom action items.
 
@@ -240,6 +242,11 @@ def propose_commitments(
     vocabulary — a product, vendor or person that recurs on another
     workstream and rarely here. A hit gets the same ``[off-project? →
     <code>]`` flag; nothing moves. None skips the scoring pass.
+
+    ``term_aliases`` (#371, the tenant's ``[terms] aliases``) rewrites
+    mis-heard product terms ("Juul" → "Joule") in each description BEFORE
+    screening and hashing — the plan's sprint-file asks get the same
+    rewrite, so the two copies keep one identity.
 
     The ``cp_hash`` recipe is ``asks.ask_hash(canonical_code,
     description)`` — EXACTLY the sprint-file ask recipe, computed on the
@@ -305,6 +312,7 @@ def propose_commitments(
             description = (item.get("description") or "").strip()
             if not description:
                 continue
+            description = apply_terms(description, term_aliases)
             assignee = item.get("assignee") or {}
 
             owner_name, owner_email, unresolved_label = resolve_action_owner(

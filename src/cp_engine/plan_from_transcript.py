@@ -133,8 +133,8 @@ def _route_action_items(
 
 def apply_attribution_checks(plan: dict, *, config, transcript: str) -> dict:
     """Run the deterministic person-name pass (#312) over every project
-    block in `plan`: tenant aliases, surname resolution against the
-    project's stakeholder cards, and the `[attribution unverified]` hedge
+    block in `plan`: tenant term aliases (#371) and name aliases, surname
+    resolution against the project's stakeholder cards, and the `[attribution unverified]` hedge
     on risks/decisions naming someone the transcript never heard. Never
     raises — a name check must not cost the ingest."""
     import logging
@@ -166,6 +166,7 @@ def apply_attribution_checks(plan: dict, *, config, transcript: str) -> dict:
             transcript=transcript,
             known_for=known_for,
             aliases=getattr(config, "name_aliases", None) or {},
+            term_aliases=getattr(config, "term_aliases", None) or {},
         )
     except Exception as exc:  # noqa: BLE001 — fidelity pass must never break ingest
         logging.getLogger(__name__).warning(

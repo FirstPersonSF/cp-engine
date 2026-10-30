@@ -72,7 +72,8 @@ parent/sprint-planning summaries get an additional
 
 Speaker labels are not proof of who spoke: a bullet naming someone the
 transcript never heard carries `[attribution unverified]`. Mis-heard names:
-`[names] aliases` in `.cp-engine.toml`.
+`[names] aliases` in `.cp-engine.toml`; mis-heard product terms ("Juul" for
+Joule): `[terms] aliases`.
 
 The dashboard also fires a weekly Slack digest cron (Sunday) that fetches each
 active workstream's mapped Slack channel(s) and writes a `### Slack digest` bullet

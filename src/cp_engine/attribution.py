@@ -16,7 +16,9 @@ WHAT THIS MODULE DOES — all deterministic, run on the plan after the model
 returns it:
 
 1. **Aliases.** A tenant map (`[names] aliases` in `.cp-engine.toml`)
-   rewrites known mis-hearings everywhere in the plan.
+   rewrites known mis-hearings everywhere in the plan. Mis-heard product
+   and brand terms have their own map (`[terms] aliases`, #371,
+   ``apply_terms``): plain whole-word rewrites, run first.
 2. **Resolution against the cards.** A "First Last" whose first name
    belongs to exactly ONE known person, with a different surname, is that
    person: the surname is corrected. A `stakeholders` entry that resolves
@@ -213,6 +215,22 @@ def apply_aliases(text: str, aliases: Mapping[str, str]) -> str:
     return _apply(text, aliases)
 
 
+def apply_terms(text: str, terms: Mapping[str, str] | None) -> str:
+    """The tenant ``[terms] aliases`` rewrite (#371): mis-heard product and
+    brand terms ("Juul", "Jool" → "Joule"). Longest key first, whole word,
+    case-sensitive. Unlike a person alias a term has no first-name rules,
+    and a hyphen is a boundary ("Juul-based" → "Joule-based"); a key inside
+    a longer word ("Juuls", "Joolie") is left alone."""
+    if not text or not terms:
+        return text
+    for wrong in sorted(terms, key=len, reverse=True):
+        right = terms[wrong]
+        if not wrong or wrong == right:
+            continue
+        text = re.sub(rf"(?<!\w){re.escape(wrong)}(?!\w)", lambda _m, r=right: r, text)
+    return text
+
+
 def aliases_for(known: KnownPeople, aliases: Mapping[str, str] | None) -> dict[str, str]:
     """The aliases to apply on one workstream: its cards' aliases plus the
     tenant's (tenant wins), minus any one-word alias whose first name a
@@ -307,6 +325,8 @@ _STRICT_VERBS = {
 _INBOUND_VERBS = {"inbound", "record-inbound"}
 _STAKEHOLDER_VERBS = {"stakeholders", "stakeholder", "record-stakeholder"}
 _TEXT_FIELDS = ("text", "who", "name", "context", "from_party", "owner")
+# Term aliases (#371) reach every prose field a plan item carries.
+_TERM_FIELDS = (*_TEXT_FIELDS, "what", "description", "deliverable", "role", "company")
 
 
 def _hedge(text: str) -> str:
@@ -325,15 +345,21 @@ def check_plan_attribution(
     transcript: str,
     known_for: "callable",
     aliases: Mapping[str, str] | None = None,
+    term_aliases: Mapping[str, str] | None = None,
 ) -> dict:
     """Apply aliases, surname resolution and hedging to `plan` in place.
 
     `known_for(code)` returns the `KnownPeople` for one project block (the
     caller owns disk access). Returns a counts summary for the run log:
-    `{aliased, resolved, hedged, stakeholders_dropped}`.
+    `{aliased, resolved, hedged, stakeholders_dropped}`, plus `terms` (the
+    fields a `[terms] aliases` rewrite changed, #371) when any are set.
+    Term aliases run first, over every prose field, then the name pass.
     """
     summary = {"aliased": 0, "resolved": 0, "hedged": 0, "stakeholders_dropped": 0}
     aliases = dict(aliases or {})
+    terms = dict(term_aliases or {})
+    if terms:
+        summary["terms"] = _apply_plan_terms(plan, terms)
 
     def _clean(value, known, scoped):
         if not isinstance(value, str) or not value:
@@ -395,6 +421,36 @@ def check_plan_attribution(
         if isinstance(item, dict) and isinstance(item.get("text"), str):
             item["text"] = apply_aliases(item["text"], aliases)
     return summary
+
+
+def _apply_plan_terms(plan: dict, terms: Mapping[str, str]) -> int:
+    """Rewrite `[terms] aliases` in every prose field of `plan`, in place:
+    project items, the account summary and decisions, week themes and week
+    open questions. Returns how many fields changed."""
+    changed = 0
+
+    def _fix(item) -> None:
+        nonlocal changed
+        if not isinstance(item, dict):
+            return
+        for f in _TERM_FIELDS:
+            value = item.get(f)
+            if isinstance(value, str) and value:
+                fixed = apply_terms(value, terms)
+                if fixed != value:
+                    item[f] = fixed
+                    changed += 1
+
+    for entries in (plan.get("projects") or {}).values():
+        if isinstance(entries, dict):
+            for items in entries.values():
+                for item in items if isinstance(items, list) else []:
+                    _fix(item)
+    for key in ("account_summary", "account_decisions", "themes", "week_open_questions"):
+        block = plan.get(key)
+        for item in block if isinstance(block, list) else [block]:
+            _fix(item)
+    return changed
 
 
 def _resolves_to_known(name: str, known: KnownPeople) -> bool:
