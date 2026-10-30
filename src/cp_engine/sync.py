@@ -713,6 +713,7 @@ def _sync_tenant_inner(
                     project_dir=project_dir,
                     estimate=estimate,
                     now=sync_clock,
+                    tenant_root=config.root,
                 )
             except Exception as exc:  # noqa: BLE001 — best-effort substance mirror
                 if isinstance(exc, SyncError):

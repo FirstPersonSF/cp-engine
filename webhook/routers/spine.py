@@ -357,6 +357,7 @@ def _frame_promote_in_tree(
             malformed_out=mirror_skipped,
             warnings_out=mirror_warnings,
             writer="webhook",
+            tenant_root=config.root,
         )
     except Exception as exc:  # noqa: BLE001 — never lose a successful write
         log.warning(
