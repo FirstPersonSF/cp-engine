@@ -69,6 +69,7 @@ from cp_engine.sprints import (
     bullets,
     current_sprint_week_iso,
     parse_bracketed_bullet,
+    risk_bracket_parts,
     parse_sprint_file,
     stale_rollup_line,
     week_open_questions,
@@ -1189,6 +1190,7 @@ def _parse_risks_from_body(body: str) -> tuple[dict, ...]:
         if not parsed:
             continue
         parts, text = parsed
+        parts = risk_bracket_parts(parts)  # `[risk · escalated · …]` (#369)
         severity = parts[0] if parts else "watching"
         out.append({"severity": severity, "text": text})
     return tuple(out)

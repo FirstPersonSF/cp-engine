@@ -54,13 +54,43 @@ logger = logging.getLogger(__name__)
 # the parser: it matches the shapes a person plausibly writes, including ones
 # no parser accepts yet, which is the point.
 _LOOKS_LIKE_BULLET = re.compile(
-    r"^\s*-\s*.{0,2}?\[(?P<kind>decision|open|owed|sent|risk|ask)\b[^\]]*·",
+    r"^\s*-\s*.{0,2}?\[(?P<kind>decision|open question|open|owed|sent|risk|ask)\b[^\]]*·",
     re.IGNORECASE,
 )
 
-# Bullet kinds that carry a date and are parsed into typed entries. A line
-# whose marker is none of these is somebody's freeform bullet, not a failure.
-_PARSED_KINDS = frozenset({"decision", "open", "owed", "sent", "risk", "ask"})
+# WHICH PARSED ENTRIES ANSWER WHICH MARKER (#369). The lint used to compare
+# ONE tally of every looks-like line against ONE tally of every parsed entry,
+# and two errors cancelled into a misleading third:
+#
+#   * `[open question · …]` lines matched the `open` kind but no open-question
+#     field was counted (neither `### Open questions` nor the carry-forward
+#     region's, added by #340) — every one read as unparsed;
+#   * `### Inbound` entries (`[date · who]`, no marker, so never a looks-like
+#     line) WERE counted — crediting parses the lint never asked about.
+#
+# The net shortfall was then pinned on the file's FIRST looks-like line,
+# whatever its kind. sap-5198's W43 file "lost" `[risk · escalated · …]`,
+# which parsed fine: the real gap was three uncounted open questions, less two
+# inbound credits. The report sent #369 hunting a risk-grammar bug that did
+# not exist. So every marker kind now settles against its OWN entries, and a
+# surplus in one kind can no longer hide a shortfall in another.
+_BUCKET_OF_KIND = {
+    "decision": "decisions",
+    "open question": "open_questions",
+    "open": "asks",
+    "ask": "asks",
+    "owed": "outbound",
+    "sent": "outbound",
+    "risk": "risks",
+}
+# bucket -> (top-level SprintFile fields, carry-forward fields)
+_BUCKET_SOURCES = {
+    "decisions": (("decisions",), ("horizon:decision",)),
+    "open_questions": (("open_questions",), ("open_questions",)),
+    "asks": (("client_open_asks",), ("asks",)),
+    "outbound": (("client_outbound",), ()),
+    "risks": (("risks",), ("risks",)),
+}
 
 
 def unparsed_bullet_warnings(root: Path) -> list[str]:
@@ -106,13 +136,12 @@ def unparsed_bullet_warnings(root: Path) -> list[str]:
                 logger.debug("Skipping unparseable sprint file %s", path)
                 continue
 
-            found = _parsed_entry_count(parsed)
-            missing = len(looks_like) - found
+            missing, offender = _shortfall(looks_like, parsed)
             if missing <= 0:
                 continue
 
             rel = path.relative_to(root)
-            example = looks_like[0].strip()
+            example = offender.strip()
             if len(example) > 90:
                 example = example[:89].rstrip() + "…"
             out.append(
@@ -123,29 +152,72 @@ def unparsed_bullet_warnings(root: Path) -> list[str]:
     return out
 
 
-def _parsed_entry_count(parsed: object) -> int:
-    """How many dated entries the parser actually produced for one file.
+def _shortfall(looks_like: list[str], parsed: object) -> tuple[int, str]:
+    """``(missing, offender)``: how many looks-like lines no entry of their
+    own kind answers, and the line to quote.
 
-    Counts the same sections `summary.latest_dated_activity` reads, and counts
-    only entries carrying a date — an undated entry is not evidence that a
-    dated line was understood.
+    Each marker kind settles against its own entries (``_BUCKET_OF_KIND``).
+    The quoted line is the first one in a short kind whose text appears in
+    none of that kind's parsed entries — the actual offender, not merely the
+    first bullet in the file — falling back to the kind's first line when
+    text cannot tell them apart.
     """
-    from cp_engine.summary import _DATED_BULLET_FIELDS
+    by_bucket: dict[str, list[str]] = {}
+    for line in looks_like:
+        m = _LOOKS_LIKE_BULLET.match(line)
+        kind = m.group("kind").lower() if m else ""
+        by_bucket.setdefault(_BUCKET_OF_KIND.get(kind, kind), []).append(line)
 
-    total = 0
-    for field in _DATED_BULLET_FIELDS:
-        total += _count_dated(getattr(parsed, field, None))
+    missing = 0
+    offender = ""
+    for bucket, lines in by_bucket.items():
+        entries = _bucket_entries(parsed, bucket)
+        found = sum(1 for e in entries if _has_date(e))
+        short = len(lines) - found
+        if short <= 0:
+            continue
+        missing += short
+        if not offender:
+            texts = [getattr(e, "text", "") or "" for e in entries]
+            offender = next(
+                (ln for ln in lines if not _text_seen(ln, texts)), lines[0]
+            )
+    return missing, offender
 
+
+def _bucket_entries(parsed: object, bucket: str) -> list:
+    top, carried = _BUCKET_SOURCES.get(bucket, ((), ()))
+    out: list = []
+    for field in top:
+        out.extend(_as_list(getattr(parsed, field, None)))
     # `carry-forward` is an engine-managed region with its own parser and its
     # own container (CarryForward, not a list), and its bullets use the
     # `[ask · …]` marker rather than `[open · …]`. Counting only the list
-    # fields above reported every carried-over ask as unparsed — 21 in W39
-    # alone, all of them correctly read by `_parse_carry_forward`.
+    # fields reported every carried-over ask as unparsed — 21 in W39 alone,
+    # all of them correctly read by `_parse_carry_forward`.
     carry = getattr(parsed, "carry_forward", None)
-    if carry is not None:
-        for field in ("asks", "risks", "horizon"):
-            total += _count_dated(getattr(carry, field, None))
-    return total
+    for spec in carried if carry is not None else ():
+        field, _, only = spec.partition(":")
+        items = _as_list(getattr(carry, field, None))
+        if only:  # carried horizon decisions: `[decision · by W39]`
+            items = [i for i in items if getattr(i, "bucket", None) == only]
+        out.extend(items)
+    return out
+
+
+def _as_list(value: object) -> list:
+    return list(value) if isinstance(value, (list, tuple)) else []
+
+
+_LEAD_RE = re.compile(r"^[^\]]*\]\W*")
+_COMMENT_RE = re.compile(r"<!--.*?-->")
+
+
+def _text_seen(line: str, texts: list[str]) -> bool:
+    """Does any parsed entry carry this line's text? A prefix test on the text
+    after the marker — enough to tell which of a kind's lines went missing."""
+    key = _COMMENT_RE.sub("", _LEAD_RE.sub("", line.strip(), count=1)).strip()[:40]
+    return not key or any(key in t for t in texts)
 
 
 # The entry types do not agree on what to call the date: DecisionEntry and
@@ -161,13 +233,6 @@ _DATE_FIELD_SUFFIX = "date"
 # anything non-empty; the lint is asking whether the bullet PARSED, not whether
 # someone used a format it likes.
 _DATED = re.compile(r"^(?:\d{4}-\d{2}-\d{2}|by\s+W\d{1,2}|W\d{1,2})$", re.IGNORECASE)
-
-
-def _count_dated(value: object) -> int:
-    """Dated entries in one list-shaped section, or 0 for anything else."""
-    if not isinstance(value, (list, tuple)):
-        return 0
-    return sum(1 for entry in value if _has_date(entry))
 
 
 def _has_date(entry: object) -> bool:
