@@ -162,7 +162,9 @@ def test_unbound_flags_only_floating():
     ]
     c = dh.check_unbound(_Client({"spine_substance": rows}))
     assert c.detail == {"unbound": 3, "people": 0, "floating": 1,
-                        "floating_closed": 0} and not c.ok
+                        "floating_closed": 0,
+                        "floating_elements": [{"project": "p", "est_item_id": "b"}]}
+    assert not c.ok
     assert dh.check_unbound(_Client({"spine_substance": rows[:1]})).ok
 
 
@@ -177,7 +179,8 @@ def test_unbound_skips_closed_workstreams_and_counts_people_apart():
     ]
     projects = [{"id": "shut", "mc_status": "Closed"}]
     c = dh.check_unbound(_Client({"spine_substance": rows, "projects": projects}))
-    assert c.detail == {"unbound": 4, "people": 2, "floating": 1, "floating_closed": 1}
+    assert c.detail == {"unbound": 4, "people": 2, "floating": 1, "floating_closed": 1,
+                        "floating_elements": [{"project": "open", "est_item_id": "a"}]}
     assert c.text == "2 · 2 people · 1 floating" and not c.ok
     # Only the closed workstream's element floating: nothing to act on.
     only_closed = _Client({"spine_substance": rows[1:], "projects": projects})
@@ -622,3 +625,49 @@ def test_unbound_deliverable_is_not_floating():
     c = dh.check_unbound(_Client({"spine_substance": rows}))
     assert c.detail["floating"] == 1 and c.text == "2 · 1 floating"
     assert dh.check_unbound(_Client({"spine_substance": rows[:1]})).ok
+
+
+def test_unbound_names_the_floating_elements_by_project_code():
+    """#374: the line said "3 floating" and nothing about which — resolving it
+    meant re-running this filter by hand in SQL."""
+    rows = [{"project_id": "u1", "est_item_id": "persona-cfo", "important": True, "serves": []},
+            {"project_id": "u2", "est_item_id": "pillar-two", "important": True, "serves": []},
+            {"project_id": "u1", "est_item_id": "context", "important": False, "serves": []}]
+    projects = [{"id": "u1", "code": "ibx-5153-campaign"},
+                {"id": "u2", "code": "sap-5198-ad-videos"},
+                {"id": "u9", "code": "not-asked-for"}]
+    c = dh.check_unbound(_Client({"spine_substance": rows, "projects": projects}))
+    assert c.items == ["ibx-5153-campaign · persona-cfo", "sap-5198-ad-videos · pillar-two"]
+    assert c.render() == ("⚠️ Spine unbound · 3 · 2 floating\n"
+                          "    ↳ ibx-5153-campaign · persona-cfo\n"
+                          "    ↳ sap-5198-ad-videos · pillar-two")
+    assert c.detail["floating_elements"][0] == {"project": "ibx-5153-campaign",
+                                                "est_item_id": "persona-cfo"}
+    # The JSON report carries the list too.
+    rep = dh.HealthReport(when=NOW, checks=[c]).to_dict()
+    assert len(rep["checks"][0]["floating_elements"]) == 2
+
+
+def test_unbound_floating_list_is_capped_with_a_remainder():
+    rows = [{"project_id": "u1", "est_item_id": f"el-{i:02d}", "important": True, "serves": []}
+            for i in range(13)]
+    c = dh.check_unbound(_Client({"spine_substance": rows,
+                                  "projects": [{"id": "u1", "code": "ggl-5168-activation"}]}))
+    assert len(c.items) == dh.FLOATING_LISTED + 1
+    assert c.items[0] == "ggl-5168-activation · el-00"
+    assert c.items[-1] == "…and 3 more"
+    assert len(c.detail["floating_elements"]) == 13  # JSON keeps them all
+
+
+def test_unbound_code_read_failure_still_names_elements_by_id():
+    rows = [{"project_id": "u1", "est_item_id": "b", "important": True, "serves": []}]
+    c = dh.check_unbound(_Client({"spine_substance": rows,
+                                  "projects": RuntimeError("projects 503")}))
+    assert c.items == ["u1 · b"] and not c.ok
+
+
+def test_unbound_nothing_floating_renders_one_line():
+    rows = [{"project_id": "u1", "est_item_id": "a", "important": False, "serves": []}]
+    c = dh.check_unbound(_Client({"spine_substance": rows}))
+    assert c.ok and c.items == [] and "\n" not in c.render()
+    assert "floating_elements" not in c.detail
