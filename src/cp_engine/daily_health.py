@@ -71,9 +71,13 @@ class Check:
     ok: bool
     text: str
     detail: dict = field(default_factory=dict)
+    # Identifiers the line points at (codes, ids — never sentences), one per
+    # indented sub-line under it, so a ⚠️ names WHAT needs a look (#374).
+    items: list[str] = field(default_factory=list)
 
     def render(self) -> str:
-        return f"{OK if self.ok else WARN} {self.label} · {self.text}"
+        head = f"{OK if self.ok else WARN} {self.label} · {self.text}"
+        return "\n".join([head, *(f"    ↳ {i}" for i in self.items)])
 
 
 def _clip(text: Any, n: int = _ERR_CHARS) -> str:
@@ -92,6 +96,8 @@ def _unreadable(label: str, exc: BaseException | str, short: str = "unreadable",
 
 
 _NO_CLIENT = "no MC-2 client (SUPABASE_URL / key unset)"
+
+FLOATING_LISTED = 10  # sub-lines under "Spine unbound"; the rest are counted
 
 
 def _local(ts: str | None) -> datetime | None:
@@ -431,7 +437,9 @@ def check_unbound(client) -> Check:
     elements on Closed or Archived workstreams are not a finding — nothing can
     act on them — and canon members are bound to their brief, so both are
     left out of the warning (2026-10-05). A deliverable is the work others
-    serve, so it is never floating (2026-10-06)."""
+    serve, so it is never floating (2026-10-06). Floating elements are named
+    under the line, project code + `est_item_id`, the first
+    `FLOATING_LISTED` of them; `detail["floating_elements"]` has all (#374)."""
     label = "Spine unbound"
     if client is None:
         return _unreadable(label, _NO_CLIENT, "no client")
@@ -474,11 +482,32 @@ def check_unbound(client) -> Check:
         text += f" · {len(people)} people"
     if floating:
         text += f" · {len(floating)} floating"
+    detail = {"unbound": len(elements), "people": len(people),
+              "floating": len(floating),
+              "floating_closed": len(floating_all) - len(floating)}
+    items: list[str] = []
+    if floating:
+        # Name them (#374): a count alone sent the reader into this filter by
+        # hand in SQL. A failed code read falls back to the project id.
+        named = sorted((_project_codes(client, {p for p, _ in floating}).get(p) or str(p),
+                        str(e)) for p, e in floating)
+        detail["floating_elements"] = [{"project": p, "est_item_id": e} for p, e in named]
+        items = [f"{p} · {e}" for p, e in named[:FLOATING_LISTED]]
+        if len(named) > FLOATING_LISTED:
+            items.append(f"…and {len(named) - FLOATING_LISTED} more")
     # Unbound context is normal; only important-and-floating is a finding.
-    return Check(label, not floating, text,
-                 {"unbound": len(elements), "people": len(people),
-                  "floating": len(floating),
-                  "floating_closed": len(floating_all) - len(floating)})
+    return Check(label, not floating, text, detail, items)
+
+
+def _project_codes(client, ids: set) -> dict:
+    """{project_id: code} for `ids`; {} when the read fails."""
+    try:
+        rows = (client.table(Tables.PROJECTS).select("id, code")
+                .in_("id", sorted(ids, key=str)).limit(5000).execute().data) or []
+    except Exception:  # noqa: BLE001 — the ids still name the elements
+        return {}
+    return {r.get("id"): r.get("code") for r in rows
+            if r.get("id") in ids and r.get("code")}
 
 
 # ── tenant tree ───────────────────────────────────────────────────────────
