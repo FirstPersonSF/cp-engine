@@ -37,6 +37,13 @@ moves its `due_date`, so the row goes on asserting the old date. `text_dates`
 reads the dates a description names; `date_drift` flags a row whose text names
 a date its `due_date` does not match (or that has no `due_date` at all). It
 FLAGS; fixing the text or the date stays a human act.
+
+#367: the wording pass misses one task restated across meetings and a
+sprint import ("Email Janet re: vector platform graphic" / "Request
+flat/vector platform graphic from Marcello/Hector"). A second, looser pass
+pairs rows that name the same OBJECT — a shared noun phrase plus a word
+that is rare in the project. Those pairs are shown, tagged with the phrase,
+but never fed to `suggested_resolutions`: a looser signal proposes nothing.
 """
 
 from __future__ import annotations
@@ -422,11 +429,16 @@ def _stem(t: str) -> str:
     return t
 
 
-def _content_words(text: str) -> frozenset[str]:
+def _content_seq(text: str) -> list[str]:
+    """Content words in reading order. `flat / vector`, `flat/vector` and
+    `Flat-vector` all read as `flat vector` — punctuation never joins or
+    splits a word."""
     text = _ATTRIBUTION.sub(" ", _ANNOTATION.sub(" ", text.lower()).rstrip())
-    return frozenset(
-        _stem(t) for t in _WORD.findall(text) if t not in _STOP and len(t) > 1
-    )
+    return [_stem(t) for t in _WORD.findall(text) if t not in _STOP and len(t) > 1]
+
+
+def _content_words(text: str) -> frozenset[str]:
+    return frozenset(_content_seq(text))
 
 
 def _numbers_conflict(a: frozenset[str], b: frozenset[str]) -> bool:
@@ -450,6 +462,9 @@ class DuplicatePair:
     b: SweepRow
     jaccard: float
     same_meeting: bool  # both rows carry one `source_meeting_id`
+    # #367: None = the wording pass paired them; otherwise the shared
+    # object phrase that did (the looser pass — never auto-resolved).
+    shared_object: str | None = None
 
 
 def similarity(a: str, b: str) -> tuple[float, float, int] | None:
@@ -472,29 +487,126 @@ def is_likely_duplicate(a: str, b: str) -> bool:
     return not _numbers_conflict(_content_words(a), _content_words(b))
 
 
+# --- #367 shared-object pass ----------------------------------------------
+#
+# Successive meetings and a sprint import restate one task with different
+# verbs, owners and framing; what survives is the thing the task is ABOUT.
+# Tuned 2026-10-30 against the 287 open rows in MC-2 (15 projects): the
+# four ibx-5153 "flat/vector platform graphic" rows cluster, and the new
+# pairs elsewhere were mostly real restatements (the Adelle summit intro
+# five ways, the title-card spec, the SOW addendum estimate). Roughly one
+# in five is a related-but-separate step on the same object, which is why
+# these pairs carry their phrase and are never auto-resolved.
+OBJ_MIN_SHARED = 4        # shared content words, any kind ...
+OBJ_MIN_OBJECT_WORDS = 3  # ... of which this many are not action verbs
+OBJ_CONTAINMENT = 0.40    # shared / the shorter row's content words
+OBJ_MAX_DF = 4            # a "distinctive" word is in ≤ this many open rows
+
+# Verbs a task is phrased with — who does what, not what it is about.
+# "Email Janet re: X" and "Email Janet re: Y" share an opening, not a task.
+_ACTION = frozenset(
+    _stem(w)
+    for w in (
+        "email send share request ask review draft provide deliver create "
+        "update follow schedule confirm get make add move check align prep "
+        "set build finish finalize post upload download log call approve "
+        "decide assign discuss sync meet loop circle reach ping walk give "
+        "take put clarify produce complete ensure pull hand handed sent "
+        "delivered shared updated requested approved reviewed drafted"
+    ).split()
+)
+
+
+def _object_bigrams(seq: list[str]) -> set[tuple[str, str]]:
+    """Adjacent content-word pairs that can name a thing: no action verb,
+    no number (`r1 deck` is a revision, not an object)."""
+    return {
+        (x, y)
+        for x, y in zip(seq, seq[1:])
+        if x not in _ACTION
+        and y not in _ACTION
+        and not any(ch.isdigit() for ch in x + y)
+    }
+
+
+def _phrase(seq: list[str], anchors: set[tuple[str, str]]) -> str:
+    """The anchor bigrams as they run in `seq`: (vector, platform) +
+    (platform, graphic) → "vector platform graphic"."""
+    runs: list[list[str]] = []
+    end = -1  # index of the last word of the current run
+    for i in range(len(seq) - 1):
+        if (seq[i], seq[i + 1]) not in anchors:
+            continue
+        if runs and end == i:
+            runs[-1].append(seq[i + 1])
+        else:
+            runs.append([seq[i], seq[i + 1]])
+        end = i + 1
+    phrases: list[str] = []
+    for r in runs:
+        if " ".join(r) not in phrases:
+            phrases.append(" ".join(r))
+    return " · ".join(phrases)
+
+
+def document_frequency(descriptions: list[str]) -> dict[str, int]:
+    """Content word → how many of these rows carry it."""
+    df: dict[str, int] = {}
+    for d in descriptions:
+        for t in _content_words(d):
+            df[t] = df.get(t, 0) + 1
+    return df
+
+
+def shared_object(a: str, b: str, df: dict[str, int]) -> str | None:
+    """The object phrase two rows share, or None. `df` is the document
+    frequency over the project's open rows (`document_frequency`), so
+    "distinctive" means rare IN THIS PROJECT: on ibx-5153 `platform` and
+    `janet` are in a third of the rows, `vector` only in the four that ask
+    for the vector graphic."""
+    wa, wb = _content_words(a), _content_words(b)
+    if not wa or not wb:
+        return None
+    shared = wa & wb
+    if len(shared) < OBJ_MIN_SHARED or len(shared) / min(len(wa), len(wb)) < OBJ_CONTAINMENT:
+        return None
+    objects = {t for t in shared if t not in _ACTION}
+    if len(objects) < OBJ_MIN_OBJECT_WORDS:
+        return None
+    if not any(df.get(t, 0) <= OBJ_MAX_DF for t in objects):
+        return None
+    sa = _content_seq(a)
+    anchors = _object_bigrams(sa) & _object_bigrams(_content_seq(b))
+    if not anchors or _numbers_conflict(wa, wb):
+        return None
+    return _phrase(sa, anchors)
+
+
 def likely_duplicates(rows: list[SweepRow]) -> list[DuplicatePair]:
-    """Pairs within ONE project's rows that read as the same obligation,
-    most similar first. Callers pass a single group — pairing never
-    crosses projects."""
-    pairs: list[DuplicatePair] = []
+    """Pairs within ONE project's rows that read as the same obligation:
+    the wording pass (#311) most similar first, then the shared-object pass
+    (#367). Callers pass a single group — pairing never crosses projects,
+    and the object pass's word rarity is measured within the group."""
+    wording: list[DuplicatePair] = []
+    objects: list[DuplicatePair] = []
+    df = document_frequency([r.description for r in rows])
     for i, a in enumerate(rows):
         for b in rows[i + 1 :]:
-            if not is_likely_duplicate(a.description, b.description):
+            sim = similarity(a.description, b.description)
+            if sim is None:
                 continue
-            jac = similarity(a.description, b.description)[0]  # type: ignore[index]
-            pairs.append(
-                DuplicatePair(
-                    a=a,
-                    b=b,
-                    jaccard=round(jac, 2),
-                    same_meeting=bool(
-                        a.source_meeting_id
-                        and a.source_meeting_id == b.source_meeting_id
-                    ),
-                )
-            )
-    pairs.sort(key=lambda p: -p.jaccard)
-    return pairs
+            same = bool(a.source_meeting_id and a.source_meeting_id == b.source_meeting_id)
+            pair = DuplicatePair(a=a, b=b, jaccard=round(sim[0], 2), same_meeting=same)
+            if is_likely_duplicate(a.description, b.description):
+                wording.append(pair)
+                continue
+            phrase = shared_object(a.description, b.description, df)
+            if phrase:
+                pair.shared_object = phrase
+                objects.append(pair)
+    wording.sort(key=lambda p: -p.jaccard)
+    objects.sort(key=lambda p: -p.jaccard)
+    return wording + objects
 
 
 def _keep_rank(r: SweepRow) -> tuple:
@@ -506,6 +618,7 @@ def _keep_rank(r: SweepRow) -> tuple:
 
 def suggested_resolutions(groups: dict[str, list[SweepRow]]) -> dict[str, list[dict]]:
     """The ready-to-send close-out for #311's duplicate pairs (#354).
+    Wording pairs only: a #367 shared-object pair is shown, never proposed.
 
     Pairs chain — three restatements of one obligation pair three ways — so
     rows are clustered first and each cluster keeps exactly ONE row; dropping
@@ -529,6 +642,8 @@ def suggested_resolutions(groups: dict[str, list[SweepRow]]) -> dict[str, list[d
             return x
 
         for p in likely_duplicates(rows):
+            if p.shared_object:
+                continue  # #367: the looser pass flags; it never proposes a drop
             parent[find(p.a.id)] = find(p.b.id)
         clusters: dict[str, list[SweepRow]] = {}
         for r in rows:
@@ -608,9 +723,14 @@ def render_sweep(
         dups = likely_duplicates(rows)
         if dups:
             out.append("")
-            out.append(f"  ≈ {len(dups)} likely duplicate pair(s) — resolve the redundant row:")
+            out.append(
+                f"  ≈ {len(dups)} likely duplicate pair(s) — resolve the redundant row "
+                "(the 8-character ids work as keys):"
+            )
             for p in dups:
                 tag = " · same meeting" if p.same_meeting else ""
+                if p.shared_object:
+                    tag += f" · same object: {p.shared_object}"
                 out.append(
                     f"    {p.a.id[:8]} ↔ {p.b.id[:8]}  ({p.jaccard:.2f}{tag})"
                 )

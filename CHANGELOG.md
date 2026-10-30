@@ -22,6 +22,20 @@ account and sprint-planning prompts gain one rule: a deadline goes in `by` /
 `date` / `expected_by`, never in the item's text, and a date the meeting
 revises is emitted once, with the final date.
 
+*The commitments sweep pairs one task restated across sources, and its
+short ids resolve (#367).* The sweep printed 8-character ids
+(`40b36fb6 ↔ 576f1de3`) that `resolve_commitment(s)`, `set_commitment_date`
+and `route_commitment` rejected; a unique id prefix of 8+ characters now
+matches (exact id first, then prefix, then description substring; an
+ambiguous prefix returns the candidates). The likely-duplicate pass gained
+a looser second tier: rows that share a noun phrase and a word rare in the
+project ("flat/vector platform graphic" from two meetings and a sprint
+import) pair, tagged `same object: <phrase>` in the sweep and `same_object`
+in the hosted result. Those pairs are never in the ready-to-send
+`resolve_commitments` payload. On the 287 open rows of 2026-10-30 the
+wording tier finds 17 pairs and the new tier 29, about four in five the
+same obligation.
+
 ## v0.132.0 — 2026-10-27
 
 **A URL can become a source, and an upload says it isn't one yet.** Minor (new hosted verb).

@@ -117,7 +117,9 @@ who]` bullet under `### Open asks` that the next sync imports.
 - read the `≈ likely duplicate` pairs: when both rows are one obligation
   (typically your hand-logged row and the one auto-ingest wrote for the same
   meeting), resolve the redundant one — the sweep prints the
-  `resolve_commitments(...)` call; prune keys that are not true pairs
+  `resolve_commitments(...)` call; prune keys that are not true pairs. A
+  pair tagged `same object: <phrase>` is the looser match and is not in
+  that call — close its redundant row by the short id the sweep prints
 - read the `→ route after review` rows: meeting ingest flagged them
   `[off-project? → <code>]` (another workstream's people, product or
   vendor); the sweep prints each `route_commitment(...)` call — send it

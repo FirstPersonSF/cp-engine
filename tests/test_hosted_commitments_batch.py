@@ -107,6 +107,65 @@ def test_match_ambiguous_returns_candidates_never_guesses(srv):
     assert len(err["candidates"]) == 5  # capped
 
 
+# ── #367: the sweep's 8-character ids are keys ─────────────────────────
+
+_U1 = "40b36fb6-1c2d-4e5f-8a9b-0c1d2e3f4a5b"
+_U2 = "576f1de3-aaaa-4bbb-8ccc-dddddddddddd"
+_U3 = "40b36fb6-ffff-4eee-8ddd-cccccccccccc"  # shares _U1's first 8
+
+
+def test_match_a_short_id_from_the_sweep(srv):
+    """`commitments_sweep` prints `40b36fb6 ↔ 576f1de3`; before #367 that
+    key was "no open commitment matches"."""
+    rows = [_row(_U1, "Send the recut"), _row(_U2, "Send the recut again")]
+    row, err = srv._match_open_commitment(rows, "576f1de3")
+    assert err is None and row["id"] == _U2
+
+
+def test_match_prefix_is_case_insensitive_and_may_run_into_the_dashes(srv):
+    rows = [_row(_U1, "a"), _row(_U2, "b")]
+    for key in ("40B36FB6", "40b36fb6-1c2d", " 40b36fb6 "):
+        row, err = srv._match_open_commitment(rows, key)
+        assert err is None and row["id"] == _U1, key
+
+
+def test_match_ambiguous_prefix_returns_candidates_never_guesses(srv):
+    rows = [_row(_U1, "Send the recut"), _row(_U3, "Book the studio")]
+    row, err = srv._match_open_commitment(rows, "40b36fb6")
+    assert row is None
+    assert {c["id"] for c in err["candidates"]} == {_U1, _U3}
+    # A longer prefix disambiguates.
+    row, err = srv._match_open_commitment(rows, "40b36fb6-f")
+    assert err is None and row["id"] == _U3
+
+
+def test_match_prefix_shorter_than_8_is_not_an_id(srv):
+    """Seven hex characters fall through to the description substring —
+    a short id must be long enough not to collide by accident."""
+    rows = [_row(_U1, "Send the recut")]
+    row, err = srv._match_open_commitment(rows, "40b36fb")
+    assert row is None and "no open commitment" in err["error"]
+
+
+def test_match_prefix_only_sees_open_rows(srv):
+    """The snapshot is OPEN rows; a prefix of a closed row matches nothing,
+    and the batch's shrinking snapshot keeps a closed row from re-matching."""
+    rows = [_row(_U2, "Send the recut")]
+    row, err = srv._match_open_commitment(rows, "40b36fb6")
+    assert row is None and err["open_count"] == 1
+
+
+def test_batch_resolves_sweep_short_ids(srv):
+    client = _FakeClient()
+    rows = [_row(_U1, "a"), _row(_U2, "b")]
+    resolved, results, remaining = srv._resolve_commitment_batch(
+        client, rows, ["40b36fb6", "576f1de3", "40b36fb6"], "dropped"
+    )
+    assert resolved == 2 and remaining == []
+    assert [u[0] for u in client.updates] == [_U1, _U2]
+    assert "error" in results[2]  # the repeated key: already taken
+
+
 # ── _close_commitment_row ───────────────────────────────────────────────
 
 def test_close_writes_status_and_updated_at(srv):
