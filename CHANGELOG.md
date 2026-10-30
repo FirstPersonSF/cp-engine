@@ -4,7 +4,9 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
-## Unreleased
+## v0.133.1 — 2026-10-30
+
+**Inherited folders for every Dropbox writer, a Drive check in `cxp folders`, and the skills hint shown to the person.** Patch: no new verb, command or MC-2 change.
 
 *Folder rules follow-ups (#396).* The internal convention root is
 `/1P Initiatives` (a top-level team folder that already exists), not
