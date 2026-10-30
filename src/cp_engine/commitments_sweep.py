@@ -31,6 +31,12 @@ with `[off-project? → <code>]` (it stays where the meeting was tagged).
 `suggested_routes` turns each flag into the exact `route_commitment`
 argument object; `--misfiled` (CLI) additionally scores UNFLAGGED open rows
 with `commitment_routing` — a read-only backfill report.
+
+#366: a date written into a row's TEXT does not move when `set_commitment_date`
+moves its `due_date`, so the row goes on asserting the old date. `text_dates`
+reads the dates a description names; `date_drift` flags a row whose text names
+a date its `due_date` does not match (or that has no `due_date` at all). It
+FLAGS; fixing the text or the date stays a human act.
 """
 
 from __future__ import annotations
@@ -144,10 +150,22 @@ class SweepRow:
     age_days: int
     ttl: str | None  # 'warn' | 'expire' | None (14-day TTL, #136)
     source_meeting_id: str | None = None
+    text_dates: tuple[date, ...] = ()  # dates the description names (#366)
 
     @property
     def undated(self) -> bool:
         return self.due_date is None
+
+    @property
+    def date_drift(self) -> str | None:
+        """#366: 'undated' — the text names a date and the row has no
+        `due_date`; 'mismatch' — the text names date(s), none of them the
+        `due_date`. None when the text names no date or one matches."""
+        if not self.text_dates:
+            return None
+        if self.due_date is None:
+            return "undated"
+        return None if self.due_date in self.text_dates else "mismatch"
 
     @property
     def stale(self) -> bool:
@@ -174,6 +192,120 @@ def _row(c: dict, today: date) -> SweepRow:
         age_days=(today - created).days if created else 0,
         ttl=_ttl_bucket(c, today),
         source_meeting_id=c.get("source_meeting_id"),
+        text_dates=text_dates(c.get("description") or "", created or today),
+    )
+
+
+# --- #366 dates written into the text ---------------------------------------
+#
+# Calendar dates only: ISO `2026-10-30`, `10/30` / `10/30/26`, zero-padded
+# `10-30`, and `Oct 30` / `October 30th` / `30 Oct`. A weekday ("Friday") is
+# not read — it names a different date every week. An unpadded `4-5` is a
+# range ("4-5 wks"), never a date, and a padded pair followed by a unit
+# (`10-12 weeks`) is a range too.
+_MONTHS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+# `May` only capitalised — lower-case "may" is the verb.
+_MONTH_NAME = (
+    r"(?:(?i:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|june?|july?"
+    r"|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)|May)"
+)
+_UNIT = r"(?!\s*(?i:wks?|weeks?|days?|hrs?|hours?|mins?|minutes?|months?|mos?|%|x\b))"
+_ISO_DATE = re.compile(r"\b(20\d\d)-(\d{1,2})-(\d{1,2})\b")
+_SLASH_DATE = re.compile(r"(?<![\d/])(\d{1,2})/(\d{1,2})(?:/(\d{2}|\d{4}))?(?![\d/])")
+_DASH_DATE = re.compile(r"(?<![\d-])(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(?![\d-])" + _UNIT)
+_NAME_DAY = re.compile(
+    r"\b(" + _MONTH_NAME + r")\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b(?:,?\s+(20\d\d)\b)?"
+)
+_DAY_NAME = re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)?\s+(" + _MONTH_NAME + r")\b")
+
+
+def _closest(month: int, day: int, ref: date) -> date | None:
+    """A yearless date in the year that puts it nearest `ref`."""
+    best: date | None = None
+    for y in (ref.year - 1, ref.year, ref.year + 1):
+        try:
+            d = date(y, month, day)
+        except ValueError:
+            continue
+        if best is None or abs((d - ref).days) < abs((best - ref).days):
+            best = d
+    return best
+
+
+def _dated(year: int | None, month: int, day: int, ref: date) -> date | None:
+    if year is None:
+        return _closest(month, day, ref)
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
+def text_dates(text: str, ref: date) -> tuple[date, ...]:
+    """The calendar dates a commitment's text names, in order, deduplicated.
+    A yearless date takes the year nearest `ref` (the row's creation day).
+    Exposed for tests."""
+    text = _ANNOTATION.sub(" ", text)
+    found: list[tuple[int, date]] = []
+    taken: list[tuple[int, int]] = []
+
+    def add(m: re.Match, d: date | None) -> None:
+        if d is None or any(a < m.end() and m.start() < b for a, b in taken):
+            return
+        taken.append((m.start(), m.end()))
+        found.append((m.start(), d))
+
+    for m in _ISO_DATE.finditer(text):
+        add(m, _dated(int(m[1]), int(m[2]), int(m[3]), ref))
+    for m in _NAME_DAY.finditer(text):
+        add(m, _dated(int(m[3]) if m[3] else None, _MONTHS[m[1][:3].lower()], int(m[2]), ref))
+    for m in _DAY_NAME.finditer(text):
+        add(m, _dated(None, _MONTHS[m[2][:3].lower()], int(m[1]), ref))
+    for m in _SLASH_DATE.finditer(text):
+        year = None
+        if m[3]:
+            year = int(m[3]) + (2000 if len(m[3]) == 2 else 0)
+        add(m, _dated(year, int(m[1]), int(m[2]), ref))
+    for m in _DASH_DATE.finditer(text):
+        add(m, _dated(None, int(m[1]), int(m[2]), ref))
+    out: list[date] = []
+    for _, d in sorted(found, key=lambda t: t[0]):
+        if d not in out:
+            out.append(d)
+    return tuple(out)
+
+
+def date_drift_rows(groups: dict[str, list[SweepRow]]) -> list[dict]:
+    """Every row whose text names a date its `due_date` does not carry
+    (#366), as `{project_code, key, description, text_dates, due_date,
+    drift}`. Read-only: the fix is `set_commitment_date` or editing the
+    text, and which one is right is a person's call."""
+    out: list[dict] = []
+    for code, rows in groups.items():
+        for r in rows:
+            if r.date_drift is None:
+                continue
+            out.append({
+                "project_code": code,
+                "key": r.id,
+                "description": r.description,
+                "text_dates": [d.isoformat() for d in r.text_dates],
+                "due_date": r.due_date.isoformat() if r.due_date else None,
+                "drift": r.date_drift,
+            })
+    return out
+
+
+def _drift_note(r: SweepRow) -> str:
+    said = ", ".join(d.isoformat() for d in r.text_dates)
+    if r.date_drift == "undated":
+        return f"    ⚠ DATE IN TEXT · names {said}, no due date — set it with set_commitment_date"
+    return (
+        f"    ⚠ DATE IN TEXT · names {said}, due {r.due_date.isoformat()}"  # type: ignore[union-attr]
+        " — the text or the due date is stale"
     )
 
 
@@ -471,6 +603,8 @@ def render_sweep(
                 head += f"  ← reaches the {_EXPIRE_AFTER_DAYS}d TTL soon unless dated"
             out.append(head)
             out.append(f"    {r.description}")
+            if r.date_drift:
+                out.append(_drift_note(r))
         dups = likely_duplicates(rows)
         if dups:
             out.append("")
@@ -524,5 +658,8 @@ def render_sweep(
     )
     if nroute:
         footer += f" · {nroute} to route"
+    ndrift = len(date_drift_rows(groups))
+    if ndrift:
+        footer += f" · {ndrift} with a date in the text"
     out.append(footer)
     return "\n".join(out)

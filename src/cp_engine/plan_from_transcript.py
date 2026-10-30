@@ -812,6 +812,16 @@ projects:
    nobody actually chose — go in `open_questions`, not `decisions`. When
    unsure whether something was decided, it was not.
 
+12. **Dates go in the date field, never in the text (#366).** A deadline
+   belongs in its date field (`by` on asks, `date` on `set-milestone`,
+   `expected_by` on `set-client-ask-task`) — never written into the
+   item's text as well. Write `text: "Send Janet the first concepts"` with
+   `by: "2026-10-30"`, not `text: "Send Janet the first concepts by Oct 30"`.
+   When a deadline moves, the date field is updated and a date in the
+   text is not, so the row goes on asserting the old date. If the meeting
+   revises a date ("Friday — actually, let's make it Monday"), emit the item
+   ONCE with the FINAL date; never one item per date discussed.
+
 # Output format
 
 Respond with ONLY the YAML plan inside a single ```yaml fenced code block.
@@ -964,6 +974,15 @@ projects:
     one topic. Options weighed, floated or "leaning toward" — anything
     nobody actually chose — go in `open_questions`, not `decisions`. When
     unsure whether something was decided, it was not.
+
+14. **Dates go in the date field, never in the text (#366).** A deadline
+    belongs in its date field (`by` on asks, `date` on `set-milestone`) —
+    never written into the item's text as well. Write
+    `text: "Send Janet the first concepts"` with `by: "2026-10-30"`, not `text: "Send Janet the first concepts by Oct 30"`.
+    When a deadline moves, the date field is updated and a date in the
+    text is not, so the row goes on asserting the old date. If the meeting
+    revises a date ("Friday — actually, let's make it Monday"), emit the item
+    ONCE with the FINAL date; never one item per date discussed.
 
 # Output format
 

@@ -616,8 +616,10 @@ def commitments_sweep_cmd(
     via resolve_commitment; this just makes the decision cheap — likely
     duplicates come with a ready `resolve_commitments(...)` line (#354);
     rows the ingest flagged `[off-project? → <code>]` come with a ready
-    `route_commitment(...)` line (#358). `--misfiled` scores the unflagged
-    rows too — it reads MC-2 and the tree and writes nothing.
+    `route_commitment(...)` line (#358). A row whose text names a date
+    its due date does not carry is flagged `⚠ DATE IN TEXT` (#366).
+    `--misfiled` scores the unflagged rows too — it reads MC-2 and the
+    tree and writes nothing.
     """
 
     from cp_engine import mc2_db

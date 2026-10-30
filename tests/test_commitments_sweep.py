@@ -410,3 +410,97 @@ def test_render_prints_the_ready_to_call_verb() -> None:
         '    resolve_commitments(project_code="ibx-5153-ai-campaign", '
         'keys=["22222222-bbbb"], outcome="dropped")'
     ) in text
+
+
+# --- #366 dates written into the text --------------------------------------
+
+def test_text_dates_reads_each_calendar_form() -> None:
+    from cp_engine.commitments_sweep import text_dates
+
+    ref = date(2026, 10, 26)
+    oct30 = (date(2026, 10, 30),)
+    assert text_dates("Schedule note to Janet (status + 10/30 share date)", ref) == oct30
+    assert text_dates("Email Janet re: kickoff + first ideas due Oct 30", ref) == oct30
+    assert text_dates("Concepts to Janet 2026-10-30", ref) == oct30
+    assert text_dates("Review moved to 10-30", ref) == oct30
+    assert text_dates("Share by 30 October", ref) == oct30
+    assert text_dates("Ship October 30th", ref) == oct30
+    assert text_dates("Ship 10/30/26", ref) == oct30
+    assert text_dates("Kickoff Dec. 3rd, 2027", ref) == (date(2027, 12, 3),)
+    # A yearless date takes the year nearest the row's creation day.
+    assert text_dates("Jan 2 kickoff", ref) == (date(2027, 1, 2),)
+    # Two dates, in text order; a repeat counts once.
+    assert text_dates("Move from 10/30 to 11/02 (was Oct 30)", ref) == (
+        date(2026, 10, 30), date(2026, 11, 2),
+    )
+
+
+def test_text_dates_ignores_numbers_that_are_not_dates() -> None:
+    from cp_engine.commitments_sweep import text_dates
+
+    ref = date(2026, 10, 26)
+    for text in (
+        "Share Figma 5167 board link, v10 brief doc",
+        "Deck in 4-5 wks",
+        "10-12 weeks of production",
+        "24/7 support line",
+        "Draft 120k engagement summary [confidence: medium]",
+        "we may 2 things",  # lower-case "may" is the verb
+        "Send Janet the recut on Friday",  # weekdays are not read
+        "Invoice #2 for $40k",
+    ):
+        assert text_dates(text, ref) == (), text
+
+
+def test_date_drift_flags_text_that_disagrees_with_due_date() -> None:
+    created = "2026-10-26"
+    # ibx-5153 bffaba36: date in text, no due_date.
+    undated = _row(_c("bffaba36", "Email Janet re: kickoff + first ideas due Oct 30",
+                      created=created), _TODAY)
+    assert undated.date_drift == "undated"
+    # ibx-5153 9cb989df: text and due_date agree — fine.
+    agree = _row(_c("9cb989df", "Schedule note to Janet (status + 10/30 share date)",
+                    due="2026-10-30", created=created), _TODAY)
+    assert agree.date_drift is None
+    # ... until the due date moves and the text does not.
+    moved = _row(_c("9cb989df", "Schedule note to Janet (status + 10/30 share date)",
+                    due="2026-11-02", created=created), _TODAY)
+    assert moved.date_drift == "mismatch"
+    # One of several dates matching is enough.
+    both = _row(_c("x", "Review moves from 10/30 to 11/02", due="2026-11-02",
+                   created=created), _TODAY)
+    assert both.date_drift is None
+    # No date in the text: never flagged, dated or not.
+    plain = _row(_c("y", "Send Janet the recut", created=created), _TODAY)
+    assert plain.date_drift is None
+
+
+def test_render_sweep_shows_the_date_drift_flag() -> None:
+    from cp_engine.commitments_sweep import date_drift_rows
+
+    today = date(2026, 10, 30)
+    rows = [
+        _row(_c("bffaba36", "Email Janet re: kickoff + first ideas due Oct 30",
+                created="2026-10-26"), today),
+        _row(_c("9cb989df", "Schedule note to Janet (status + 10/30 share date)",
+                due="2026-11-02", created="2026-10-26"), today),
+        _row(_c("ok", "Schedule note to Janet (status + 10/30 share date)",
+                due="2026-10-30", created="2026-10-26"), today),
+    ]
+    text = render_sweep({"ibx-5153": rows}, today=today)
+    assert "⚠ DATE IN TEXT · names 2026-10-30, no due date" in text
+    assert "⚠ DATE IN TEXT · names 2026-10-30, due 2026-11-02" in text
+    assert text.count("⚠ DATE IN TEXT") == 2
+    assert "2 with a date in the text" in text
+
+    drift = date_drift_rows({"ibx-5153": rows})
+    assert [(d["key"], d["drift"]) for d in drift] == [
+        ("bffaba36", "undated"), ("9cb989df", "mismatch"),
+    ]
+    assert drift[1]["text_dates"] == ["2026-10-30"]
+    assert drift[1]["due_date"] == "2026-11-02"
+
+
+def test_render_sweep_without_drift_has_no_drift_footer() -> None:
+    rows = [_row(_c("a", "Send Janet the recut"), _TODAY)]
+    assert "date in the text" not in render_sweep({"p": rows}, today=_TODAY)
