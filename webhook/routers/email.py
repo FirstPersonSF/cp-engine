@@ -13,6 +13,12 @@ Everything the distill writes lands PROPOSED (the review gate), identical to
 Fathom auto-ingest — nothing is auto-confirmed. Email is an ingest SOURCE
 feeding the existing pipeline, not a new spine object.
 
+Attachments (#376): the Worker carries them as base64; for a project
+address they are uploaded to the project's Dropbox
+(``03 Assets/01 Client Assets/Email/<date> <subject>/``) and their ingest is
+queued — see ``email_attachments``. An attachment failure never fails the
+email.
+
 Still to come: thread-keyed DB source parking (a later MC-2 migration so
 replies on one thread append to one source); account/planning fan-out
 (Phase 3); Option A label-driven auto-forward (Phase 2.5).
@@ -47,6 +53,7 @@ from cp_engine import mc2_db
 from cp_engine.config import load as load_config
 from cp_engine.spine import SpineDirNotFound, find_spine_dir
 
+import email_attachments
 import email_strip
 
 log = logging.getLogger("cp-engine-webhook")
@@ -167,7 +174,9 @@ def _park_filename(message_id: str, received_at: str) -> str:
     return f"{date_part} email {datetime.now(timezone.utc).strftime('%H%M%S')}.md"
 
 
-def _render_parked_email(payload: dict, strip: email_strip.StripResult) -> str:
+def _render_parked_email(
+    payload: dict, strip: email_strip.StripResult, attachments: dict | None = None
+) -> str:
     """The parked artifact: envelope + net-new delta + full raw body.
 
     Phase-1 keeps the FULL text below the delta so nothing is lost before
@@ -190,6 +199,7 @@ def _render_parked_email(payload: dict, strip: email_strip.StripResult) -> str:
         "",
         strip.delta or "(empty)",
         "",
+        *email_attachments.render_section(attachments),
         "## Full body (verbatim)",
         "",
         payload.get("text", "") or "(no text body)",
@@ -287,6 +297,23 @@ def _record_unrouted(payload: dict, *, reason: str, attempted_code: str | None) 
         return False
 
 
+def _with_attachments_not_filed(response: dict, payload: dict, why: str) -> dict:
+    """Name the attachments an unfiled email carried (#376).
+
+    Only a ``cp+<code>@`` that resolves to a project files attachments; the
+    unrouted holding pen stores text, not files. Say so in the response
+    instead of dropping them without a word.
+    """
+    names = email_attachments.attachment_names(payload)
+    if names:
+        response["attachments_not_filed"] = {"names": names, "reason": why}
+        log.warning(
+            "inbound-email: %d attachment(s) not filed (%s): %s",
+            len(names), why, ", ".join(names),
+        )
+    return response
+
+
 def _with_unrecorded_warning(response: dict) -> dict:
     """Carry a failed unrouted-email write in the response (step 3).
 
@@ -311,7 +338,11 @@ async def inbound_email(request: Request) -> dict:
 
     Request body (JSON, from the Cloudflare Worker):
         { to, from, subject, message_id, in_reply_to, references,
-          text, html, header_to, received_at }
+          text, html, header_to, date, received_at,
+          attachments: [{filename, mime_type, size, inline, content_base64}],
+          attachments_skipped: [{filename, mime_type, size, reason}] }
+        The attachment fields (#376) are optional; without them nothing is
+        filed and the email is handled exactly as before.
 
     Headers:
         X-Webhook-Signature: hex(hmac_sha256("<ts>." + body, INBOUND_EMAIL_SECRET))
@@ -319,7 +350,9 @@ async def inbound_email(request: Request) -> dict:
 
     Response:
         { status, code, shape, parked_path, stripped, distilled,
-          plan_summary, files_written, distill_errors, commit_sha }
+          plan_summary, files_written, distill_errors, commit_sha,
+          attachments: {folder, run_id, attachments: [{filename, size,
+            dropbox_path, queued, status}]} | null }
         or { status: "unresolved"|"acknowledged_not_parked"|
              "park_only_unknown_code", ... } (still 200).
         status is "ingested" when the delta distilled clean, else "parked".
@@ -349,8 +382,13 @@ async def inbound_email(request: Request) -> dict:
                 "inbound-email: bare cp@ with no project code (%r) — unrouted (recorded=%s)",
                 to_addr, recorded,
             )
-            return _with_unrecorded_warning(
-                {"status": "unrouted", "reason": "no_code", "to": to_addr, "recorded": recorded}
+            return _with_attachments_not_filed(
+                _with_unrecorded_warning(
+                    {"status": "unrouted", "reason": "no_code", "to": to_addr,
+                     "recorded": recorded}
+                ),
+                payload,
+                "no project code in the address — forward again to cp+<code>@",
             )
         log.warning("inbound-email: unrelated address %r — no-op", to_addr)
         return {"status": "unresolved", "to": to_addr}
@@ -363,7 +401,11 @@ async def inbound_email(request: Request) -> dict:
             "inbound-email: shape=%s code=%s not parked in Phase 1 (acknowledged)",
             routing.shape, routing.code,
         )
-        return {"status": "acknowledged_not_parked", "shape": routing.shape, "code": routing.code}
+        return _with_attachments_not_filed(
+            {"status": "acknowledged_not_parked", "shape": routing.shape, "code": routing.code},
+            payload,
+            f"{routing.shape} addresses are not filed yet — forward to cp+<code>@",
+        )
 
     # Strip quoted history to the net-new delta (server-side, one place).
     strip = email_strip.strip_quoted_history(payload.get("text", "") or "")
@@ -385,13 +427,17 @@ async def inbound_email(request: Request) -> dict:
                 "inbound-email: code %r did not resolve to a project — unrouted (recorded=%s)",
                 routing.code, recorded,
             )
-            return _with_unrecorded_warning({
-                "status": "unrouted",
-                "reason": "unknown_code",
-                "code": routing.code,
-                "shape": routing.shape,
-                "recorded": recorded,
-            })
+            return _with_attachments_not_filed(
+                _with_unrecorded_warning({
+                    "status": "unrouted",
+                    "reason": "unknown_code",
+                    "code": routing.code,
+                    "shape": routing.shape,
+                    "recorded": recorded,
+                }),
+                payload,
+                f"{routing.code!r} is not a project — forward again to a valid cp+<code>@",
+            )
 
         result = _park_and_distill(
             tenant_root=tenant_root,
@@ -557,6 +603,28 @@ def _park_and_distill(
     and ``/api/route-email`` (a human routed a previously-unrouted email to
     this code). Returns the response dict sans ``shape`` (the caller adds it).
     """
+    # 0) File the attachments into the project's Dropbox and queue their
+    #    ingest (#376). First, so the park note can say what was filed. Never
+    #    fails the email: file_attachments catches per attachment, and this
+    #    guard catches anything it missed.
+    attachments: dict | None = None
+    if email_attachments.has_attachments(payload):
+        try:
+            attachments = email_attachments.file_attachments(
+                code=code, project_dir=project_dir, payload=payload,
+            )
+        except Exception as exc:  # noqa: BLE001 — the email goes ahead regardless
+            log.warning("inbound-email: attachment step failed for %s", code, exc_info=True)
+            observability.capture(exc, area="inbound_email_attachments")
+            attachments = {
+                "error": f"attachment step raised: {type(exc).__name__}: {exc}",
+                "attachments": [
+                    {"filename": n, "queued": False,
+                     "status": "not uploaded: attachment step failed"}
+                    for n in email_attachments.attachment_names(payload)
+                ],
+            }
+
     # 1) Park the raw email — the durable audit + the distill input.
     out_dir = project_dir / "email-ingest"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -564,7 +632,7 @@ def _park_and_distill(
         payload.get("message_id", ""), payload.get("received_at", "")
     )
     parked = out_dir / filename
-    parked.write_text(_render_parked_email(payload, strip), encoding="utf-8")
+    parked.write_text(_render_parked_email(payload, strip, attachments), encoding="utf-8")
     rel = parked.relative_to(tenant_root)
 
     # 2) Distill the net-new delta through the EXISTING pipeline — the same
@@ -632,4 +700,5 @@ def _park_and_distill(
         "files_written": (distill or {}).get("files_written", []),
         "distill_errors": distill_errors,
         "commit_sha": commit_sha,
+        "attachments": attachments,
     }
