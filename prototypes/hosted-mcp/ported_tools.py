@@ -83,6 +83,25 @@ SPINE_OUTPUT_DIR = "03 Assets/06 Spine"
 # material, not our output.
 URL_SOURCE_DIR = "03 Assets/01 Client Assets"
 
+
+def _no_dropbox_folder(project_code: str) -> str:
+    """The error when a project has no Dropbox folder in MC-2 (#373).
+
+    Names the fix and where it lives: the gap is a missing
+    `project_integrations` row (service=dropbox), set on the project's
+    Integrations in MC-2. The old wording ("pass dest_path") sent sessions
+    to ask the user for a path instead.
+
+    Finding the right folder by hand means the Dropbox API, and the account
+    is a TEAM space: send `Dropbox-API-Path-Root: {".tag": "root",
+    "root": "<root_namespace_id>"}` (from `users/get_current_account`'s
+    `root_info`) or team folders list as empty. `DropboxConnector` sets it
+    already (`use_team_namespace=True`)."""
+    return (f"{project_code!r} has no Dropbox folder in MC-2. Add it under "
+            f"{project_code}'s Integrations in MC-2 (a `project_integrations` "
+            "row, service=dropbox), then retry. Or pass dest_path to name "
+            "the folder for this call.")
+
 # Bytes are carried inline only up to a point: base64 lands in the caller's
 # context, where a large file is expensive and a huge one is unusable.
 DEFAULT_INLINE_BYTES = 256 * 1024
@@ -447,6 +466,12 @@ def push_to_dropbox(
     or move, so a misplaced copy is removed by hand: when `source_path` is
     None, ASK where it goes, never guess.
 
+    **NO DROPBOX FOLDER?** The project lacks a `project_integrations` row
+    (service=dropbox): add the folder under the project's Integrations in
+    MC-2. A lookup of the folder in the Dropbox API needs the
+    `Dropbox-API-Path-Root` header (team root namespace), or team folders
+    come back empty.
+
     **AN UPLOAD IS NOT AN INGEST.** The file is in Dropbox, not in the source
     store: `add_element_source` and `pull_project_source` cannot see it yet.
     Pass **`ingest=True`** (with `content_base64`) to queue the ingest of
@@ -483,8 +508,7 @@ def push_to_dropbox(
 
     folders = resolve_project_folders_by_id(client, pid)
     if dest_path is None and (folders is None or not folders.mc_dropbox_folder_id):
-        return _fail(f"{project_code!r} has no Dropbox folder configured in MC-2 — "
-                     "nowhere to push to (pass dest_path to name one)")
+        return _fail(_no_dropbox_folder(project_code))
     folder_id = folders.mc_dropbox_folder_id if folders is not None else ""
     if dest_name is None:
         dest_name = name if dest_path else f"{SPINE_OUTPUT_DIR}/{name}"
@@ -622,8 +646,7 @@ def ingest_url(
 
     folders = resolve_project_folders_by_id(client, pid)
     if dest_path is None and (folders is None or not folders.mc_dropbox_folder_id):
-        return _fail(f"{project_code!r} has no Dropbox folder configured in MC-2 — "
-                     "nowhere to put the page (pass dest_path to name one)")
+        return _fail(_no_dropbox_folder(project_code))
     folder_id = folders.mc_dropbox_folder_id if folders is not None else ""
 
     try:

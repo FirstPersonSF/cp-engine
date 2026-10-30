@@ -266,3 +266,11 @@ def test_the_hop_maps_a_refusal(server, monkeypatch):
                         lambda *a, **k: httpx.Response(401, json={"detail": "bad token"}))
     out = server.call_mc2_ingest_assets("c", "p1", ["/C/a.md"])
     assert out["ok"] is False and "bad token" in out["reason"]
+
+
+def test_ingest_url_missing_folder_names_where_to_fix_it(pt, env):
+    """#373: same fix-it message as `push_to_dropbox`."""
+    env.folders = _folders(mc_dropbox_folder_id=None)
+    out = pt.ingest_url("ibx-5153", "https://acme.example/guide")
+    assert "Add it under ibx-5153's Integrations in MC-2" in out["error"]
+    assert "service=dropbox" in out["error"] and not env.pushes
