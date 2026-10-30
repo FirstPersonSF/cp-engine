@@ -323,7 +323,21 @@ def test_push_upload_link_honours_overwrite(pt, dropbox):
 def test_push_needs_a_folder(pt, dropbox, monkeypatch):
     monkeypatch.setattr("cp_engine.asset_ingest.resolve_project_folders_by_id",
                         lambda client, pid: SimpleNamespace(mc_dropbox_folder_id=None))
-    assert "no Dropbox folder" in pt.push_to_dropbox("ibx-5153", "d.pdf")["error"]
+    err = pt.push_to_dropbox("ibx-5153", "d.pdf")["error"]
+    assert "no Dropbox folder" in err
+
+
+def test_push_missing_folder_names_where_to_fix_it(pt, dropbox, monkeypatch):
+    """#373: the old message said only "pass dest_path", so the session asked
+    the user for a path. The gap is a missing `project_integrations` row —
+    the error names it, the MC-2 page and the project code."""
+    monkeypatch.setattr("cp_engine.asset_ingest.resolve_project_folders_by_id",
+                        lambda client, pid: SimpleNamespace(mc_dropbox_folder_id=None))
+    err = pt.push_to_dropbox("ibx-5167", "d.pdf")["error"]
+    assert "Add it under ibx-5167's Integrations in MC-2" in err
+    assert "`project_integrations`" in err and "service=dropbox" in err
+    assert "dest_path" in err  # the one-off escape hatch is still named
+    assert not dropbox.instances  # nothing was attempted
 
 
 # ── preflight ─────────────────────────────────────────────────────────

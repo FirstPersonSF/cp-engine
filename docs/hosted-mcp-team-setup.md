@@ -96,6 +96,12 @@ Setup: [`chatgpt-readonly-connector.md`](chatgpt-readonly-connector.md).
   `profiles`. If it fails outright, it's the connection, not permissions.
 - **`create_note` says "no entities row"** → ask a partner to add you to the
   entities registry in MC-2.
+- **`push_to_dropbox` / `ingest_url` say "no Dropbox folder in MC-2"** →
+  the project has no `project_integrations` row with service=dropbox. Add the
+  folder under the project's Integrations in MC-2, then retry. To find the
+  folder through the Dropbox API, send the `Dropbox-API-Path-Root` header
+  (`{".tag": "root", "root": "<root_namespace_id>"}`, from
+  `users/get_current_account`); without it, team folders list as empty.
 - **Connector won't finish OAuth** → make sure you completed the Google
   sign-in on mc2.1p.is before the consent screen; then retry Connect.
 - Something else → the server audit-logs every call; tell Drew roughly when
