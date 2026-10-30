@@ -2141,6 +2141,22 @@ def _drive_comments(file_id: str) -> list[dict]:
 
     conn = GoogleDriveConnector(service_account_file=None)
     conn._authenticate()
+    try:
+        return _drive_comments_list(conn, file_id)
+    except Exception as exc:
+        # Name the account Drive refused: a 403/404 here is usually a file
+        # not shared with it, and the bare error cannot say so (10-30).
+        from cp_engine.folder_rules import drive_account
+
+        account = drive_account(conn)
+        if not account:
+            raise
+        raise RuntimeError(
+            f"{type(exc).__name__}: {exc} [read as {account}; "
+            "is the file shared with it?]") from exc
+
+
+def _drive_comments_list(conn, file_id: str) -> list[dict]:
     fields = ("comments(author/displayName,content,quotedFileContent/value,"
               "createdTime,resolved,replies(author/displayName,content,createdTime))")
     out: list[dict] = []

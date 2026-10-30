@@ -4,6 +4,10 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## Unreleased
+
+*Drive names its account.* `cxp folders` opens with `Drive checked as <email>`, and a bound Drive folder Drive cannot see reads `not found: deleted, or not shared with <email>`. A failed `pull_document_comments` Drive read adds `[read as <email>; is the file shared with it?]`. On 2026-10-30 the webhook, hosted MCP and a laptop all read Drive as an account no project folder was shared with, and every symptom looked like a missing file. New `folder_rules.drive_account(conn)` reads the credential's email (no network), else asks Drive, and never raises.
+
 ## v0.133.1 — 2026-10-30
 
 **Inherited folders for every Dropbox writer, a Drive check in `cxp folders`, and the skills hint shown to the person.** Patch: no new verb, command or MC-2 change.

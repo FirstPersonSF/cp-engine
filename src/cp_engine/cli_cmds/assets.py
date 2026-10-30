@@ -238,7 +238,8 @@ def folders_cmd(write_sql: bool, offline: bool) -> None:
                 click.echo(f"{source}: unchecked ({type(exc).__name__}: {exc})", err=True)
     tree = folder_rules.read_tree(client)
     rows = folder_rules.audit_folders(client, connectors=connectors, tree=tree)
-    click.echo(folder_rules.render_audit(rows))
+    click.echo(folder_rules.render_audit(
+        rows, drive_account=folder_rules.drive_account(connectors.get("drive"))))
     unbound = folder_rules.unbound_workstreams(tree)
     click.echo(f"\n{len(rows)} active · {len(unbound)} with a source on and no folder")
     if write_sql:
