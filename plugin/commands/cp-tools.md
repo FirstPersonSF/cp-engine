@@ -114,6 +114,18 @@ worked — not as current direction. `Holding` carries its status and no note.
   "form-gated — landing-page abstract, not the document (detected at ingest…)".
   A gated result means you have the abstract — get the document itself (try
   `pdf_links`, or ask the client) and ingest that. Team members only.
+- `add_project_link(project_code, url, title, kind?, note?)` — record work that
+  lives behind a login (a Figma file, a claude.ai Artifact, a GitHub repo) as a
+  project source (#370). **Does not fetch the URL.** Writes a small link card
+  (title, URL, provider from the host, kind, note, who and when) to
+  `03 Assets/06 Spine/Link · <title>.md` and queues its ingest, so it lists as
+  `Link · <title>.md`, `semantic_search` finds it, and its `url` is the work
+  itself. `kind="deliverable"` also creates a Deliverables element
+  (`_authored/link-<title>`) so `seal_sweep` sees it; attach the card with
+  `add_element_source` once it lists (the result names the call). Idempotent:
+  the same URL returns the existing card (`existing: true`). http(s) only;
+  `title` required. For a public page whose TEXT you want, use `ingest_url`.
+  Team members only.
 
 The `_sources.md` manifest in each working dir names what exists; these tools
 fetch content. Both project-scoped and shared account-scoped docs are surfaced.

@@ -616,7 +616,7 @@ mcp_server = MCPServer(
         "sequence for a session like this one, which has no `cxp` and no file "
         "editing. Read `master-cp.md` for the project index; get each "
         "project's path from there rather than constructing it.\n\n"
-        "MOST TOOLS READ; 30 OF THEM WRITE. The writers are the `create_*`, `set_*`, "
+        "MOST TOOLS READ; 31 OF THEM WRITE. The writers are the `create_*`, `set_*`, "
         "`add_*`, `remove_*`, `promote_*`, `retire_*`, `resolve_*`, "
         "`route_*`, `rotate_*`, `seal_to_*` and `capture_*` verbs, plus "
         "`log_improvement`, `push_to_dropbox` and `ingest_url` — a name that "
@@ -625,10 +625,13 @@ mcp_server = MCPServer(
         "YOUR identity; the server holds no MC-2 write key, which is why "
         "authorship is real and why nothing here can be undone by the server on "
         "your behalf. The one exception is the Dropbox upload in "
-        "`push_to_dropbox` and `ingest_url`, made with the service's own "
-        "credentials (team members only). An upload is NOT an ingest: a pushed "
-        "file reaches the source store only when its ingest is queued "
-        "(`ingest_url` always queues it; `push_to_dropbox` with `ingest=True`). "
+        "`push_to_dropbox`, `ingest_url` and `add_project_link`, made with the "
+        "service's own credentials (team members only). An upload is NOT an "
+        "ingest: a pushed file reaches the source store only when its ingest is "
+        "queued (`ingest_url` and `add_project_link` always queue it; "
+        "`push_to_dropbox` with `ingest=True`). Work behind a login (Figma, a "
+        "claude.ai Artifact, a repo) is recorded with `add_project_link`, never "
+        "fetched. "
         "When refreshing an Exec "
         "Summary with `capture_project_state`, pass "
         "every field you mean to be current, not just `status`: omitted fields "
@@ -11334,6 +11337,8 @@ MAIN_ONLY_TOOLS: dict[str, str] = {
     "push_to_dropbox": "Dropbox upload / upload link (service credentials) "
                        "+ optional POST mc-2 -> asset ingest",
     "ingest_url": "Dropbox upload (service credentials) + POST mc-2 -> asset ingest",
+    "add_project_link": "Dropbox upload of a link card (service credentials) + POST "
+                        "mc-2 -> asset ingest + optional INSERT spine_substance",
 }
 
 READ_INSTRUCTIONS = (

@@ -1182,6 +1182,29 @@ def _stable_dir_for(tmp_root: Path, file_ref: FileRef) -> Path:
     return tmp_root / safe_id
 
 
+def _link_card_url(file_ref: FileRef, local) -> str | None:
+    """The URL a link card records, or None for any other file (#370).
+
+    A card (`Link · <title>.md`, written by the hosted `add_project_link`)
+    stands for work behind a login — a Figma file, a claude.ai Artifact, a
+    repo. Its source's `url` is that work, not a Dropbox share link to the
+    card, so a citation opens the thing itself. Honoured only on a file named
+    like a card and small like one; any read failure falls back to the
+    ordinary link.
+    """
+    from cp_engine.link_card import MAX_CARD_BYTES, card_url_in, is_card_name
+
+    if not is_card_name(file_ref.name):
+        return None
+    try:
+        path = Path(local)
+        if path.stat().st_size > MAX_CARD_BYTES:
+            return None
+        return card_url_in(path.read_text(encoding="utf-8", errors="replace"))
+    except Exception:  # noqa: BLE001 — a link is a nice-to-have, never a failure
+        return None
+
+
 def _source_url(
     file_ref: FileRef,
     drive_connector=None,
@@ -1534,7 +1557,7 @@ def ingest_project_assets(
                 ingest_result = pipeline.ingest_file(
                     file_path,
                     title=file_ref.name,
-                    url=_source_url(
+                    url=_link_card_url(file_ref, local) or _source_url(
                         file_ref, drive_connector, dropbox_connector,
                         failures=result.failures,
                     ),
