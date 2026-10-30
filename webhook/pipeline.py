@@ -828,7 +828,8 @@ def _perform_auto_ingest(
                         f"{type(exc).__name__}: {exc}"
                     )
             commitments_summary = propose_commitments(
-                meeting_id, project_codes, roster=roster, routing_index=routing_index
+                meeting_id, project_codes, roster=roster, routing_index=routing_index,
+                term_aliases=dict(getattr(config, "term_aliases", None) or {}),
             )
             if isinstance(commitments_summary, dict) and commitments_summary.get("error"):
                 warnings.append(f"commitments proposal failed: {commitments_summary['error']}")

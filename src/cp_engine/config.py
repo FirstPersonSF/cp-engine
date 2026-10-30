@@ -219,6 +219,14 @@ class TenantConfig:
     name_aliases: Mapping[str, str] = field(
         default_factory=lambda: MappingProxyType({})
     )
+    # Known mis-hearings of product and brand terms (#371): `[terms] aliases =
+    # {"Juul" = "Joule"}`. Auto-ingest rewrites each key to its value as a
+    # whole word (case-sensitive; "Juul-based" yes, "Juuls" no) in plan text
+    # and in proposed commitments — before the person-name pass. Kept apart
+    # from `[names]` because names carry first-name rules terms must not.
+    term_aliases: Mapping[str, str] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
     # Step 4b rollout gate: `[stakeholders] retire_markdown = true` lets sync
     # import the hand-written cp.md `## Stakeholders` / sprint
     # `### Stakeholders` entries onto spine cards and remove the sections.
@@ -283,6 +291,8 @@ def load(tenant_root: Path) -> TenantConfig:
         kwargs["team"] = committed["team"]
     if committed["name_aliases"]:
         kwargs["name_aliases"] = MappingProxyType(dict(committed["name_aliases"]))
+    if committed["term_aliases"]:
+        kwargs["term_aliases"] = MappingProxyType(dict(committed["term_aliases"]))
     kwargs["retire_stakeholder_markdown"] = committed["retire_stakeholder_markdown"]
     kwargs["attention_digest"] = committed["attention_digest"]
     kwargs["timezone"] = committed["timezone"]
@@ -499,6 +509,21 @@ def _normalize_committed(data: dict, source: Path) -> dict:
             )
         name_aliases = dict(aliases_raw)
 
+    # Optional [terms] table (#371): aliases = {"Juul" = "Joule"}.
+    term_aliases: dict[str, str] = {}
+    terms_raw = data.get("terms")
+    if terms_raw is not None:
+        t_raw = terms_raw.get("aliases") if isinstance(terms_raw, dict) else None
+        if not isinstance(t_raw, dict) or not all(
+            isinstance(k, str) and k.strip() and isinstance(v, str) and v.strip()
+            for k, v in t_raw.items()
+        ):
+            raise CommittedConfigInvalid(
+                f"{source}: [terms].aliases must be a table of non-empty "
+                'strings, e.g. aliases = {"Juul" = "Joule"}'
+            )
+        term_aliases = dict(t_raw)
+
     # Optional [stakeholders] table (step 4b): retire_markdown = true|false.
     retire_md = False
     stake_raw = data.get("stakeholders")
@@ -530,6 +555,7 @@ def _normalize_committed(data: dict, source: Path) -> dict:
         "risk_categories": risk_categories,
         "team": team,
         "name_aliases": name_aliases,
+        "term_aliases": term_aliases,
         "retire_stakeholder_markdown": retire_md,
         "attention_digest": attention_digest,
     }
