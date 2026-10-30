@@ -351,7 +351,19 @@ def find_candidates(text: str, known: KnownTerms) -> list[Candidate]:
     known_lc = {t.lower() for t in (*known.terms, *known.people)}
     skip_lc = {s.lower() for s in known.skip}
     single_terms = known.single_word_terms()
-    multi = [k.split() for k in (*known.people, *known.terms) if len(k.split()) in (2, 3)]
+    term_words_lc = {t.lower() for t in single_terms}
+    # Known phrases tokenised the way the text is ("1P Conference" → P,
+    # Conference), each with its original spelling as the target. A phrase
+    # with an all-digit word ("SAP 5238 Enablement") never forms one run of
+    # capitalised words in the text, so it is not a phrase target.
+    multi = []
+    for k in (*known.people, *known.terms):
+        pieces = [_WORD_RE.findall(w) for w in k.split()]
+        if any(not p for p in pieces):
+            continue
+        toks = [t for p in pieces for t in p]
+        if len(toks) in (2, 3):
+            multi.append((toks, " ".join(k.split())))
     people_lc = {p.lower() for p in known.people}
 
     found: dict[str, tuple[str, Kind]] = {}
@@ -360,7 +372,7 @@ def find_candidates(text: str, known: KnownTerms) -> list[Candidate]:
     runs = [r for ln in lines for r in _runs(ln)]
     # Whole phrases first ("Jeff Allman" → "Geoff Ahmann").
     for run in runs:
-        for k in multi:
+        for k, target in multi:
             w = len(k)
             for i in range(len(run) - w + 1):
                 window = run[i:i + w]
@@ -369,8 +381,12 @@ def find_candidates(text: str, known: KnownTerms) -> list[Candidate]:
                     continue
                 if phrase in found:
                     continue
+                # A known product or company name is not a mis-hearing of
+                # another one: "Ship Canonic" is not "SAP Concur".
+                if any(h.lower() != kk.lower() and h.lower() in term_words_lc
+                       for h, kk in zip(window, k, strict=False)):
+                    continue
                 if phrase_sounds_like(window, k):
-                    target = " ".join(k)
                     found[phrase] = (target, "name" if target.lower() in people_lc else "term")
                     phrase_words.update(x.lower() for x in window)
 
@@ -450,6 +466,21 @@ class OpenEntry:
     context: str
 
 
+def parse_open_lines(lines: Iterable[str]) -> list[OpenEntry]:
+    """The ``## Open`` entries among ``lines``; other lines are ignored."""
+    out = []
+    for ln in lines:
+        m = _OPEN_RE.match(ln)
+        if m:
+            out.append(OpenEntry(
+                date=m["date"], kind=m["kind"], heard=m["heard"],
+                target=m["target"].strip(), count=int(m["count"]),
+                code=m["code"], meeting=m["meeting"],
+                context=(m["context"] or "").strip(),
+            ))
+    return out
+
+
 @dataclass
 class ReviewFile:
     lines: list[str]
@@ -472,17 +503,7 @@ class ReviewFile:
         return out
 
     def open_entries(self) -> list[OpenEntry]:
-        out = []
-        for i in self._sections().get("open", []):
-            m = _OPEN_RE.match(self.lines[i])
-            if m:
-                out.append(OpenEntry(
-                    date=m["date"], kind=m["kind"], heard=m["heard"],
-                    target=m["target"].strip(), count=int(m["count"]),
-                    code=m["code"], meeting=m["meeting"],
-                    context=(m["context"] or "").strip(),
-                ))
-        return out
+        return parse_open_lines(self.lines[i] for i in self._sections().get("open", []))
 
     def decided(self, section: str) -> set[tuple[str, str]]:
         out = set()
@@ -520,6 +541,39 @@ class ReviewFile:
         return "\n".join(self.lines)
 
 
+def _new_lines(
+    rf: ReviewFile,
+    candidates: Iterable[Candidate],
+    *,
+    code: str,
+    meeting_id: str,
+    day: date,
+    queued: set[tuple[str, str]] | None = None,
+) -> list[str]:
+    """The ``## Open`` lines `candidates` would add to ``rf``: a pair already
+    accepted or rejected, or already queued from this meeting, is left out.
+    ``queued`` carries the (meeting, heard) pairs across calls, so a scan of
+    many meetings can plan against one file; it is updated in place."""
+    decided = rf.decided("accepted") | rf.decided("rejected")
+    decided_heard = {h for h, _ in decided}
+    meeting = (meeting_id or "-")[:8]
+    if queued is None:
+        queued = {(e.meeting, e.heard) for e in rf.open_entries()}
+    new: list[str] = []
+    for c in candidates:
+        if (c.heard, c.target) in decided or c.heard in decided_heard:
+            continue
+        if (meeting, c.heard) in queued:
+            continue
+        queued.add((meeting, c.heard))
+        line = (f'- {day.isoformat()} · {c.kind} · "{c.heard}" → {c.target} · '
+                f"×{c.count} · {code} · meeting {meeting}")
+        if c.context:
+            line += f" · {c.context}"
+        new.append(line)
+    return new
+
+
 def record(
     tenant_root: Path,
     candidates: Iterable[Candidate],
@@ -533,22 +587,7 @@ def record(
     already queued from this meeting, or already accepted / rejected, is
     not written again. Returns how many lines were added."""
     rf = ReviewFile.read(tenant_root)
-    decided = rf.decided("accepted") | rf.decided("rejected")
-    decided_heard = {h for h, _ in decided}
-    meeting = (meeting_id or "-")[:8]
-    queued = {(e.meeting, e.heard) for e in rf.open_entries()}
-    new: list[str] = []
-    for c in candidates:
-        if (c.heard, c.target) in decided or c.heard in decided_heard:
-            continue
-        if (meeting, c.heard) in queued:
-            continue
-        queued.add((meeting, c.heard))
-        line = (f'- {today.isoformat()} · {c.kind} · "{c.heard}" → {c.target} · '
-                f"×{c.count} · {code} · meeting {meeting}")
-        if c.context:
-            line += f" · {c.context}"
-        new.append(line)
+    new = _new_lines(rf, candidates, code=code, meeting_id=meeting_id, day=today)
     if not new:
         return 0
     rf._ensure(tenant, today)
@@ -577,8 +616,13 @@ class Group:
 
 def grouped(tenant_root: Path) -> list[Group]:
     """Open candidates grouped by (heard, target), most-seen first."""
+    return group_entries(ReviewFile.read(tenant_root).open_entries())
+
+
+def group_entries(entries: Iterable[OpenEntry]) -> list[Group]:
+    """Group open entries by (heard, target), most-seen first."""
     groups: dict[tuple[str, str], Group] = {}
-    for e in ReviewFile.read(tenant_root).open_entries():
+    for e in entries:
         g = groups.setdefault((e.heard, e.target), Group(e.heard, e.target, e.kind))
         g.count += e.count
         g.meetings.add(e.meeting)
@@ -702,6 +746,29 @@ def review(
 # ──────────────────────────────────────────────────────────────────────
 
 
+def detect(
+    *,
+    config,
+    texts: Iterable[str],
+    roster: Iterable | None = None,
+    project_dir: Path | None = None,
+) -> list[Candidate]:
+    """Candidates in one meeting's texts for one workstream. Known people are
+    the workstream's stakeholder cards (generated view on disk) plus the
+    transcript's speaker labels. Reads the view; writes nothing."""
+    from cp_engine.attribution import speaker_labels
+    from cp_engine.stakeholders import cards_from_view
+
+    texts = [t for t in texts if t]
+    if not texts:
+        return []
+    root = Path(config.root)
+    cards = cards_from_view(root, project_dir) if project_dir is not None else []
+    speakers = [s for t in texts for s in speaker_labels(t)]
+    known = build_known_terms(config=config, roster=roster, cards=cards, speakers=speakers)
+    return find_candidates("\n".join(texts), known)
+
+
 def collect_for_ingest(
     *,
     config,
@@ -713,21 +780,166 @@ def collect_for_ingest(
     project_dir: Path | None = None,
 ) -> int:
     """Detect candidates in one meeting's texts for one workstream and queue
-    them. Known people are the workstream's stakeholder cards (generated
-    view on disk) plus the transcript's speaker labels. Returns lines added.
-    Callers must treat any exception as non-fatal."""
-    from cp_engine.attribution import speaker_labels
-    from cp_engine.stakeholders import cards_from_view
-
-    texts = [t for t in texts if t]
-    if not texts:
-        return 0
-    root = Path(config.root)
-    cards = cards_from_view(root, project_dir) if project_dir is not None else []
-    speakers = [s for t in texts for s in speaker_labels(t)]
-    known = build_known_terms(config=config, roster=roster, cards=cards, speakers=speakers)
-    candidates = find_candidates("\n".join(texts), known)
+    them. Returns lines added. Callers must treat any exception as
+    non-fatal."""
+    candidates = detect(config=config, texts=texts, roster=roster,
+                        project_dir=project_dir)
     if not candidates:
         return 0
+    root = Path(config.root)
     return record(root, candidates, code=code, meeting_id=meeting_id, today=today,
                   tenant=getattr(config, "display", None) or root.name)
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Backfill: seed the queue from stored transcripts
+# ──────────────────────────────────────────────────────────────────────
+
+_DATE_PREFIX_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})")
+_ANCHOR_RE = re.compile(r"\A---\n(?P<body>.*?)\n---\n", re.S)
+
+
+@dataclass(frozen=True)
+class StoredMeeting:
+    """One meeting on disk: ``<stem>.txt`` (transcript) and/or ``<stem>.md``
+    (Fathom summary and action items) in a workstream's ``meetings/``."""
+
+    source: str              # tenant-relative path of the stem, for messages
+    code: str
+    meeting_id: str
+    day: date | None
+    project_dir: Path | None
+    texts: tuple[str, ...]
+
+
+def _anchor(text: str) -> tuple[dict[str, str], str]:
+    m = _ANCHOR_RE.match(text)
+    if not m:
+        return {}, text
+    fields = {}
+    for ln in m["body"].splitlines():
+        k, sep, v = ln.partition(":")
+        if sep:
+            fields[k.strip()] = v.strip()
+    return fields, text[m.end():]
+
+
+def _workstream_paths(root: Path) -> dict[str, str]:
+    """``{code: tenant-relative dir}`` from ``.cp-engine/paths.json``."""
+    import json
+
+    try:
+        data = json.loads((root / ".cp-engine" / "paths.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for code, node in (data.get("workstreams") or {}).items():
+        path = (node or {}).get("path") if isinstance(node, dict) else None
+        if path:
+            out[code] = path.strip("/")
+    return out
+
+
+def stored_meetings(root: Path) -> list[StoredMeeting]:
+    """Every meeting stored under a ``meetings/`` folder of the tenant, oldest
+    first. The workstream is the ``.md`` anchor's ``Project:`` when it names
+    one, else the nearest enclosing workstream folder; the meeting id is the
+    anchor's ``Meeting-ID:``, else a hash of the file's path."""
+    import hashlib
+
+    root = Path(root)
+    paths = _workstream_paths(root)
+    by_dir = {v: k for k, v in paths.items()}
+    stems: dict[Path, None] = {}
+    for f in sorted(root.rglob("meetings/*")):
+        if ".git" in f.relative_to(root).parts or f.suffix not in (".txt", ".md"):
+            continue
+        if f.is_file():
+            stems.setdefault(f.with_suffix(""), None)
+
+    out: list[StoredMeeting] = []
+    for stem in stems:
+        txt, md = stem.with_suffix(".txt"), stem.with_suffix(".md")
+        texts: list[str] = []
+        fields: dict[str, str] = {}
+        if txt.is_file():
+            texts.append(txt.read_text(encoding="utf-8", errors="replace"))
+        if md.is_file():
+            fields, body = _anchor(md.read_text(encoding="utf-8", errors="replace"))
+            texts.append(body)
+        rel = stem.relative_to(root).as_posix()
+
+        code = fields.get("Project", "")
+        if code not in paths:
+            code = ""
+            d = stem.parent.parent        # the folder holding meetings/
+            while d != root and d != d.parent:
+                code = by_dir.get(d.relative_to(root).as_posix(), "")
+                if code:
+                    break
+                d = d.parent
+            code = code or stem.parent.parent.name
+        project_dir = root / paths[code] if code in paths else stem.parent.parent
+
+        meeting_id = fields.get("Meeting-ID") or (
+            "f-" + hashlib.sha1(rel.encode()).hexdigest()[:6])
+        m = _DATE_PREFIX_RE.match(stem.name)
+        try:
+            day = date.fromisoformat(m.group(1)) if m else None
+        except ValueError:
+            day = None
+        out.append(StoredMeeting(rel, code, meeting_id, day, project_dir, tuple(texts)))
+    out.sort(key=lambda s: (s.day or date.min, s.source))
+    return out
+
+
+@dataclass
+class ScanResult:
+    meetings: int = 0
+    workstreams: set[str] = field(default_factory=set)
+    lines: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    written: bool = False
+
+    def groups(self) -> list[Group]:
+        return group_entries(parse_open_lines(self.lines))
+
+
+def scan(
+    config,
+    *,
+    today: date,
+    roster: Iterable | None = None,
+    write: bool = False,
+) -> ScanResult:
+    """Run detection over every stored meeting and plan the ``## Open`` lines
+    it would add, with the same rules, per-meeting cap, context length and
+    dedup as ingest: a pair already accepted or rejected, or already queued
+    from that meeting, is left out, so a second scan adds nothing.
+
+    ``write=False`` (the default) reads only. ``write=True`` appends the lines
+    to ``alias-candidates.md``. ``.cp-engine.toml`` is never touched: only
+    `cxp aliases --accept` writes an alias."""
+    root = Path(config.root)
+    roster = list(roster or ())
+    rf = ReviewFile.read(root)
+    queued = {(e.meeting, e.heard) for e in rf.open_entries()}
+    result = ScanResult()
+    for sm in stored_meetings(root):
+        result.meetings += 1
+        result.workstreams.add(sm.code)
+        try:
+            candidates = detect(config=config, texts=sm.texts, roster=roster,
+                                project_dir=sm.project_dir)
+        except Exception as exc:  # noqa: BLE001 — one bad file never stops a scan
+            result.errors.append(f"{sm.source}: {exc}")
+            continue
+        result.lines += _new_lines(rf, candidates, code=sm.code,
+                                   meeting_id=sm.meeting_id, day=sm.day or today,
+                                   queued=queued)
+    if write and result.lines:
+        rf._ensure(getattr(config, "display", None) or root.name, today)
+        rf._insert_at_end_of("open", result.lines)
+        rf.write(root)
+        result.written = True
+    return result

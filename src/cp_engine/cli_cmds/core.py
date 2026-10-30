@@ -1066,6 +1066,47 @@ def health_cmd(do_post: bool, as_json: bool, scheduled: str | None, channel: str
     sys.exit(0 if report.ok else 1)
 
 
+def _alias_scan_roster(config) -> list | None:
+    """Every MC-2 workstream (read only), so company and project names are
+    known to the scan as they are at ingest. None when MC-2 is unreachable."""
+    from cp_engine.sync import _default_backend_factory
+
+    return list(_default_backend_factory(config.sync.backend).read_projects(config))
+
+
+def _aliases_scan(config, *, write: bool) -> None:
+    from cp_engine import alias_candidates as ac
+    from cp_engine.clock import tenant_now
+
+    try:
+        roster = _alias_scan_roster(config)
+    except Exception as exc:  # noqa: BLE001 — the scan still runs without it
+        click.echo(f"Warning: MC-2 roster not read ({exc}); company and project "
+                   "names are not used as known terms.", err=True)
+        roster = None
+    if write:
+        _warn_if_behind_upstream(config.root)
+    result = ac.scan(config, today=tenant_now().date(), roster=roster, write=write)
+    for err in result.errors:
+        click.echo(f"Warning: skipped {err}", err=True)
+    groups = result.groups()
+    click.echo(f"Scanned {result.meetings} meetings in {len(result.workstreams)} "
+               "workstreams.")
+    if not result.lines:
+        click.echo("No new alias candidates.")
+        return
+    verb = "Added" if result.written else "Would add"
+    click.echo(f"{verb} {len(result.lines)} lines ({len(groups)} pairs) to "
+               f"{ac.FILENAME}.")
+    click.echo("")
+    click.echo("\n".join(ac.render_review(groups, heading="Alias candidates")).rstrip())
+    click.echo("")
+    if result.written:
+        click.echo(f"Review with `cxp aliases`. Commit {ac.FILENAME}.")
+    else:
+        click.echo("Nothing written. Run `cxp aliases --scan --write` to queue them.")
+
+
 @click.command("aliases")
 @click.option(
     "--accept",
@@ -1083,22 +1124,57 @@ def health_cmd(do_post: bool, as_json: bool, scheduled: str | None, channel: str
     metavar="HEARD",
     help="Reject a candidate; it is recorded and not proposed again. Repeatable.",
 )
-def aliases_cmd(accept: tuple[str, ...], reject: tuple[str, ...]) -> None:
+@click.option(
+    "--scan",
+    is_flag=True,
+    help="Seed the queue from the meetings already stored in the tenant "
+    "(every meetings/ folder). Prints what it would add unless --write.",
+)
+@click.option(
+    "--write",
+    is_flag=True,
+    help="With --scan: append the candidates to alias-candidates.md. "
+    "Never edits .cp-engine.toml.",
+)
+@click.option(
+    "--dry-run",
+    "dry_run",
+    is_flag=True,
+    help="With --scan: print only, write nothing (the default).",
+)
+def aliases_cmd(accept: tuple[str, ...], reject: tuple[str, ...], scan: bool,
+                write: bool, dry_run: bool) -> None:
     """Review alias candidates found at ingest (#387).
 
     With no options, lists the open candidates in `alias-candidates.md`
     (heard form, likely target, counts, example context). `--accept` and
-    `--reject` decide them. Nothing is committed: commit `.cp-engine.toml`
-    and `alias-candidates.md` with the rest of the session.
+    `--reject` decide them. `--scan` runs the same detection over the
+    meetings already stored in the tenant, once, to seed the queue. Nothing
+    is committed: commit `.cp-engine.toml` and `alias-candidates.md` with
+    the rest of the session.
     """
     from cp_engine import alias_candidates as ac
     from cp_engine.clock import tenant_now
+
+    if (write or dry_run) and not scan:
+        click.echo("Error: --write and --dry-run go with --scan.", err=True)
+        sys.exit(2)
+    if write and dry_run:
+        click.echo("Error: choose --write or --dry-run, not both.", err=True)
+        sys.exit(2)
+    if scan and (accept or reject):
+        click.echo("Error: --scan cannot be combined with --accept or --reject.", err=True)
+        sys.exit(2)
 
     try:
         config = load(Path.cwd())
     except ConfigError as exc:
         click.echo(f"Error: {exc}", err=True)
         sys.exit(2)
+
+    if scan:
+        _aliases_scan(config, write=write)
+        return
 
     if not accept and not reject:
         lines = ac.render_review(ac.grouped(config.root), heading="Alias candidates")

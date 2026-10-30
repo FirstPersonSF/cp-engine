@@ -6,6 +6,33 @@ Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automat
 
 ## Unreleased
 
+*`cxp aliases --scan`: seed the alias-candidate queue from stored meetings (#387 follow-up).*
+Ingest only queues candidates for meetings it sees from now on. `cxp aliases
+--scan` runs the same detection once over every meeting already in the
+tenant's `meetings/` folders (`<stem>.txt` transcript plus the `<stem>.md`
+summary and action items). By default it only prints: how many meetings and
+workstreams it read, and the lines it would add, grouped as `cxp aliases`
+shows them. `--write` appends them to `alias-candidates.md`. The rules are
+the ones ingest uses: the same per-meeting cap, context length and line
+shape. A pair already accepted or rejected is skipped, and so is a pair
+already queued from that meeting, so a second scan adds nothing. Each line is
+dated by the meeting and carries its workstream. The workstream comes from
+the summary's `Project:`, or else the nearest enclosing workstream folder.
+The meeting comes from `Meeting-ID:`, or else a stable hash of the path.
+Company and project names come from an MC-2 read of the roster. If that read
+fails, the scan warns and goes on without them. `.cp-engine.toml` is never
+edited: accepting stays `cxp aliases --accept`. No new command
+(cxp_commands unchanged).
+
+The first real-tenant scan turned up three false positives in phrase matching,
+now fixed for ingest too:
+- A known product or company word is no longer read as a mis-hearing of
+  another one ("Ship Canonic" → SAP Concur).
+- Known phrases are split the way the text is, so "1P Conference" no longer
+  matches itself as "P Conference".
+- A project name with an all-digit word ("SAP 5238 Enablement") is no longer
+  a phrase target.
+
 *Fix: concurrent promotions of one meeting no longer overwrite each other (#393).*
 `promote_meeting_transcript` and `embed_meeting_summary` write the text to a
 temp path keyed on the recording id. That path has to stay stable, because
