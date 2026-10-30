@@ -227,3 +227,113 @@ def test_failed_element_keeps_its_project_side_copy(tmp_path):
     sync_spine_substance(client, project_id="pid", project_code="ibx-5192",
                          project_dir=project_dir)
     assert stale.is_file(), "project-side copy dropped despite the account write failing"
+
+
+# ── #372: an account node's dir IS the company dir; its parent is 1p/ ──
+
+
+def test_account_node_renders_into_its_own_dir_not_scope_root(tmp_path):
+    """An account node's working dir is ``1p/<company>/`` (#302), so its
+    parent is ``1p/``. Rendering into ``parent / _stakeholders`` put every
+    client company's cards in ONE ``1p/_stakeholders/``, each account sync
+    reaping the last (Salesloft's three cards vanished on 10-29 when
+    Teleflex synced). The node renders into its own dir."""
+    account = tmp_path / "1p" / "salesloft"
+    account.mkdir(parents=True)
+    n = _mirror_account_elements(_Client("slt", [_row("_authored/leah-ward")]),
+                                 project_id="pid", project_code="slt-5219",
+                                 project_dir=account, tenant_root=tmp_path)
+    assert n == 1
+    assert (account / "_stakeholders" / "leah-ward.md").is_file()
+    assert not (tmp_path / "1p" / "_stakeholders").exists()
+
+
+def test_two_account_nodes_do_not_reap_each_other(tmp_path):
+    slt = tmp_path / "1p" / "salesloft"
+    tel = tmp_path / "1p" / "teleflex"
+    slt.mkdir(parents=True)
+    tel.mkdir(parents=True)
+    _mirror_account_elements(_Client("slt", [_row("_authored/leah-ward")]),
+                             project_id="a", project_code="slt-5219",
+                             project_dir=slt, tenant_root=tmp_path)
+    _mirror_account_elements(_Client("tel", [_row("_authored/brian-olson")]),
+                             project_id="b", project_code="tel-5220",
+                             project_dir=tel, tenant_root=tmp_path)
+    assert (slt / "_stakeholders" / "leah-ward.md").is_file()
+    assert (tel / "_stakeholders" / "brian-olson.md").is_file()
+
+
+def test_program_child_renders_into_company_dir(tmp_path):
+    """A job under a program sits two levels below the company dir; its
+    cards still converge on ``1p/<company>/_stakeholders/``."""
+    job = tmp_path / "1p" / "google" / "ggl-5300-go-safety" / "ggl-5136-site"
+    job.mkdir(parents=True)
+    _mirror_account_elements(_Client("ggl", [_row("_authored/fred")]),
+                             project_id="pid", project_code="ggl-5136",
+                             project_dir=job, tenant_root=tmp_path)
+    assert (tmp_path / "1p" / "google" / "_stakeholders" / "fred.md").is_file()
+    assert not (job.parent / "_stakeholders").exists()
+
+
+def test_account_dir_for_shapes(tmp_path):
+    from cp_engine.spine_substance_sync import account_dir_for
+
+    t = tmp_path
+    assert account_dir_for(t / "1p" / "infoblox", t) == t / "1p" / "infoblox"
+    assert account_dir_for(t / "1p" / "infoblox" / "ibx-5153", t) == t / "1p" / "infoblox"
+    assert (account_dir_for(t / "1p" / "google" / "inactive" / "ggl-5177", t)
+            == t / "1p" / "google")
+    assert (account_dir_for(t / "canonic" / "cnc-9004" / "cnc-5237", t)
+            == t / "canonic")
+    # Without tenant_root: located by the scope segment.
+    assert account_dir_for(t / "1p" / "salesloft") == t / "1p" / "salesloft"
+    # No scope dir on the path: the pre-#372 parent fallback.
+    assert account_dir_for(t / "x" / "proj", t) == t / "x"
+
+
+def test_stray_scope_root_stakeholders_is_reaped(tmp_path):
+    """The ``1p/_stakeholders/`` left by pre-#372 syncs: engine-written
+    cards go silently, the manifest with them, and the dir is removed."""
+    import json
+
+    from cp_engine import region_guard
+
+    stray = tmp_path / "1p" / "_stakeholders"
+    stray.mkdir(parents=True)
+    text = "engine-written card"
+    (stray / "alyssa-teleflex.md").write_text(text)
+    (stray / ".generated.json").write_text(
+        json.dumps({"alyssa-teleflex.md": region_guard.digest(text)}))
+    account = tmp_path / "1p" / "teleflex"
+    account.mkdir(parents=True)
+    warnings: list[str] = []
+    _mirror_account_elements(_Client("tel", [_row("_authored/alyssa-teleflex")]),
+                             project_id="pid", project_code="tel-5220",
+                             project_dir=account, tenant_root=tmp_path,
+                             warnings_out=warnings)
+    assert not stray.exists()
+    assert (account / "_stakeholders" / "alyssa-teleflex.md").is_file()
+    assert any("#372" in w for w in warnings)
+
+
+def test_self_company_scope_dir_is_not_reaped_as_stray(tmp_path):
+    """``canonic/_stakeholders/`` IS a self-company's dir — never stray."""
+    job = tmp_path / "canonic" / "cnc-9004" / "cnc-5237"
+    job.mkdir(parents=True)
+    _mirror_account_elements(_Client("cnc", [_row("_authored/x")]),
+                             project_id="pid", project_code="cnc-5237",
+                             project_dir=job, tenant_root=tmp_path)
+    assert (tmp_path / "canonic" / "_stakeholders" / "x.md").is_file()
+
+
+def test_account_node_without_tenant_root_still_uses_its_own_dir(tmp_path):
+    """The behavioural control for #372 on the pre-fix signature: no
+    ``tenant_root`` kwarg, so it FAILS on unfixed code for the bug itself
+    (cards in ``1p/_stakeholders/``), not for a missing argument."""
+    account = tmp_path / "1p" / "salesloft"
+    account.mkdir(parents=True)
+    _mirror_account_elements(_Client("slt", [_row("_authored/leah-ward")]),
+                             project_id="pid", project_code="slt-5219",
+                             project_dir=account)
+    assert (account / "_stakeholders" / "leah-ward.md").is_file()
+    assert not (tmp_path / "1p" / "_stakeholders").exists()

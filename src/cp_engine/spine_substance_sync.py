@@ -240,6 +240,7 @@ def sync_spine_substance(
     malformed_out: list[dict] | None = None,
     warnings_out: list[str] | None = None,
     writer: str = "cxp sync",
+    tenant_root: Path | None = None,
 ) -> int:
     """MC-2 → disk for one project. Returns the number of element files
     rendered under ``spine/``.
@@ -280,7 +281,8 @@ def sync_spine_substance(
         _mirror_account_elements(client, project_id=project_id,
                                  project_code=project_code,
                                  project_dir=project_dir,
-                                 warnings_out=warnings_out, writer=writer)
+                                 warnings_out=warnings_out, writer=writer,
+                                 tenant_root=tenant_root)
     except Exception as exc:  # noqa: BLE001 — best-effort account mirror
         logger.warning(
             "account mirror skipped for %s: %s", project_code, exc, exc_info=True,
@@ -290,15 +292,58 @@ def sync_spine_substance(
     return rendered
 
 
+def account_dir_for(project_dir: Path, tenant_root: Path | None = None) -> Path:
+    """The company's directory — where its ``_stakeholders/`` lives — for any
+    workstream dir under it.
+
+    A client company's dir is ``1p/<company-slug>/`` whatever the depth: the
+    account node's own dir, a job's parent, a program child's grandparent, an
+    ``inactive/`` bin's parent. A self-company's is its scope dir
+    (``canonic/``, ``firstpersonsf/``). It used to be ``project_dir.parent``,
+    which since #302 is ``1p/`` for an ACCOUNT node — so every client
+    company's account sync rendered into one shared ``1p/_stakeholders/`` and
+    reaped the company synced before it (#372).
+
+    Found by the scope segment: the first path part under ``tenant_root``
+    when given, else the outermost ancestor named like a scope dir. Falls
+    back to ``project_dir.parent`` when no scope dir is on the path."""
+    from cp_engine.state import INACTIVE_DIR_NAME, SCOPE_DIRS
+
+    if tenant_root is not None:
+        try:
+            rel = project_dir.resolve().relative_to(tenant_root.resolve())
+            base, parts = tenant_root.resolve(), rel.parts
+        except ValueError:
+            base, parts = None, ()
+    else:
+        base, parts = None, ()
+    if base is None:
+        full = project_dir.parts
+        idx = next((i for i, p in enumerate(full) if p in SCOPE_DIRS), None)
+        if idx is None:
+            return project_dir.parent
+        base, parts = Path(*full[:idx]) if idx else Path(), full[idx:]
+    if not parts or parts[0] not in SCOPE_DIRS:
+        return project_dir.parent
+    scope = base / parts[0]
+    if parts[0] != "1p":
+        return scope
+    rest = [p for p in parts[1:] if p != INACTIVE_DIR_NAME]
+    return scope / rest[0] if rest else scope
+
+
 def _mirror_account_elements(client, *, project_id: str, project_code: str,
                              project_dir: Path,
                              warnings_out: list[str] | None = None,
-                             writer: str = "cxp sync") -> int:
+                             writer: str = "cxp sync",
+                             tenant_root: Path | None = None) -> int:
     """Render the project's company account-scoped elements into
-    `<account-dir>/_stakeholders/` (the working dir's parent). Returns how many
+    `<company-dir>/_stakeholders/` (`account_dir_for`). Returns how many
     elements were written. A pre-promotion copy under this project's
     `spine/_authored/` is reaped by the project render (account rows are not
-    rendered there)."""
+    rendered there). A stray client-scope ``1p/_stakeholders/`` — written
+    by account-node syncs before #372 — is reaped through the same guard
+    (engine-written files go; anything else is quarantined first)."""
     proj = (
         client.table(Tables.PROJECTS)
         .select("company_id")
@@ -310,8 +355,38 @@ def _mirror_account_elements(client, *, project_id: str, project_code: str,
     company_id = proj[0].get("company_id") if proj else None
     if company_id is None:
         return 0  # initiative-shaped or unlinked — no account scope
-    return render_account_dir(
+    company_dir = account_dir_for(project_dir, tenant_root)
+    written = render_account_dir(
         client, company_id=company_id,
-        stakeholders_dir=project_dir.parent / "_stakeholders",
+        stakeholders_dir=company_dir / "_stakeholders",
         writer=writer, warnings_out=warnings_out,
     )
+    if company_dir.parent.name == "1p":
+        _reap_stray_scope_stakeholders(company_dir.parent / "_stakeholders",
+                                       writer=writer, warnings_out=warnings_out)
+    return written
+
+
+def _reap_stray_scope_stakeholders(stray: Path, *, writer: str,
+                                   warnings_out: list[str] | None) -> None:
+    """Remove ``1p/_stakeholders/`` (#372): no company renders there, and
+    every 1p workstream's disk fallback (`stakeholders.cards_from_view`) reads
+    it as its own — another company's people."""
+    if not stray.is_dir():
+        return
+    from cp_engine.spine_mirror import MirrorDir
+
+    mirror = MirrorDir(stray, writer=writer, warnings_out=warnings_out)
+    removed = mirror.reap()
+    mirror.save()
+    try:
+        stray.rmdir()  # only when nothing is left (a human's file stays)
+    except OSError:
+        pass
+    if removed:
+        msg = (f"removed {len(removed)} card(s) from {stray.name}/ at the scope "
+               "root — each company's cards render under its own "
+               "<company>/_stakeholders/ (#372)")
+        logger.warning(msg)
+        if warnings_out is not None:
+            warnings_out.append(msg)
