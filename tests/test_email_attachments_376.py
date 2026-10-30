@@ -373,6 +373,62 @@ def test_render_section():
     assert ea.render_section(None) == []
 
 
+def test_an_inherited_folder_is_used_and_named(env, monkeypatch):
+    """#396: no folder bound, but the parent's folder holds this workstream's
+    subfolder — ingest reads it, so the attachments land and queue there."""
+    from types import SimpleNamespace
+
+    parent_dir = "/Clients/Acme"
+    rows = {
+        _PID: dict(parent_id="acct", number=5100, name="Widget Launch",
+                   mc_dropbox_folder_id=None),
+        "acct": dict(code="acm-5000-acme", mc_dropbox_folder_id=parent_dir),
+    }
+
+    def _resolve(client, pid):
+        if pid not in rows:
+            return None
+        f = _folders()
+        for k, v in rows[pid].items():
+            setattr(f, k, v)
+        return f
+
+    monkeypatch.setattr(asset_ingest, "resolve_project_folders_by_id", _resolve)
+    listed = []
+
+    def files_list_folder(path):
+        listed.append(path)
+        assert path == parent_dir
+        return SimpleNamespace(has_more=False, cursor=None, entries=[
+            SimpleNamespace(name="5100 Widget Launch", path_display=_ROOT),
+            SimpleNamespace(name="5099 Other", path_display=f"{parent_dir}/5099 Other")])
+
+    env["dropbox"].files_list_folder = files_list_folder
+    out = _file(env)
+    assert listed == [parent_dir]
+    assert out["folder"] == _FOLDER  # under the inherited _ROOT
+    assert out["folder_inherited_from"] == "acm-5000-acme"
+    assert env["queued"][0]["paths"] == [f"{_FOLDER}/deck.pdf", f"{_FOLDER}/image001.png"]
+    assert f"Folder: {_FOLDER} (inherited from acm-5000-acme)" in ea.render_section(out)
+
+
+def test_no_folder_to_inherit_uploads_nothing_and_says_why(env, monkeypatch):
+    from types import SimpleNamespace
+
+    f = _folders()
+    f.mc_dropbox_folder_id, f.parent_id, f.number = None, "acct", 5100
+    parent = _folders()
+    parent.mc_dropbox_folder_id, parent.code = "/Clients/Acme", "acm-5000-acme"
+    monkeypatch.setattr(asset_ingest, "resolve_project_folders_by_id",
+                        lambda c, pid: f if pid == _PID else parent)
+    env["dropbox"].files_list_folder = lambda path: SimpleNamespace(
+        has_more=False, cursor=None, entries=[])
+    out = _file(env)
+    assert env["dropbox"].uploads == [] and env["queued"] == []
+    assert "has no Dropbox folder in MC-2" in out["error"]
+    assert "nothing to inherit from a parent: no subfolder for this workstream" in out["error"]
+
+
 # ── the route ─────────────────────────────────────────────────────────
 
 

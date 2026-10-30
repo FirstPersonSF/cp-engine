@@ -10,7 +10,10 @@ folder at all, so account-level material had no home. Four rules, one module:
    (one level, read-only) and the child's subfolder is found by its job
    number or its exact name; nothing is ever constructed and assumed. Several
    matches is ambiguous and inherits nothing. The parent's own folder may
-   itself be inherited, to any depth.
+   itself be inherited, to any depth. The Dropbox writers (hosted
+   `push_to_dropbox` / `ingest_url` / `add_project_link`, the webhook's
+   email attachments) resolve through `resolve_dropbox_folder`, so they
+   upload into and queue from the same folder ingest reads.
 
 2. **Parent-node sources.** A parent node (account or program) ingests its
    own folder at ``scope='account'`` (`ProjectFolders.ingest_scope`), so every
@@ -25,7 +28,8 @@ folder at all, so account-level material had no home. Four rules, one module:
 
 4. **Convention + audit.** `CONVENTION_ROOTS` names where a workstream's
    Dropbox folder is expected (`<root>/<full_job_name>`); `audit_folders`
-   reports every active workstream against it, read-only, and
+   reports every active workstream against it, read-only (a bound Dropbox
+   path or Drive folder is checked for existence), and
    `fill_sql` prints (never runs) the bindings Drew could apply.
 
 Self-company workstreams WITH an agreement stay out of every rule: they are
@@ -280,6 +284,7 @@ def apply_folder_rules(
     connectors: dict[str, Any] | None = None,
     factories: dict[str, Callable[[], Any]] | None = None,
     lookup: Callable[[str], Any] | None = None,
+    sources: tuple[str, ...] = SOURCES,
 ) -> FolderRulesResult:
     """Apply inheritance (rule 1) and parent-node scoping (rule 2) to a
     resolved `ProjectFolders`, IN PLACE, before its files are listed.
@@ -288,7 +293,8 @@ def apply_folder_rules(
     listing; the ones built come back in `.connectors` for reuse. Every
     outcome worth knowing leaves a note (`kind: "inherited"` for a folder
     taken from a parent). A failure here never raises: the run then proceeds
-    exactly as it would have without the rule.
+    exactly as it would have without the rule. `sources` limits both rules
+    to some providers (the Dropbox writers resolve Dropbox only).
     """
     from cp_engine import asset_ingest as ai
 
@@ -322,7 +328,7 @@ def apply_folder_rules(
 
     # Rule 1 — inherit an unbound, enabled source from the parent chain.
     if getattr(folders, "parent_id", None):
-        for source in SOURCES:
+        for source in sources:
             if not _enabled(folders, source) or bound_folder(folders, source):
                 continue
             try:
@@ -342,7 +348,7 @@ def apply_folder_rules(
 
     # Rule 2 — a parent node's own folder ingests at account scope, minus
     # the subfolders that belong to its children.
-    if not (bound_folder(folders, "dropbox") or bound_folder(folders, "drive")):
+    if not any(bound_folder(folders, s) for s in sources):
         return out
     try:
         children = _child_rows(client, folders.project_id)
@@ -364,7 +370,7 @@ def apply_folder_rules(
 
     drop_roots: list[str] = []
     drive_names: list[str] = []
-    for source in SOURCES:
+    for source in sources:
         if not _enabled(folders, source):
             continue
         root = bound_folder(folders, source)
@@ -415,6 +421,94 @@ def exclude_child_folders(folders: Any, refs: list) -> tuple[list, int]:
             continue
         kept.append(ref)
     return kept, len(refs) - len(kept)
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  The Dropbox writers: one resolver, the same rules as ingest
+# ──────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class DropboxFolder:
+    """A workstream's Dropbox folder as ingest would see it.
+
+    `folders` is the resolved `ProjectFolders` with the rules applied (an
+    inherited folder set in place, a parent node's child folders recorded)
+    — hand it to `asset_ingest.ingest_reach_gap`. `connector` is the Dropbox
+    connector the rules built or were given, for reuse (None when no rule
+    needed one)."""
+
+    folders: Any = None
+    connector: Any = None
+    notes: list[dict[str, str]] = field(default_factory=list)
+
+    @property
+    def folder(self) -> str | None:
+        return self.folders.mc_dropbox_folder_id if self.folders is not None else None
+
+    @property
+    def inherited_from(self) -> str | None:
+        if self.folders is None:
+            return None
+        return (getattr(self.folders, "inherited_from", None) or {}).get("dropbox")
+
+    @property
+    def reason(self) -> str | None:
+        """Why no folder was inherited, when none is bound and none was."""
+        if self.folder:
+            return None
+        why = [n["note"].removeprefix("no inherited folder — ") for n in self.notes
+               if n.get("source") == "dropbox" and n.get("kind") != "inherited"]
+        return "; ".join(why) or None
+
+    def describe(self) -> dict[str, str] | None:
+        """The result field the writers return when the folder was inherited."""
+        if not self.inherited_from:
+            return None
+        return {"path": self.folder or "", "from": self.inherited_from}
+
+
+def resolve_dropbox_folder(
+    client,
+    project_id: str,
+    *,
+    connector: Any = None,
+    connector_factory: Callable[[], Any] | None = None,
+    lookup: Callable[[str], Any] | None = None,
+) -> DropboxFolder:
+    """Resolve a workstream's Dropbox folder the way ingest does: the bound
+    folder, else the one inherited from an ancestor (rule 1), with a parent
+    node's child folders noted (rule 2).
+
+    The one resolver for every writer that uploads into a workstream's
+    folder and queues its ingest — hosted `push_to_dropbox`, `ingest_url`
+    and `add_project_link`, and the webhook's email attachments — so none of
+    them refuses a workstream that ingest itself would serve. Reads MC-2
+    and (only when a rule needs it) lists Dropbox; never writes. A missing
+    project row gives ``folders=None``; an MC-2 error reading the row
+    propagates (the callers name it); a rule that fails is a note, and the
+    bound folder (if any) stands.
+    """
+    from cp_engine import asset_ingest as ai
+
+    folders = ai.resolve_project_folders_by_id(client, project_id)
+    out = DropboxFolder(folders=folders, connector=connector)
+    if folders is None:
+        return out
+    try:
+        res = apply_folder_rules(
+            client, folders,
+            connectors={"dropbox": connector},
+            factories={"dropbox": connector_factory or ai._dropbox_connector},
+            lookup=lookup, sources=("dropbox",),
+        )
+    except Exception as exc:  # noqa: BLE001 — a rule never fails the write
+        out.notes = [{"source": "dropbox",
+                      "note": f"folder rules skipped: {type(exc).__name__}: {exc}"}]
+        return out
+    out.notes = res.notes
+    out.connector = res.connectors.get("dropbox")
+    return out
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -499,7 +593,9 @@ class AuditRow:
     in_scope: bool
     enabled: dict[str, bool]
     bound: dict[str, str | None]
-    bound_check: dict[str, str]           # "exists" | "missing" | "unchecked" | ""
+    # dropbox: "exists" | "missing" | "unchecked"; drive: also "not found",
+    # "trashed", "not a folder" (`_drive_folder_exists`); "" = nothing bound
+    bound_check: dict[str, str]
     inherited: dict[str, str | None]      # "<folder> (from <code>)"
     inherit_note: dict[str, str | None]
     suggested: str | None
@@ -517,6 +613,32 @@ def _dropbox_path_exists(conn: Any, path: str) -> str:
         if "not_found" in text:
             return "missing"
         return "unchecked"
+
+
+def _drive_folder_exists(conn: Any, folder_id: str) -> str:
+    """Whether Drive has the bound folder `folder_id` — one metadata read.
+
+    "exists" · "trashed" · "not a folder" · "not found" (Drive answers 404
+    both for a deleted folder and for one not shared with the service
+    account, so this cannot say which) · "unchecked" (anything else).
+    """
+    from cp_engine.asset_ingest import _DRIVE_FOLDER_MIME
+
+    try:
+        meta = conn.service.files().get(
+            fileId=folder_id, fields="id,name,mimeType,trashed",
+            supportsAllDrives=True,
+        ).execute()
+    except Exception as exc:  # noqa: BLE001
+        status = getattr(getattr(exc, "resp", None), "status", None)
+        if str(status) == "404" or "File not found" in str(exc):
+            return "not found"
+        return "unchecked"
+    if meta.get("trashed"):
+        return "trashed"
+    if meta.get("mimeType") != _DRIVE_FOLDER_MIME:
+        return "not a folder"
+    return "exists"
 
 
 def _label(tree: dict[str, Any], f: Any) -> str:
@@ -553,7 +675,9 @@ def audit_folders(
             bound_check["dropbox"] = (_dropbox_path_exists(dbx, bound["dropbox"])
                                       if dbx else "unchecked")
         if bound["drive"]:
-            bound_check["drive"] = "unchecked"
+            drive = connectors.get("drive")
+            bound_check["drive"] = (_drive_folder_exists(drive, bound["drive"])
+                                    if drive is not None else "unchecked")
         inherited: dict[str, str | None] = {s: None for s in SOURCES}
         inherit_note: dict[str, str | None] = {s: None for s in SOURCES}
         if in_scope:

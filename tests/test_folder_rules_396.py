@@ -466,3 +466,147 @@ def test_cli_folders_prints_audit_and_sql(monkeypatch):
 @pytest.mark.parametrize("kind", ["client", "self-fpsf", "self-canonic"])
 def test_every_ingestable_kind_has_a_convention_root(kind):
     assert kind in fr.CONVENTION_ROOTS
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  The Dropbox writers' resolver (deferred from #401)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _resolver(db, pid, dbx, monkeypatch):
+    monkeypatch.setattr(ai, "resolve_project_folders_by_id", lambda c, p: _resolve(db)(p))
+    return fr.resolve_dropbox_folder(db, pid, connector_factory=lambda: SimpleNamespace(dbx=dbx))
+
+
+def test_resolver_inherits_names_the_ancestor_and_reaches_the_file(monkeypatch):
+    dbx = _Dbx({ACCT: [_folder("IBX 5153 AI Campaign", f"{ACCT}/IBX 5153 AI Campaign")]})
+    got = _resolver(_tree_db(), "job", dbx, monkeypatch)
+    assert got.folder == f"{ACCT}/IBX 5153 AI Campaign"
+    assert got.inherited_from == "ibx-5217-infoblox" and got.reason is None
+    assert got.describe() == {"path": f"{ACCT}/IBX 5153 AI Campaign",
+                              "from": "ibx-5217-infoblox"}
+    assert got.connector is not None and got.connector.dbx is dbx  # reused by the writer
+    path = f"{ACCT}/IBX 5153 AI Campaign/03 Assets/06 Spine/deck.pdf"
+    assert ai.ingest_reach_gap(got.folders, path) is None
+
+
+def test_resolver_bound_folder_lists_nothing(monkeypatch):
+    db = _tree_db()
+    db.tables["project_integrations"].append(_bind("job", "/Elsewhere/5153"))
+    dbx = _Dbx({})
+    got = _resolver(db, "job", dbx, monkeypatch)
+    assert got.folder == "/Elsewhere/5153" and got.inherited_from is None
+    assert got.describe() is None and dbx.calls == []
+
+
+def test_resolver_without_a_match_says_why(monkeypatch):
+    got = _resolver(_tree_db(), "job", _Dbx({ACCT: [_folder("Brand", f"{ACCT}/Brand")]}),
+                    monkeypatch)
+    assert got.folder is None
+    assert got.reason.startswith("no subfolder for this workstream in ibx-5217-infoblox")
+    assert ai.ingest_reach_gap(got.folders, "/x/y.pdf") == \
+        "the project has no Dropbox folder, bound or inherited"
+
+
+def test_resolver_missing_row_and_failing_rule(monkeypatch):
+    monkeypatch.setattr(ai, "resolve_project_folders_by_id", lambda c, p: None)
+    assert fr.resolve_dropbox_folder(object(), "nope").folders is None
+
+    def boom(*a, **k):
+        raise RuntimeError("rules down")
+    db = _tree_db()
+    db.tables["project_integrations"].append(_bind("job", "/Elsewhere/5153"))
+    monkeypatch.setattr(ai, "resolve_project_folders_by_id", lambda c, p: _resolve(db)(p))
+    monkeypatch.setattr(fr, "apply_folder_rules", boom)
+    got = fr.resolve_dropbox_folder(db, "job")
+    assert got.folder == "/Elsewhere/5153"  # the bound folder stands
+    assert "rules down" in got.notes[0]["note"]
+
+
+def test_parent_node_file_under_a_child_folder_is_not_queued(monkeypatch):
+    child = f"{ACCT}/IBX 5153 AI Campaign"
+    dbx = _Dbx({ACCT: [_folder("IBX 5153 AI Campaign", child)]})
+    got = _resolver(_tree_db(), "acct", dbx, monkeypatch)
+    assert got.folders.ingest_scope == "account"
+    assert ai.ingest_reach_gap(got.folders, f"{ACCT}/03 Assets/brand.pdf") is None
+    gap = ai.ingest_reach_gap(got.folders, f"{child}/deck.pdf")
+    assert gap.startswith(f"{child}/deck.pdf is inside a child workstream's folder")
+
+
+def test_reach_gap_disabled_is_not_the_same_as_unbound():
+    f = ai.ProjectFolders(project_id="p", company_id="c", company_kind="client",
+                          google_drive_folder_id=None, mc_dropbox_folder_id="/a",
+                          enable_google_drive=False, enable_dropbox=False)
+    assert ai.ingest_reach_gap(f, "/a/x.pdf") == \
+        "the project's Dropbox source is not enabled in MC-2"
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Audit: a bound Drive folder is checked (deferred from #401)
+# ──────────────────────────────────────────────────────────────────────
+
+
+class _HttpError(Exception):
+    def __init__(self, status):
+        super().__init__(f"<HttpError {status}>")
+        self.resp = SimpleNamespace(status=status)
+
+
+class _Drive:
+    """`service.files().get(...).execute()` over {id: metadata}; read-only."""
+
+    def __init__(self, files, error=None):
+        self.meta, self.error, self.gets = files, error, []
+        self.service = self
+
+    def files(self):
+        return self
+
+    def get(self, fileId, fields, supportsAllDrives):
+        assert supportsAllDrives is True
+        self.gets.append(fileId)
+        return SimpleNamespace(execute=lambda: self._get(fileId))
+
+    def _get(self, file_id):
+        if self.error:
+            raise self.error
+        if file_id not in self.meta:
+            raise _HttpError(404)
+        return self.meta[file_id]
+
+
+def _drive_db():
+    rows = [_row(p, number=n, name=p, deal="Won", dbx=False, drive=True)
+            for p, n in (("ok", 5101), ("gone", 5102), ("bin", 5103), ("doc", 5104))]
+    binds = [{"project_id": p, "service": "google_drive", "label": "",
+              "external_ref": {"id": f"fid-{p}"}} for p in ("ok", "gone", "bin", "doc")]
+    return _DB(rows, binds)
+
+
+def test_audit_checks_bound_drive_folders(monkeypatch):
+    from cp_engine.asset_ingest import _DRIVE_FOLDER_MIME
+
+    db = _drive_db()
+    tree = fr.read_tree(db)
+    assert all(f.google_drive_folder_id for f in tree.values())
+    drive = _Drive({
+        "fid-ok": {"id": "fid-ok", "mimeType": _DRIVE_FOLDER_MIME, "trashed": False},
+        "fid-bin": {"id": "fid-bin", "mimeType": _DRIVE_FOLDER_MIME, "trashed": True},
+        "fid-doc": {"id": "fid-doc", "mimeType": "application/pdf", "trashed": False},
+    })
+    rows = {r.code: r for r in fr.audit_folders(db, connectors={"drive": drive}, tree=tree)}
+    checks = {c.split("-")[1]: r.bound_check["drive"] for c, r in rows.items()}
+    assert checks == {"5101": "exists", "5102": "not found", "5103": "trashed",
+                      "5104": "not a folder"}
+    text = fr.render_audit(list(rows.values()))
+    assert "bound fid-gone [not found]" in text
+
+
+def test_audit_drive_unchecked_offline_or_on_other_errors():
+    db = _drive_db()
+    tree = fr.read_tree(db)
+    offline = fr.audit_folders(db, connectors={}, tree=tree)
+    assert {r.bound_check["drive"] for r in offline} == {"unchecked"}
+    flaky = fr.audit_folders(db, connectors={"drive": _Drive({}, error=_HttpError(500))},
+                             tree=tree)
+    assert {r.bound_check["drive"] for r in flaky} == {"unchecked"}
