@@ -1,5 +1,9 @@
 ---
 description: Load the full cp-hosted MCP verb catalog (sources, spine, commitments).
+label: tool catalog
+summary: Load the full list of cp-hosted tools before spine or source work.
+hint: false
+example: /cp-tools
 ---
 
 # /cp-tools

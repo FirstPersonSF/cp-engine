@@ -243,7 +243,7 @@ def test_chain_runs_both_scripts_in_order_and_never_fails(tmp_path: Path):
 
 _ALL_SCRIPTS = (
     PLUGIN_HOOK, CHAIN, HOOKS / "tenant-freshness.sh",
-    HOOKS / "session-register.sh", HOOKS / "session-end.sh",
+    HOOKS / "session-register.sh", HOOKS / "session-end.sh", HOOKS / "skills-hint.sh",
 )
 
 

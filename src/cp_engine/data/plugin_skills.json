@@ -1,0 +1,108 @@
+[
+  {
+    "name": "cp-wrapup",
+    "kind": "skill",
+    "label": "wrap up",
+    "summary": "Close out a working session — refresh summaries, sweep decisions, commit.",
+    "triggers": [
+      "wrap up",
+      "wrap this up",
+      "let's close out the session"
+    ],
+    "example": "wrap up",
+    "hint": true,
+    "source": "skills/cp-wrapup/SKILL.md"
+  },
+  {
+    "name": "cp-prep",
+    "kind": "command",
+    "label": "prep sprint planning",
+    "summary": "Draft next sprint's planning agenda from every active workstream.",
+    "triggers": [
+      "prep sprint planning",
+      "run weekly sprint planning",
+      "prep sprint planning agenda"
+    ],
+    "example": "/cp-prep ggl-5168 ibx-5167",
+    "hint": true,
+    "source": "commands/cp-prep.md"
+  },
+  {
+    "name": "build-stakeholder",
+    "kind": "skill",
+    "label": "build a stakeholder",
+    "summary": "Build a card for someone on a project, from LinkedIn and our meetings.",
+    "triggers": [
+      "create a stakeholder for <name>",
+      "build a stakeholder card",
+      "add <name> as a stakeholder"
+    ],
+    "example": "build a stakeholder card for Janet on ibx-5153",
+    "hint": true,
+    "source": "skills/build-stakeholder/SKILL.md"
+  },
+  {
+    "name": "proposal-architect",
+    "kind": "skill",
+    "label": "draft a proposal",
+    "summary": "Write a client-ready Engagement Summary from approved services.",
+    "triggers": [
+      "draft a proposal for <code>",
+      "write an engagement summary",
+      "build the engagement summary"
+    ],
+    "example": "draft a proposal for ggl-5168",
+    "hint": true,
+    "source": "skills/proposal-architect/SKILL.md"
+  },
+  {
+    "name": "rfp-authoring",
+    "kind": "skill",
+    "label": "write an RFP",
+    "summary": "Write an anonymised partner RFP from a project's real scope.",
+    "triggers": [
+      "draft an RFP for <code>",
+      "write an RFP",
+      "we need a production partner for <project>"
+    ],
+    "example": "draft an RFP for sap-5198",
+    "hint": true,
+    "source": "skills/rfp-authoring/SKILL.md"
+  },
+  {
+    "name": "cp-wrap",
+    "kind": "command",
+    "label": "wrap report",
+    "summary": "Write the close-out report for a finished engagement.",
+    "triggers": [
+      "write the wrap report for <code>",
+      "write a wrap report"
+    ],
+    "example": "/cp-wrap ggl-5168",
+    "hint": true,
+    "source": "commands/cp-wrap.md"
+  },
+  {
+    "name": "cp-help",
+    "kind": "command",
+    "label": "help",
+    "summary": "List every cp skill, what it does and how to start it.",
+    "triggers": [
+      "list the skills",
+      "what can cp do"
+    ],
+    "example": "/cp-help wrap up",
+    "hint": false,
+    "source": "commands/cp-help.md"
+  },
+  {
+    "name": "cp-tools",
+    "kind": "command",
+    "label": "tool catalog",
+    "summary": "Load the full list of cp-hosted tools before spine or source work.",
+    "triggers": [],
+    "example": "/cp-tools",
+    "hint": false,
+    "source": "commands/cp-tools.md"
+  }
+]

@@ -1,6 +1,13 @@
 ---
 allowed-tools: Bash(cxp:*), Bash(cat:*), Bash(ls:*), Bash(mkdir:*), Bash(date:*), Bash(test:*), Bash(jq:*), Bash(echo:*), Read, Write
 description: Prepare a forward-looking sprint planning doc from current cp tenant state.
+label: prep sprint planning
+summary: Draft next sprint's planning agenda from every active workstream.
+triggers:
+  - prep sprint planning
+  - run weekly sprint planning
+  - prep sprint planning agenda
+example: /cp-prep ggl-5168 ibx-5167
 ---
 
 # /cp-prep

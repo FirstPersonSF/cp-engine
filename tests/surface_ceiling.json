@@ -1,7 +1,7 @@
 {
   "_why": "Architecture plan step 0 (2026-09-30): the surface may shrink but not grow without a deliberate edit here. 64 hosted tools, 68 cxp commands and 36 tables carried the usage in which ~a quarter to a third did 90% of the work. Raising a number is a decision: say why in the commit.",
   "hosted_tools": 60,
-  "cxp_commands": 60,
+  "cxp_commands": 61,
   "mc2_tables": 34,
   "_raised": [
     "2026-09-30: cxp_commands 68→69 for `cxp health` (step 3, daily health line); mc2_tables 36→37 for `webhook_runs` (step 3, a run record on every webhook path).",
@@ -11,7 +11,8 @@
     "2026-10-30: hosted_tools 59→60 for `add_project_link` (#370) — work behind a login (Figma files, claude.ai Artifacts, repos) had no record in the source store or the spine; `ingest_url` cannot serve it because it fetches. Drew approved starting #370 on 2026-10-30 and lifted the freeze for it.",
     "2026-10-30: Drew: no surface freeze is in effect; `_frozen_until` removed. Ceilings stay as a count guard — raise with a reason in the commit.",
     "2026-10-30: cxp_commands 53→54 for `cxp aliases` (#387) — alias candidates found at ingest need a human accept/reject that writes `.cp-engine.toml`; config is never auto-written. Drew approved building #387 on 2026-10-30.",
-    "2026-10-30: cxp_commands 54→60 for `cxp session` + start/end/list/commit/register (#394) — two sessions in one clone committed each other's files and raced sync; a per-session worktree, a scoped commit-and-push, and a registry the hooks feed need their own verbs (`register` is the hook entry point). Drew approved building #394 on 2026-10-30."
+    "2026-10-30: cxp_commands 54→60 for `cxp session` + start/end/list/commit/register (#394) — two sessions in one clone committed each other's files and raced sync; a per-session worktree, a scoped commit-and-push, and a registry the hooks feed need their own verbs (`register` is the hook entry point). Drew approved building #394 on 2026-10-30.",
+    "2026-10-30: cxp_commands 60→61 for `cxp skills` (#395) — people did not know which cp skills exist or the words that start them; `/cp-help`, the session-start hint and the shareable guide page all read this one command so they cannot disagree. Drew approved #395 on 2026-10-30 (no surface freeze)."
   ],
   "_lowered": [
     "2026-10-01: step 5 retire list — hosted_tools 71→55 (16 zero-use/dormant tools retired: worksets, notes, step editors, etc.), cxp_commands 69→53 (11 dead commands, dates-loop, weekly-sort, snapshots, mcp), mc2_tables 37→34 (notes, worksets, spine_snapshots out of the registry). Frozen at these counts until 2026-11-01 (Drew): no raise without a reason in the commit."

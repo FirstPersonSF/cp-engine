@@ -1,6 +1,13 @@
 ---
 name: proposal-architect
 description: Write a First Person Engagement Summary from a cp project — running the readiness preflight first, selecting only approved services from the live Service Library in MC-2 (never an uploaded file), and persisting the result as a versioned spine element. Use when the user says "write an engagement summary", "draft a proposal for <code>", "build the engagement summary", or asks to turn a brief into a client-ready scope document.
+label: draft a proposal
+summary: Write a client-ready Engagement Summary from approved services.
+triggers:
+  - draft a proposal for <code>
+  - write an engagement summary
+  - build the engagement summary
+example: draft a proposal for ggl-5168
 ---
 
 # Write an Engagement Summary
