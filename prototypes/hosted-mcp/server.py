@@ -2843,9 +2843,7 @@ def semantic_search(
     table read, which is what makes vector search safe to expose here at all.
 
     `project_code` filters SERVER-SIDE (mc-2 mig 144), so `limit` means what it
-    says. With no `project_code` the chunks come from `match_chunks` instead
-    (typed `vector` param — #375: the text-param RPC re-parses the embedding
-    per row and outran the statement timeout corpus-wide). Until that migration the scoped RPC was broken — it joined a relation
+    says. Until that migration the scoped RPC was broken — it joined a relation
     `assets` that does not exist — so this over-fetched `limit * 20` chunks
     corpus-wide and intersected them in Python, which meant a small project
     could return fewer than `limit` rows even when more matches existed.
@@ -2952,50 +2950,30 @@ def semantic_search(
     # meant a small project could return fewer than `limit` rows even when more
     # matches existed. It under-returned silently, which was the worse half.
     #
-    # #375: a CORPUS-WIDE search goes to `match_chunks`, not here. The two run
-    # the same join; the difference is the parameter type. `match_chunks_for_
-    # project` takes the embedding as TEXT and casts it in the body, and a SQL
-    # function with `SET search_path` is never inlined, so the cast is not
-    # folded: every candidate row re-parses the 1024-float literal three times
-    # (filter, select list, sort key). Scoped, that is a few hundred rows.
-    # Corpus-wide it is every active chunk — measured live 2026-10-30 as
-    # `authenticated`, 8,107 chunks: 2.9s here vs 0.41s through `match_chunks`
-    # (typed `vector` param, parsed once) for the same query vector, against
-    # the role's 8s statement timeout; cold cache took it over. `match_chunks`
-    # is SECURITY INVOKER too, filters `status = 'active'` the same way, and
-    # PostgREST converts the same JSON-string literal to `vector` on the way in.
-    literal = "[" + ",".join(str(f) for f in vector) + "]"
-    rpc_name = "match_chunks" if project_id is None else "match_chunks_for_project"
+    # #375: corpus-wide (no project) used to time out (57014). mc-2 mig 206
+    # (applied 2026-10-30) fixed it in the RPC itself: the embedding is parsed
+    # once, and the corpus-wide branch takes HNSW candidates before joining —
+    # 2.9s warm / >8s cold down to ~95 ms. So both scopes call this one RPC
+    # (the interim `match_chunks` route from #384 is reverted).
     try:
-        # Two literal call sites, not one with a variable name: the read-only
-        # endpoint's detector (test_readonly_endpoint) proves a tool reads only
-        # by naming each RPC it reaches.
-        if project_id is None:
-            call = client.rpc(
-                "match_chunks",
-                {
-                    "query_embedding": literal,
-                    "match_threshold": 0.0,
-                    "match_count": limit,
-                    "filter_project_id": None,
-                    "filter_source_type": None,
-                },
-            )
-        else:
-            call = client.rpc(
+        rows = (
+            client.rpc(
                 "match_chunks_for_project",
                 {
                     # PostgREST sends the vector as a JSON string; the RPC's
                     # `query_embedding text` param takes the pgvector literal.
-                    "query_embedding": literal,
+                    "query_embedding": "[" + ",".join(str(f) for f in vector) + "]",
                     "match_threshold": 0.0,
                     "match_count": limit,
                     "filter_project_id": project_id,
                 },
             )
-        rows = call.execute().data or []
+            .execute()
+            .data
+            or []
+        )
     except Exception as exc:  # noqa: BLE001
-        error = f"{rpc_name} failed: {type(exc).__name__}: {exc}"
+        error = f"match_chunks_for_project failed: {type(exc).__name__}: {exc}"
         # #363: a corpus-wide vector scan can outrun Postgres' statement
         # timeout (57014) while the same query scoped to one project returns
         # in seconds. Say so, instead of leaving a raw RPC error to decode.
