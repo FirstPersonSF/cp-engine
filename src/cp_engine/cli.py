@@ -222,6 +222,7 @@ for _mod in (
     for _obj in vars(_mod).values():
         if isinstance(_obj, click.Command) and not isinstance(_obj, click.Group):
             main.add_command(_obj)
+main.add_command(_session_mod.session_group)
 
 # Back-compat import paths: tests (and possibly external callers) import
 # these from cp_engine.cli; the implementations moved to cli_cmds/*.

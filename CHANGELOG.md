@@ -6,6 +6,46 @@ Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automat
 
 ## Unreleased
 
+*Several cp sessions at once, safely (#394).* Minor: new `cxp session` group
+(start / end / list / commit / register; cxp_commands ceiling 54→60); no new
+MC-2 table or hosted verb.
+- **Sync/render lock.** `cxp sync`, a plain `cxp render` and `prep-agenda`'s
+  auto-sync hold an exclusive `flock` on `cp-engine-sync.lock` in the clone's
+  common git dir, so every worktree of a clone shares it. The file records
+  the holder (pid, host, purpose, project, worktree, start time). A second
+  caller waits up to 30 s (`CXP_LOCK_WAIT`), then exits 1 naming the holder,
+  and gives the `kill` line when the holder has run longer than 30 minutes. A
+  dead holder's lock frees itself (kernel-released `flock`), so a lock file it
+  left behind never blocks. `render --check` and `cxp status` take no lock.
+- **Scoped commits.** `cxp session commit <code>... -m MSG [--path P]...`
+  commits only the session's files: each named workstream's directory (not a
+  nested child's, unless that child is named too), its sprint files, and
+  `improvements.md`, plus each `--path`. It uses `git commit -- <paths>`, so
+  anything another session staged stays uncommitted. It names the files it
+  left alone, then pushes: fetch, merge `origin/main` (no rebase),
+  `merge-check` against origin, push `HEAD:main`, and retries a lost race.
+  A conflict stops with the merge in progress. `--dry-run` previews. The
+  `/cp-wrapup` step 9 now uses it.
+- **Per-session worktrees.** `cxp session start <code>` fetches and adds a
+  worktree at `<tenant>-sessions/<code>-<stamp>` beside the clone
+  (`CXP_SESSIONS_DIR` overrides), on branch `cp-session/<code>-<stamp>`
+  tracking `origin/main`. `.cp-engine.local.toml` and
+  `.claude/settings.local.json` are symlinked in. `cxp session end [<code>]`
+  removes the worktree and branch only when it is clean and `origin/main`
+  contains its HEAD (`--force` overrides). `capture-session` now pushes from
+  a session branch: plain `git push` refused a branch whose name differs
+  from its upstream.
+- **Session registry.** `cp-sessions.json` sits in the common git dir. Worktree
+  sessions register at start. The plugin's SessionStart chain now runs a
+  third script, `session-register.sh`, which records a plain Claude Code
+  session and prints one line when other sessions are active. A new
+  SessionEnd hook unregisters it. Entries are pruned on read when their
+  worktree is gone, their Claude Code pid is dead, or they are hook entries
+  with no pid older than 24 h. `cxp session list` shows the active ones;
+  `session commit` prints "N other cp session(s) active: …; only your files
+  were committed."
+- Tenant `CLAUDE.md` gains a short "Running several sessions" section.
+
 *`cxp aliases --scan`: seed the alias-candidate queue from stored meetings (#387 follow-up).*
 Ingest only queues candidates for meetings it sees from now on. `cxp aliases
 --scan` runs the same detection once over every meeting already in the

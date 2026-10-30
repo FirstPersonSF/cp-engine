@@ -948,8 +948,13 @@ def _push_with_retry(cp_tenant: Path) -> tuple[bool, bool]:
     --no-push-equivalent state for tests, and the caller already
     distinguishes pushed=False from pushed=True via the return value.
     """
+    # A `cp-session/…` branch tracks origin/main under a different name;
+    # plain `git push` refuses that, so name the destination (#394).
+    from cp_engine.sessions import push_refspec_args
+
+    refspec = push_refspec_args(cp_tenant)
     first = subprocess.run(
-        ["git", "-C", str(cp_tenant), "push"],
+        ["git", "-C", str(cp_tenant), "push", *refspec],
         capture_output=True,
         text=True,
     )
@@ -989,7 +994,7 @@ def _push_with_retry(cp_tenant: Path) -> tuple[bool, bool]:
         )
 
     second = subprocess.run(
-        ["git", "-C", str(cp_tenant), "push"],
+        ["git", "-C", str(cp_tenant), "push", *refspec],
         capture_output=True,
         text=True,
     )

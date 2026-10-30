@@ -241,7 +241,10 @@ def test_chain_runs_both_scripts_in_order_and_never_fails(tmp_path: Path):
 
 # ── review fixes (2026-09-18 adversarial review of steps 1–2) ────────────
 
-_ALL_SCRIPTS = (PLUGIN_HOOK, CHAIN, HOOKS / "tenant-freshness.sh")
+_ALL_SCRIPTS = (
+    PLUGIN_HOOK, CHAIN, HOOKS / "tenant-freshness.sh",
+    HOOKS / "session-register.sh", HOOKS / "session-end.sh",
+)
 
 
 @pytest.mark.parametrize("script", _ALL_SCRIPTS, ids=lambda p: p.name)
@@ -315,10 +318,16 @@ def test_D4_prerelease_plugin_is_silent_in_the_observe_block(tmp_path: Path):
 
 
 def test_chain_drains_stdin_and_both_children_run(tmp_path: Path):
-    """D10: one stdin convention. D9: the freshness child must actually run —
-    the earlier chain test only proved the FIRST child's output appeared."""
+    """D10: one stdin convention — the chain reads stdin ONCE, and only the
+    session registrar (#394) is handed it; the version and freshness children
+    get /dev/null, never an unread pipe. D9: the freshness child must
+    actually run — the earlier chain test only proved the FIRST child's
+    output appeared."""
     src = CHAIN.read_text()
-    assert "cat >/dev/null" in src and "</dev/null" not in src
+    assert src.count("$(cat ") == 1
+    assert 'sync-cli-version.sh" </dev/null' in src
+    assert 'tenant-freshness.sh" </dev/null' in src
+    assert '"$payload" | bash "$here/session-register.sh"' in src
     # Make the freshness child observable: a tenant that is a git repo with
     # a bogus upstream produces no output but must not break the chain; we
     # prove it ran by giving it a broken `git` that logs its invocation.
