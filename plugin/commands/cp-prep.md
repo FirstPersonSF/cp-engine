@@ -303,6 +303,24 @@ bundle already carries each project's open commitments in its Open
 Commitments table — there is no separate task-system lookup step
 anymore. `/cp-prep` just reads the current state.
 
+### 5b. Alias candidates (unscoped runs only)
+
+If the bundle carries an `## Alias candidates` section, ingest heard words
+that look like mis-hearings of a known term or person ("Juul" for Joule,
+"Jeff Allman" for Geoff Ahmann). Do NOT put them in `_planning.md`. After
+writing the doc, list them for the user (heard → likely, counts, one
+example each) and ask which to accept or reject. Apply only what they
+decide:
+
+```bash
+cxp aliases --accept "Juul" --reject "Tara"
+cxp aliases --accept "Jool=Joule"   # a target other than the proposed one
+```
+
+Accepted pairs go into `[terms.aliases]` / `[names.aliases]` in
+`.cp-engine.toml`; rejected ones are not proposed again. Undecided ones stay
+open for next week. Never accept on the user's behalf.
+
 ### 6. Don't commit
 
 The planning doc is a working artifact for the meeting. Whether to commit

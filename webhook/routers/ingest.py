@@ -337,6 +337,12 @@ async def auto_ingest_account(request: Request) -> dict:
 
         # Stage transcript for the prompt + audit log.
         transcript_path = pipeline._stage_transcript(tenant_root, meeting_id, transcript_text)
+        # Alias candidates (#387): queued for `cxp aliases`; never fatal. The
+        # file rides the first commit this run makes.
+        pipeline._collect_alias_candidates(
+            config=config, code=node_code, transcript_path=transcript_path,
+            meeting=None, meeting_id=meeting_id, action_items=None, roster=roster,
+        )
 
         # Generate the multi-project plan in ONE Claude call.
         try:
@@ -637,6 +643,12 @@ async def auto_ingest_sprint_planning(request: Request) -> dict:
         )
 
         transcript_path = pipeline._stage_transcript(tenant_root, meeting_id, transcript_text)
+        # Alias candidates (#387): queued for `cxp aliases`; never fatal.
+        pipeline._collect_alias_candidates(
+            config=config, code=f"sprint-planning:{scope}",
+            transcript_path=transcript_path, meeting=None, meeting_id=meeting_id,
+            action_items=None, roster=active,
+        )
 
         try:
             generated = generate_sprint_planning_plan(

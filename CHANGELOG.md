@@ -6,6 +6,35 @@ Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automat
 
 ## Unreleased
 
+*Alias candidates: ingest proposes new `[terms]` / `[names]` aliases for review (#387).*
+One new `cxp aliases` command (cxp_commands ceiling 53→54); no new MC-2 table
+or hosted verb. Every auto-ingest (single workstream, parent workstream and
+sprint planning) now compares capitalised words and short capitalised phrases
+in the transcript, Fathom summary and action items against what the tenant
+already knows: `[terms] known` (new config list), alias targets, `[team]
+members`, MC-2 company names and whole project names, the workstream's
+stakeholder cards and the speaker labels. A near-miss (same sound key and at
+most two edits; or, for a "First Last", sound-alike first names and a close
+surname) is appended to `alias-candidates.md` at the tenant root under `##
+Open`, with a count, the workstream, the meeting and an example context. It is
+never applied: nothing rewrites text or config until `cxp aliases --accept
+"<heard>"` (or `"<heard>=<Target>"`), which writes `[terms.aliases]` or
+`[names.aliases]` in `.cp-engine.toml` and keeps its formatting. `--reject`
+records the pair so ingest never proposes it again; bare `cxp aliases` lists
+what is open. Precision rules: single words are matched only against
+single-word terms (products, companies), never against first names; skipped
+are known words, common English words and first names, all-caps acronyms,
+plurals and other inflections of a known term, words that also appear in
+lowercase in the same text, and existing alias keys. `cxp prep-planning
+--bundle` (unscoped) lists open candidates under `## Alias candidates`, and
+`/cp-prep` step 5b asks the user to accept or reject them. Run over the
+tenant's 293 stored transcripts (existing aliases removed; `[terms] known` =
+Joule, Concur, StoryOS plus the company names), detection found 33 distinct
+pairs, all of them plausible mis-hearings (Juul/Jool/Jole → Joule, Infobox → Infoblox,
+Kanonic → Canonic, StoryOps → StoryOS, Kincur → Concur, Jamie Mayra → Jaime
+Mehra). A failed collection is logged and becomes a run warning; it never fails
+the ingest.
+
 **Work behind a login is recorded as a source: `add_project_link` (#370).** Minor: one new hosted verb (hosted_tools ceiling 59→60). The entries below it are patch-level.
 
 *`add_project_link(project_code, url, title, kind="source", note="")`.* A

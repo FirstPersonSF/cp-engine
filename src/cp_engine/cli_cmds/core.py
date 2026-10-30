@@ -1064,3 +1064,59 @@ def health_cmd(do_post: bool, as_json: bool, scheduled: str | None, channel: str
             sys.exit(2)
         click.echo(f"posted (ts={ts})", err=True)
     sys.exit(0 if report.ok else 1)
+
+
+@click.command("aliases")
+@click.option(
+    "--accept",
+    "accept",
+    multiple=True,
+    metavar="HEARD[=TARGET]",
+    help='Accept a candidate: writes it into [terms.aliases] or [names.aliases] '
+    'in .cp-engine.toml. `--accept "Juul"` takes the proposed target; '
+    '`--accept "Juul=Joule"` names another. Repeatable.',
+)
+@click.option(
+    "--reject",
+    "reject",
+    multiple=True,
+    metavar="HEARD",
+    help="Reject a candidate; it is recorded and not proposed again. Repeatable.",
+)
+def aliases_cmd(accept: tuple[str, ...], reject: tuple[str, ...]) -> None:
+    """Review alias candidates found at ingest (#387).
+
+    With no options, lists the open candidates in `alias-candidates.md`
+    (heard form, likely target, counts, example context). `--accept` and
+    `--reject` decide them. Nothing is committed: commit `.cp-engine.toml`
+    and `alias-candidates.md` with the rest of the session.
+    """
+    from cp_engine import alias_candidates as ac
+    from cp_engine.clock import tenant_now
+
+    try:
+        config = load(Path.cwd())
+    except ConfigError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(2)
+
+    if not accept and not reject:
+        lines = ac.render_review(ac.grouped(config.root), heading="Alias candidates")
+        click.echo("\n".join(lines).rstrip() if lines else "No open alias candidates.")
+        return
+
+    # The webhook appends to alias-candidates.md; deciding on a stale copy
+    # makes a merge conflict in it.
+    _warn_if_behind_upstream(config.root)
+    try:
+        result = ac.review(config.root, accept=accept, reject=reject,
+                           today=tenant_now().date())
+    except ac.ReviewError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    for heard, target, kind in result["accepted"]:
+        section = "names" if kind == "name" else "terms"
+        click.echo(f'accepted "{heard}" → {target} ([{section}.aliases])')
+    for heard, target, _kind in result["rejected"]:
+        click.echo(f'rejected "{heard}" → {target}')
+    click.echo("Commit .cp-engine.toml and alias-candidates.md.")

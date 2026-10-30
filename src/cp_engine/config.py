@@ -227,6 +227,12 @@ class TenantConfig:
     term_aliases: Mapping[str, str] = field(
         default_factory=lambda: MappingProxyType({})
     )
+    # Product and brand terms the tenant uses (#387): `[terms] known =
+    # ["Joule", "Concur"]`. Never rewritten — they are what ingest compares
+    # capitalised words against to propose new `[terms] aliases` for review
+    # (``cp_engine.alias_candidates``). Project, company and stakeholder
+    # names are known already; list here what MC-2 does not carry.
+    known_terms: tuple[str, ...] = ()
     # Step 4b rollout gate: `[stakeholders] retire_markdown = true` lets sync
     # import the hand-written cp.md `## Stakeholders` / sprint
     # `### Stakeholders` entries onto spine cards and remove the sections.
@@ -293,6 +299,8 @@ def load(tenant_root: Path) -> TenantConfig:
         kwargs["name_aliases"] = MappingProxyType(dict(committed["name_aliases"]))
     if committed["term_aliases"]:
         kwargs["term_aliases"] = MappingProxyType(dict(committed["term_aliases"]))
+    if committed["known_terms"]:
+        kwargs["known_terms"] = committed["known_terms"]
     kwargs["retire_stakeholder_markdown"] = committed["retire_stakeholder_markdown"]
     kwargs["attention_digest"] = committed["attention_digest"]
     kwargs["timezone"] = committed["timezone"]
@@ -510,19 +518,34 @@ def _normalize_committed(data: dict, source: Path) -> dict:
         name_aliases = dict(aliases_raw)
 
     # Optional [terms] table (#371): aliases = {"Juul" = "Joule"}.
+    # `known = ["Joule", ...]` (#387) may stand beside it or alone.
     term_aliases: dict[str, str] = {}
+    known_terms: tuple[str, ...] = ()
     terms_raw = data.get("terms")
     if terms_raw is not None:
+        has_known = isinstance(terms_raw, dict) and "known" in terms_raw
         t_raw = terms_raw.get("aliases") if isinstance(terms_raw, dict) else None
-        if not isinstance(t_raw, dict) or not all(
-            isinstance(k, str) and k.strip() and isinstance(v, str) and v.strip()
-            for k, v in t_raw.items()
+        if not (t_raw is None and has_known) and (
+            not isinstance(t_raw, dict) or not all(
+                isinstance(k, str) and k.strip() and isinstance(v, str) and v.strip()
+                for k, v in t_raw.items()
+            )
         ):
             raise CommittedConfigInvalid(
                 f"{source}: [terms].aliases must be a table of non-empty "
                 'strings, e.g. aliases = {"Juul" = "Joule"}'
             )
-        term_aliases = dict(t_raw)
+        term_aliases = dict(t_raw or {})
+        if has_known:
+            k_raw = terms_raw["known"]
+            if not isinstance(k_raw, list) or not all(
+                isinstance(v, str) and v.strip() for v in k_raw
+            ):
+                raise CommittedConfigInvalid(
+                    f"{source}: [terms].known must be a list of non-empty "
+                    'strings, e.g. known = ["Joule", "Concur"]'
+                )
+            known_terms = tuple(dict.fromkeys(v.strip() for v in k_raw))
 
     # Optional [stakeholders] table (step 4b): retire_markdown = true|false.
     retire_md = False
@@ -556,6 +579,7 @@ def _normalize_committed(data: dict, source: Path) -> dict:
         "team": team,
         "name_aliases": name_aliases,
         "term_aliases": term_aliases,
+        "known_terms": known_terms,
         "retire_stakeholder_markdown": retire_md,
         "attention_digest": attention_digest,
     }
