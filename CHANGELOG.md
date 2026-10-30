@@ -21,6 +21,20 @@ passed to Claude unchanged as `hookSpecificOutput.additionalContext`. No hint
 (outside a tenant, no `cxp`, a `cxp` without `skills`) or any failure to
 build the JSON falls back to the old plain output.
 
+*Inherited folders everywhere (#396).* Hosted `push_to_dropbox`, `ingest_url`
+and `add_project_link`, and the webhook's email attachments, now resolve a
+workstream's Dropbox folder the way ingest does: the bound folder, else its
+subfolder of a parent's folder (one resolver,
+`folder_rules.resolve_dropbox_folder`). They upload into and queue from the
+inherited folder, and the result names it and the ancestor
+(`folder_inherited: {path, from}`; email: `folder_inherited_from`, shown on
+the park note's `Folder:` line). A refusal now says why nothing was
+inherited. `ingest_reach_gap` tells "Dropbox off" from "no folder" and
+refuses a parent node's file inside a child's folder (the parent's scan
+leaves it to the child). `cxp folders` checks that a bound Drive folder
+exists (`exists`, `not found`, `trashed`, `not a folder`) instead of showing
+`unchecked`. No new verb, command or MC-2 change.
+
 ## v0.133.0 — 2026-10-30
 
 **Several sessions at once, a skill guide, folder rules, email attachments, and a cleaner commitments sweep.** Minor: new `cxp session`, `cxp skills`, `cxp folders` and `cxp aliases` commands, new hosted `add_project_link`; mc-2 mig 206 (already applied) makes corpus-wide search index-first.

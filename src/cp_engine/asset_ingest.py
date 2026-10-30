@@ -684,18 +684,30 @@ def ingest_reach_gap(
     off would be "queued" and then silently ingest nothing. Same rules as
     `list_files`, checked before the hop. `project_root` (the resolved folder
     path) is needed only when the caller chose an absolute destination.
+
+    `folders` should come from `folder_rules.resolve_dropbox_folder` (#396):
+    then an INHERITED folder counts exactly as a bound one does — ingest
+    applies the same rules before it lists — and a parent node's file under
+    a child's folder is refused, because the parent's scan leaves it to the
+    child.
     """
     if folders is None:
         return "no MC-2 folder configuration for this project"
     if _out_of_scope(folders):
         return ("a self-company workstream with an agreement is not an "
                 "asset-ingest target")
-    if not folders.enable_dropbox or not folders.mc_dropbox_folder_id:
+    if not folders.enable_dropbox:
         return "the project's Dropbox source is not enabled in MC-2"
+    if not folders.mc_dropbox_folder_id:
+        return "the project has no Dropbox folder, bound or inherited"
     if project_root:
         root = project_root.rstrip("/").lower() + "/"
         if not dropbox_path.lower().startswith(root):
             return f"{dropbox_path} is outside the project's Dropbox folder ({project_root})"
+    for child_root in folders.child_dropbox_roots:
+        if dropbox_path.lower().startswith(child_root.rstrip("/").lower() + "/"):
+            return (f"{dropbox_path} is inside a child workstream's folder "
+                    f"({child_root}) — ingest it from that workstream")
     allow = folders.asset_ingest_folders
     ref = FileRef(source="dropbox", id="", name=dropbox_path.rsplit("/", 1)[-1],
                   mime_type=None, size=None, modified=None, path=dropbox_path)

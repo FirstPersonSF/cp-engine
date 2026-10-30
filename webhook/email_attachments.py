@@ -9,6 +9,8 @@ For a ``cp+<code>@`` email that resolved to a project, this module:
    ``<project Dropbox>/03 Assets/01 Client Assets/Email/<YYYY-MM-DD> <subject-slug>/<filename>``
    with the engine's own upload helper (``project_sources.push_to_dropbox``,
    the one hosted ``push_to_dropbox`` / ``ingest_url`` use);
+   The folder is the bound one, else the one inherited from an ancestor
+   (``folder_rules.resolve_dropbox_folder``, #396 — the rules ingest uses);
 2. checks each uploaded path with ``asset_ingest.ingest_reach_gap`` (the
    same check the hosted verbs run before queueing), and
 3. queues ONE file-scoped asset-ingest run for every reachable file, the way
@@ -305,8 +307,8 @@ def _upload_one(engine, connector, folder_path: str, att: Attachment) -> dict:
 def file_attachments(*, code: str, project_dir: Path, payload: dict) -> dict | None:
     """Upload + queue the payload's attachments. None when it carries none.
 
-    Returns ``{folder, attachments: [{filename, size, dropbox_path?, queued,
-    status}], run_id?, error?}``. ``status`` is one line a person can read:
+    Returns ``{folder, folder_inherited_from?, attachments: [{filename, size,
+    dropbox_path?, queued, status}], run_id?, error?}``. ``status`` is one line a person can read:
     ``queued`` · ``uploaded, not queued: <reason>`` · ``already filed, queued``
     · ``skipped: <reason>`` · ``not uploaded: <reason>``. Never raises.
     """
@@ -329,8 +331,9 @@ def file_attachments(*, code: str, project_dir: Path, payload: dict) -> dict | N
         out["attachments"] = [dict(s, queued=False) for s in skipped]
         return out
 
+    from cp_engine import folder_rules
     from cp_engine import project_sources as engine
-    from cp_engine.asset_ingest import ingest_reach_gap, resolve_project_folders_by_id
+    from cp_engine.asset_ingest import ingest_reach_gap
 
     client = _supabase_client()
     if client is None:
@@ -342,25 +345,32 @@ def file_attachments(*, code: str, project_dir: Path, payload: dict) -> dict | N
         return _all_not_uploaded(f"could not resolve {code} in MC-2: {type(exc).__name__}: {exc}")
     if not project_id:
         return _all_not_uploaded(f"{code} has no MC-2 project row")
+    # Bound, else inherited from an ancestor — the same rules ingest applies
+    # (#396), so the queued run reads the folder the files land in.
     try:
-        folders = resolve_project_folders_by_id(client, project_id)
+        resolved = folder_rules.resolve_dropbox_folder(
+            client, project_id, connector_factory=lambda: _dropbox_connector())
     except Exception as exc:  # noqa: BLE001
         return _all_not_uploaded(f"could not read {code}'s folders from MC-2: "
                                  f"{type(exc).__name__}: {exc}")
-    if folders is None or not folders.mc_dropbox_folder_id:
-        return _all_not_uploaded(
-            f"{code} has no Dropbox folder in MC-2 — add it under {code}'s "
-            "Integrations (a project_integrations row, service=dropbox)"
-        )
+    folders = resolved.folders
+    if not resolved.folder:
+        reason = (f"{code} has no Dropbox folder in MC-2 — add it under {code}'s "
+                  "Integrations (a project_integrations row, service=dropbox)")
+        if resolved.reason:
+            reason += f"; nothing to inherit from a parent: {resolved.reason}"
+        return _all_not_uploaded(reason)
     try:
-        connector = _dropbox_connector()
+        connector = resolved.connector or _dropbox_connector()
     except Exception as exc:  # noqa: BLE001
         return _all_not_uploaded(f"Dropbox connector failed: {type(exc).__name__}: {exc}")
 
-    folder_path = engine.dropbox_destination(connector, folders.mc_dropbox_folder_id, folder_rel)
+    folder_path = engine.dropbox_destination(connector, resolved.folder, folder_rel)
     if isinstance(folder_path, dict):
         return _all_not_uploaded(folder_path.get("error") or "could not resolve the Dropbox folder")
     out["folder"] = folder_path
+    if resolved.inherited_from:
+        out["folder_inherited_from"] = resolved.inherited_from
 
     rows: list[dict] = []
     to_queue: list[str] = []
@@ -413,7 +423,10 @@ def render_section(result: dict | None) -> list[str]:
     """The park note's ``## Attachments`` lines (empty when there are none)."""
     if not result:
         return []
-    lines = ["## Attachments", "", f"Folder: {result.get('folder')}", ""]
+    folder = f"Folder: {result.get('folder')}"
+    if result.get("folder_inherited_from"):
+        folder += f" (inherited from {result['folder_inherited_from']})"
+    lines = ["## Attachments", "", folder, ""]
     if result.get("run_id"):
         lines += [f"Ingest run: {result['run_id']}", ""]
     for a in result.get("attachments") or []:

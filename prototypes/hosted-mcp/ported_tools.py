@@ -86,7 +86,7 @@ SPINE_OUTPUT_DIR = "03 Assets/06 Spine"
 URL_SOURCE_DIR = "03 Assets/01 Client Assets"
 
 
-def _no_dropbox_folder(project_code: str) -> str:
+def _no_dropbox_folder(project_code: str, reason: str | None = None) -> str:
     """The error when a project has no Dropbox folder in MC-2 (#373).
 
     Names the fix and where it lives: the gap is a missing
@@ -99,10 +99,37 @@ def _no_dropbox_folder(project_code: str) -> str:
     "root": "<root_namespace_id>"}` (from `users/get_current_account`'s
     `root_info`) or team folders list as empty. `DropboxConnector` sets it
     already (`use_team_namespace=True`)."""
-    return (f"{project_code!r} has no Dropbox folder in MC-2. Add it under "
-            f"{project_code}'s Integrations in MC-2 (a `project_integrations` "
-            "row, service=dropbox), then retry. Or pass dest_path to name "
-            "the folder for this call.")
+    msg = (f"{project_code!r} has no Dropbox folder in MC-2. Add it under "
+           f"{project_code}'s Integrations in MC-2 (a `project_integrations` "
+           "row, service=dropbox), then retry. Or pass dest_path to name "
+           "the folder for this call.")
+    if reason:
+        msg += f" Nothing to inherit from a parent: {reason}."
+    return msg
+
+
+def _dropbox_folder(client, pid: str):
+    """The workstream's Dropbox folder as ingest sees it — bound, else
+    inherited from an ancestor (#396) — via the one shared resolver,
+    `folder_rules.resolve_dropbox_folder`. The connector is built only if
+    a rule must list a parent's folder, and comes back for reuse."""
+    from cp_engine import folder_rules
+
+    def _factory():
+        from cloud_storage.dropbox_connector import DropboxConnector
+
+        return DropboxConnector()
+
+    return folder_rules.resolve_dropbox_folder(client, pid, connector_factory=_factory)
+
+
+def _connector(resolved):
+    """The resolver's Dropbox connector, or a new one."""
+    if resolved.connector is not None:
+        return resolved.connector
+    from cloud_storage.dropbox_connector import DropboxConnector
+
+    return DropboxConnector()
 
 # Bytes are carried inline only up to a point: base64 lands in the caller's
 # context, where a large file is expensive and a huge one is unusable.
@@ -468,9 +495,11 @@ def push_to_dropbox(
     or move, so a misplaced copy is removed by hand: when `source_path` is
     None, ASK where it goes, never guess.
 
-    **NO DROPBOX FOLDER?** The project lacks a `project_integrations` row
-    (service=dropbox): add the folder under the project's Integrations in
-    MC-2. A lookup of the folder in the Dropbox API needs the
+    **NO DROPBOX FOLDER?** An unbound workstream uses its subfolder of a
+    parent's folder when exactly one exists, as ingest does
+    (`folder_inherited` names the ancestor). Otherwise the project lacks a
+    `project_integrations` row (service=dropbox): add the folder under the
+    project's Integrations in MC-2. A lookup of the folder in the Dropbox API needs the
     `Dropbox-API-Path-Root` header (team root namespace), or team folders
     come back empty.
 
@@ -506,19 +535,17 @@ def push_to_dropbox(
         return _not_found(client, tool, project_code)
     pid, _cid = resolved
 
-    from cp_engine.asset_ingest import resolve_project_folders_by_id
-
-    folders = resolve_project_folders_by_id(client, pid)
-    if dest_path is None and (folders is None or not folders.mc_dropbox_folder_id):
-        return _fail(_no_dropbox_folder(project_code))
-    folder_id = folders.mc_dropbox_folder_id if folders is not None else ""
+    resolved_folder = _dropbox_folder(client, pid)
+    folders = resolved_folder.folders
+    if dest_path is None and not resolved_folder.folder:
+        return _fail(_no_dropbox_folder(project_code, resolved_folder.reason))
+    folder_id = resolved_folder.folder or ""
+    inherited = resolved_folder.describe()
     if dest_name is None:
         dest_name = name if dest_path else f"{SPINE_OUTPUT_DIR}/{name}"
 
     try:
-        from cloud_storage.dropbox_connector import DropboxConnector
-
-        connector = DropboxConnector()
+        connector = _connector(resolved_folder)
     except Exception as exc:  # noqa: BLE001 — auth/config: a named error
         return _fail(f"Dropbox connector failed: {type(exc).__name__}: {exc}")
 
@@ -544,6 +571,7 @@ def push_to_dropbox(
         return {
             "project_code": project_code,
             "dropbox_path": destination,
+            **({"folder_inherited": inherited} if inherited else {}),
             "upload_url": link,
             "upload_url_expires": "about 4 hours",
             "overwrite": bool(overwrite),
@@ -574,6 +602,8 @@ def push_to_dropbox(
     if result.get("error"):
         return _fail(result["error"])
     out: dict[str, Any] = {"project_code": project_code, **result, "ingested": False}
+    if inherited:
+        out["folder_inherited"] = inherited
     if ingest:
         out["ingest"] = _queue_ingest(
             project_code, pid, folders, result.get("dropbox_path") or "",
@@ -643,13 +673,14 @@ def ingest_url(
     pid, _cid = resolved
 
     from cp_engine import url_source
-    from cp_engine.asset_ingest import resolve_project_folders_by_id
     from cp_engine.clock import tenant_today
 
-    folders = resolve_project_folders_by_id(client, pid)
-    if dest_path is None and (folders is None or not folders.mc_dropbox_folder_id):
-        return _fail(_no_dropbox_folder(project_code))
-    folder_id = folders.mc_dropbox_folder_id if folders is not None else ""
+    resolved_folder = _dropbox_folder(client, pid)
+    folders = resolved_folder.folders
+    if dest_path is None and not resolved_folder.folder:
+        return _fail(_no_dropbox_folder(project_code, resolved_folder.reason))
+    folder_id = resolved_folder.folder or ""
+    inherited = resolved_folder.describe()
 
     try:
         fetched = url_source.fetch_url(url)
@@ -663,9 +694,7 @@ def ingest_url(
     dest_name = name if dest_path else f"{URL_SOURCE_DIR}/{name}"
 
     try:
-        from cloud_storage.dropbox_connector import DropboxConnector
-
-        connector = DropboxConnector()
+        connector = _connector(resolved_folder)
     except Exception as exc:  # noqa: BLE001 — auth/config: a named error
         return _fail(f"Dropbox connector failed: {type(exc).__name__}: {exc}")
 
@@ -693,6 +722,7 @@ def ingest_url(
         "signals": prepared.gating.signals,
         "pdf_links": prepared.gating.pdf_links,
         "dropbox_path": dropbox_path,
+        **({"folder_inherited": inherited} if inherited else {}),
         "ingest": _queue_ingest(project_code, pid, folders, dropbox_path,
                                 _project_root(engine, connector, folder_id, dest_path)),
     }
@@ -905,17 +935,15 @@ def add_project_link(
         return _not_found(client, tool, project_code)
     pid, _cid = resolved
 
-    from cp_engine.asset_ingest import resolve_project_folders_by_id
-
-    folders = resolve_project_folders_by_id(client, pid)
-    if folders is None or not folders.mc_dropbox_folder_id:
-        return _fail(_no_dropbox_folder(project_code))
-    folder_id = folders.mc_dropbox_folder_id
+    resolved_folder = _dropbox_folder(client, pid)
+    folders = resolved_folder.folders
+    if not resolved_folder.folder:
+        return _fail(_no_dropbox_folder(project_code, resolved_folder.reason))
+    folder_id = resolved_folder.folder
+    inherited = resolved_folder.describe()
 
     try:
-        from cloud_storage.dropbox_connector import DropboxConnector
-
-        connector = DropboxConnector()
+        connector = _connector(resolved_folder)
     except Exception as exc:  # noqa: BLE001 — auth/config: a named error
         return _fail(f"Dropbox connector failed: {type(exc).__name__}: {exc}")
 
@@ -933,6 +961,8 @@ def add_project_link(
         "provider": card.provider,
         "kind": card.kind,
     }
+    if inherited:
+        out["folder_inherited"] = inherited
     if found.get("warnings"):
         out["warnings"] = found["warnings"]
 
