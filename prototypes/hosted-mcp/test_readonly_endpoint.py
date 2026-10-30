@@ -50,7 +50,6 @@ PORTED_PY = Path(__file__).resolve().parent / "ported_tools.py"
 # RPCs that only read. Every other `client.rpc(name)` is a writer.
 READ_RPCS = {
     "match_spine_context", "match_chunks_for_project", "match_chunks_simple",
-    "match_chunks",
     "is_team_member", "caller_entity_id",
 }
 TABLE_MUTATIONS = {"insert", "update", "upsert", "delete"}

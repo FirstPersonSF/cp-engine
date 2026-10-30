@@ -6,6 +6,13 @@ Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automat
 
 ## Unreleased
 
+*Corpus-wide `semantic_search` uses the index (#375).* mc-2 migration 206
+rewrote `match_chunks_for_project` to parse the query vector once and take
+corpus-wide candidates from the HNSW index before joining (2.9s warm and
+over the 8s timeout cold, now about 95 ms; project-scoped search unchanged).
+The interim switch to `match_chunks` from #384 is reverted, so both scopes
+use the one RPC.
+
 **A date written into a commitment's text is flagged when its due date disagrees.** Patch (no new verb, command or table).
 
 *Date drift in the sweep (#366).* `set_commitment_date` moves a row's

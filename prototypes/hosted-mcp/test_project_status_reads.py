@@ -165,18 +165,15 @@ def test_semantic_search_marks_each_hit_from_finished_work(server, db, monkeypat
     """Corpus-wide search is where a finished project's polished brief
     competes with the live one. Each archived hit is marked; the live hit is
     left exactly as it was; nothing is dropped."""
-    chunks = [
-        {"chunk_id": "k1", "asset_id": "a-arch", "title": "Old SOW", "similarity": 0.9},
-        {"chunk_id": "k2", "asset_id": "a-live", "title": "New SOW", "similarity": 0.5},
-    ]
     db.rpcs = {
         "match_spine_context": [
             {"id": "s-arch", "framing": "Old brief", "project_code": "snt-labscon-26"},
             {"id": "s-live", "framing": "New brief", "project_code": "ibx-5153"},
         ],
-        # Corpus-wide reads `match_chunks` (#375); scoped, the project RPC.
-        "match_chunks": chunks,
-        "match_chunks_for_project": chunks,
+        "match_chunks_for_project": [
+            {"chunk_id": "k1", "asset_id": "a-arch", "title": "Old SOW", "similarity": 0.9},
+            {"chunk_id": "k2", "asset_id": "a-live", "title": "New SOW", "similarity": 0.5},
+        ],
     }
     monkeypatch.setattr(server, "embedding_available", lambda: (True, ""))
     monkeypatch.setattr(server, "embed_query", lambda _t: [0.1])

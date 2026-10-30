@@ -139,7 +139,7 @@ class _TimeoutRPC:
         self.name = name
 
     def execute(self):
-        if self.name in ("match_chunks_for_project", "match_chunks"):
+        if self.name == "match_chunks_for_project":
             raise RuntimeError(
                 "{'code': '57014', 'message': 'canceling statement due to statement timeout'}"
             )
@@ -156,51 +156,3 @@ def test_unscoped_search_timeout_tells_the_caller_to_scope(server, db, monkeypat
     assert out["results"] == []
     assert "project_code" in out["error"]
     assert "timed out" in out["error"]
-
-
-# ── #375: unscoped search uses the typed-vector RPC ───────────────────
-
-
-class _RecordingRPC:
-    def __init__(self, calls, name, params):
-        calls.append((name, params))
-
-    def execute(self):
-        return SimpleNamespace(data=[])
-
-
-def _record(server, db, monkeypatch):
-    calls: list = []
-    db.rpc = lambda name, params: _RecordingRPC(calls, name, params)
-    monkeypatch.setattr(server, "embedding_available", lambda: (True, ""))
-    monkeypatch.setattr(server, "embed_query", lambda text: [0.1, 0.2])
-    return calls
-
-
-def test_unscoped_search_calls_match_chunks_with_a_vector_literal(server, db, monkeypatch):
-    """`match_chunks_for_project` casts a TEXT param per row (never folded:
-    the function is not inlinable) — corpus-wide that outran the 8s
-    statement timeout. Unscoped goes to `match_chunks`, whose param is a
-    typed `vector`, parsed once."""
-    calls = _record(server, db, monkeypatch)
-
-    out = server.semantic_search("where did we discuss pricing", limit=7)
-
-    chunk_calls = [(n, p) for n, p in calls if n.startswith("match_chunks")]
-    assert [n for n, _ in chunk_calls] == ["match_chunks"]
-    params = chunk_calls[0][1]
-    assert params["query_embedding"] == "[0.1,0.2]"
-    assert params["match_count"] == 7
-    assert params["filter_project_id"] is None
-    assert out["scope"] == "corpus-wide"
-
-
-def test_scoped_search_still_calls_match_chunks_for_project(server, db, monkeypatch):
-    calls = _record(server, db, monkeypatch)
-    monkeypatch.setattr(server, "resolve_project_id", lambda c, code: "pid-1")
-
-    server.semantic_search("pricing", project_code="ibx-5153")
-
-    chunk_calls = [(n, p) for n, p in calls if n.startswith("match_chunks")]
-    assert [n for n, _ in chunk_calls] == ["match_chunks_for_project"]
-    assert chunk_calls[0][1]["filter_project_id"] == "pid-1"
