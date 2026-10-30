@@ -615,6 +615,35 @@ def _dropbox_path_exists(conn: Any, path: str) -> str:
         return "unchecked"
 
 
+def drive_account(conn: Any) -> str | None:
+    """The Google account a Drive connector reads as, or None if unknown.
+
+    Drive answers "not found" (404) for a folder that is not shared with the
+    account as well as for a deleted one, and "Forbidden" (403) for a file it
+    can see but not read. Naming the account turns either into a one-read
+    diagnosis: on 2026-10-30 the webhook, hosted MCP and a laptop all read
+    Drive as an account no project folder was shared with, and every symptom
+    looked like a missing folder. Reads the credential's own email first (no
+    network), then asks Drive. Never raises.
+    """
+    if conn is None:
+        return None
+    try:
+        service = conn.service
+    except Exception:  # noqa: BLE001
+        return None
+    creds = getattr(getattr(service, "_http", None), "credentials", None)
+    email = getattr(creds, "service_account_email", None)
+    if isinstance(email, str) and "@" in email:
+        return email
+    try:
+        about = service.about().get(fields="user(emailAddress)").execute()
+        email = (about.get("user") or {}).get("emailAddress")
+    except Exception:  # noqa: BLE001
+        return None
+    return email if isinstance(email, str) and email else None
+
+
 def _drive_folder_exists(conn: Any, folder_id: str) -> str:
     """Whether Drive has the bound folder `folder_id` — one metadata read.
 
@@ -762,9 +791,16 @@ def fill_sql(rows: list[AuditRow]) -> list[str]:
     return out
 
 
-def render_audit(rows: list[AuditRow]) -> str:
-    """Plain-text audit: one block per workstream."""
+def render_audit(rows: list[AuditRow], *, drive_account: str | None = None) -> str:
+    """Plain-text audit: one block per workstream.
+
+    With `drive_account`, the audit opens by naming the account Drive was
+    checked as, and a bound Drive folder Drive cannot see says the folder may
+    not be shared with that account rather than only "not found".
+    """
     lines: list[str] = []
+    if drive_account:
+        lines.append(f"Drive checked as {drive_account}")
     for r in rows:
         head = f"{r.code} ({r.label}, {r.status})"
         if not r.in_scope:
@@ -776,7 +812,10 @@ def render_audit(rows: list[AuditRow]) -> str:
             if r.bound[s]:
                 where = f"bound {r.bound[s]}"
                 if r.bound_check[s]:
-                    where += f" [{r.bound_check[s]}]"
+                    check = r.bound_check[s]
+                    if s == "drive" and check == "not found" and drive_account:
+                        check = f"not found: deleted, or not shared with {drive_account}"
+                    where += f" [{check}]"
             elif r.inherited[s]:
                 where = f"inherited {r.inherited[s]}"
             else:
