@@ -351,12 +351,16 @@ hash recipe everywhere: `cp_engine.asks.ask_hash(<co>-<number>,
   close-out ready to send (#354): `redundant` names the row each cluster
   keeps and drops, and each `resolve_commitments` entry is that verb's
   `{project_code, keys, outcome}` as-is. It resolves nothing — review the
-  pairs, prune `keys`, then send.
+  pairs, prune `keys`, then send. A pair with `same_object` set (#367)
+  matched on a shared noun phrase, not wording — one task restated across
+  meetings and a sprint import; it is never in `suggested_actions`, so close
+  the redundant row yourself by its short id.
 - `list_commitments(project_code, status?)` — the read side (`status` ∈
   `open | done | dropped | routed | expired | all`). Use at wrap up to reconcile promised vs.
   delivered; `date_status` shows ratification, `source_kind` shows origin.
 - `resolve_commitment(project_code, key, outcome?)` — close an open row
-  as `done` or `dropped` (`key` = id or distinct description substring). The
+  as `done` or `dropped` (`key` = id, a unique 8+ character id prefix such
+  as the sweep's short ids, or a distinct description substring). The
   wrap-up-sweep verb, mirroring the `[resolved: ...]` markers on the
   account / program `cp.md` decisions lists.
 - `resolve_commitments(project_code, keys, outcome?)` — batch close: each key resolves exactly as `resolve_commitment`, per-key

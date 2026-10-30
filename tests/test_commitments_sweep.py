@@ -504,3 +504,162 @@ def test_render_sweep_shows_the_date_drift_flag() -> None:
 def test_render_sweep_without_drift_has_no_drift_footer() -> None:
     rows = [_row(_c("a", "Send Janet the recut"), _TODAY)]
     assert "date in the text" not in render_sweep({"p": rows}, today=_TODAY)
+
+# --- #367: one task restated across meetings and a sprint import -----------
+#
+# ibx-5153's 32 open rows on 2026-10-30, verbatim (a doubled surname in two
+# attributions trimmed) — the full set matters: word rarity is per project. Four rows ask for one thing — a flat/vector
+# Infoblox platform graphic — from two meetings and a sprint-file import,
+# and the wording pass paired only two of them. The rest are the project's
+# other open work, several naming the same platform graphic, Janet or Derek:
+# the realistic negatives.
+
+_IBX_VECTOR = {
+    "9284616d": ("Email Janet re: vector platform graphic; request broken-down asset",
+                 "meeting_ingest"),
+    "9adea648": ("Flat/vector version of the Infoblox platform graphic (Celtic-style "
+                 "symbol) for concept layout work (from Hector Mendoza Suarez)",
+                 "meeting_ingest"),
+    "4e978e2c": ("Request flat/vector platform graphic from Marcello/Hector; share w/ Derek",
+                 "meeting_ingest"),
+    "2310eddf": ("Provide a flat / vector version of the Infoblox platform graphic "
+                 "(the Celtic-looking symbol) for use in concept exploration",
+                 "sprint_import"),
+}
+_IBX_OTHER = [
+    "Move new platform diagram asset into shared Figma for First Person; apply melon "
+    "color to foundation (from Hector Mendoza Suarez)",
+    "Download Magnifique R3 clips; edit 30s 'sharks' spot",
+    "Fix Euralift page: repair Vimeo video; verify/restore missing content",
+    "Send homepage headshot to Drew; Drew to upload [owner unresolved: Speaker 1]",
+    "Log into SalesLoft portal [owner unresolved: Speaker 1]",
+    "Email Marcello Claude-based scope/schedule/guardrails doc",
+    "Phase-two visual exploration deck (brand library swipe + visual approach direction) "
+    "for Janet [confidence: medium]",
+    "Approved script for revised platform video (gate before any production) [confidence: low]",
+    "Infoblox platform video (AI messaging woven in + new platform graphic) delivered for "
+    "platform page launch [confidence: medium]",
+    "Email Janet re: selected claims; request better options if desired",
+    "Create Figma templates for ads/landing pages using Infoblox site",
+    "Draft new Platform Video script w/ AI + new platform graphic; send to Janet for approval",
+    "Schedule note to Janet (status + 10/30 share date)",
+    "Treated stills for Infoblox landing page (color-match test) [confidence: medium]",
+    "First version of new AI-campaign creative concepts to Janet [confidence: medium]",
+    "Send calendar invite to Marcello for Oct 27 8 a.m. Derek sync",
+    "Email Janet re: kickoff + first ideas due Oct 30",
+    "Test AI still-image treatment; deliver styled stills to Drew",
+    "Delete unnecessary owner's meeting from calendar",
+    "Share Figma 5167 board link, v10 brief doc, and v11 copy doc with Derek; Marcello to "
+    "walk Derek through Magnifique workflow",
+    "Three new AI-campaign concepts (v1), each laid out across Marcello's system-template "
+    "frames (web, mobile, LinkedIn, a couple of banners), delivered to Infoblox [confidence: medium]",
+    "Add platform symbol to Figma brand board for Derek",
+    "Ask Janet re: updated platform graphic; update Derek",
+    "Share Brief 10 + Content 11 w/ Derek in Slack",
+    "Add subtitle copy placeholders (lorem) across V11 for Derek",
+    "Review SAP response in CP2; draft SAP competitive SOW "
+    "[off-project? → sap-5200-competitive-personality]",
+    "Draft 120k engagement summary; include Canonic option; review w/ Drew "
+    "[off-project? → cnc-5237-soc-2]",
+    "Decide Salesloft comp video graphics approach; if minimal, assign Taylor + brief "
+    "[off-project? → slt-5196-brand-campaign-26]",
+]
+
+
+def _ibx_rows() -> list[SweepRow]:
+    rows = [_row(_c(i, d, source_kind=k), _TODAY) for i, (d, k) in _IBX_VECTOR.items()]
+    rows += [_row(_c(f"other-{n:02d}", d), _TODAY) for n, d in enumerate(_IBX_OTHER)]
+    return rows
+
+
+def _clusters(pairs) -> list[set[str]]:
+    groups: list[set[str]] = []
+    for p in pairs:
+        hit = [g for g in groups if p.a.id in g or p.b.id in g]
+        merged = {p.a.id, p.b.id}.union(*hit) if hit else {p.a.id, p.b.id}
+        groups = [g for g in groups if g not in hit] + [merged]
+    return groups
+
+
+def test_cross_source_restatements_of_one_task_cluster() -> None:
+    """All four vector-graphic rows land in ONE cluster — across two
+    meetings and a sprint import — and nothing else on the project joins
+    it or pairs at all."""
+    from cp_engine.commitments_sweep import likely_duplicates
+
+    pairs = likely_duplicates(_ibx_rows())
+    assert _clusters(pairs) == [set(_IBX_VECTOR)]
+    kinds = {r.source_kind for p in pairs for r in (p.a, p.b)}
+    assert kinds == {"meeting_ingest", "sprint_import"}
+
+
+def test_the_object_pass_names_the_shared_phrase() -> None:
+    from cp_engine.commitments_sweep import likely_duplicates
+
+    by_pair = {frozenset((p.a.id, p.b.id)): p for p in likely_duplicates(_ibx_rows())}
+    # The two long rows share their wording: the #311 pass, untagged.
+    assert by_pair[frozenset(("9adea648", "2310eddf"))].shared_object is None
+    # The short restatements pair on the object they name.
+    p = by_pair[frozenset(("9284616d", "4e978e2c"))]
+    assert p.shared_object == "vector platform graphic"
+    p = by_pair[frozenset(("4e978e2c", "2310eddf"))]
+    assert p.shared_object == "flat vector · platform graphic"
+
+
+def test_punctuation_never_splits_or_joins_a_phrase() -> None:
+    from cp_engine.commitments_sweep import _content_seq
+
+    for text in ("flat / vector graphic", "flat/vector graphic", "Flat-vector graphic",
+                 "flat, vector graphic"):
+        assert _content_seq(text) == ["flat", "vector", "graphic"], text
+
+
+def test_same_object_different_task_is_not_paired() -> None:
+    """Rows that share the project's common nouns (platform, graphic,
+    Janet, Derek) or an opening verb phrase ("Email Janet re:") are
+    different work. Rarity is measured within the project, so the full
+    ibx-5153 row set is the context."""
+    from cp_engine.commitments_sweep import document_frequency, shared_object
+
+    rows = _ibx_rows()
+    df = document_frequency([r.description for r in rows])
+    email_vector = _IBX_VECTOR["9284616d"][0]
+    flat_vector = _IBX_VECTOR["9adea648"][0]
+    for a, b in [
+        (email_vector, "Email Janet re: selected claims; request better options if desired"),
+        (email_vector, "Draft new Platform Video script w/ AI + new platform graphic; "
+                       "send to Janet for approval"),
+        (email_vector, "Ask Janet re: updated platform graphic; update Derek"),
+        (flat_vector, "Add platform symbol to Figma brand board for Derek"),
+        ("First version of new AI-campaign creative concepts to Janet [confidence: medium]",
+         "Email Janet re: kickoff + first ideas due Oct 30"),
+    ]:
+        assert shared_object(a, b, df) is None, (a, b)
+
+
+def test_numbered_siblings_stay_apart_in_the_object_pass() -> None:
+    """The number rule guards the looser pass too: invoice tranches name
+    one object and are still two obligations."""
+    from cp_engine.commitments_sweep import likely_duplicates
+
+    rows = _rows(
+        ("i1", "Invoice #1 (50%) for SAP 5198 ad videos — ~$212,500", "session"),
+        ("i2", "Invoice #2 (25%) for SAP 5198 ad videos — must land in 2026 tax year",
+         "session"),
+    )
+    assert likely_duplicates(rows) == []
+
+
+def test_object_pairs_are_shown_but_never_proposed_for_resolution() -> None:
+    """A looser signal flags; it never lands in the ready-to-send drop
+    payload, so a mis-pair cannot close a real obligation."""
+    from cp_engine.commitments_sweep import suggested_resolutions
+
+    out = suggested_resolutions({"ibx-5153": _ibx_rows()})
+    dropped = {k for call in out["resolve_commitments"] for k in call["keys"]}
+    # Only the wording pair's redundant row is proposed.
+    assert dropped == {"2310eddf"} or dropped == {"9adea648"}
+    text = render_sweep({"ibx-5153": _ibx_rows()}, today=_TODAY)
+    assert "same object: vector platform graphic" in text
+    assert "9284616d ↔ 4e978e2c" in text
+    assert "the 8-character ids work as keys" in text

@@ -5486,18 +5486,30 @@ def _propose_feeds_on_route(
         }
 
 
+# A commitment id prefix (#367): 8+ hex characters, optionally continuing
+# into the UUID's dashed groups (`9284616d`, `9284616d-3f1a`).
+_ID_PREFIX_RE = re.compile(r"^[0-9a-fA-F]{8}[0-9a-fA-F-]*$")
+
+
 def _match_open_commitment(
     open_rows: list[dict[str, Any]], key: str
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Resolve `key` to exactly ONE row of `open_rows` — engine order.
 
-    Exact id first, then a case-insensitive description substring. Returns
-    `(row, None)` on a unique hit and `(None, error_payload)` otherwise; the
-    ambiguity payload carries up to five candidates so the caller can re-key
-    by id. Pure — no client, no I/O — so the batch verbs and the single verb
-    share one matching truth and the contract is unit-testable.
+    Exact id first, then an id PREFIX of at least 8 hex characters (#367 —
+    `commitments_sweep` prints 8-character ids, and they must work as keys),
+    then a case-insensitive description substring. Returns `(row, None)` on a
+    unique hit and `(None, error_payload)` otherwise; the ambiguity payload
+    carries up to five candidates so the caller can re-key by full id. Pure —
+    no client, no I/O — so the batch verbs and the single verb share one
+    matching truth and the contract is unit-testable.
     """
     matches = [r for r in open_rows if r.get("id") == key]
+    if not matches and _ID_PREFIX_RE.match((key or "").strip()):
+        prefix = key.strip().lower()
+        matches = [
+            r for r in open_rows if str(r.get("id") or "").lower().startswith(prefix)
+        ]
     if not matches:
         needle = (key or "").strip().lower()
         if needle:
@@ -5580,7 +5592,8 @@ def resolve_commitment(
     """Close an OPEN commitment: `outcome` 'done' (delivered) or 'dropped'.
 
     The hosted port of the stdio verb (#143 batch 2), with the engine's
-    resolution semantics intact. `key` is a commitment id (exact) or a
+    resolution semantics intact. `key` is a commitment id (exact), a unique id
+    prefix of 8+ characters (the short ids `commitments_sweep` prints), or a
     case-insensitive substring of the description, matched against the project's
     OPEN commitments only. Ambiguity is an ERROR that returns the candidates —
     never a guess — so a vague key makes you re-key by id rather than closing
@@ -5599,7 +5612,8 @@ def resolve_commitment(
 
     Args:
         project_code: engagement or initiative code.
-        key: a commitment id, or a distinct substring of its description.
+        key: a commitment id, a unique 8+ character id prefix, or a distinct
+            substring of its description.
         outcome: done | dropped.
     """
     if outcome not in ("done", "dropped"):
@@ -5713,8 +5727,8 @@ def resolve_commitments(
     """Close several OPEN commitments in one call (#159) — batch cleanup.
 
     Each entry of `keys` resolves and closes exactly as `resolve_commitment`
-    (exact id first, then a distinct description substring, matched against
-    OPEN rows only), so a wrap-up sweep that closes forty delivered rows is
+    (exact id first, then a unique 8+ character id prefix, then a distinct
+    description substring, matched against OPEN rows only), so a wrap-up sweep that closes forty delivered rows is
     ONE operation instead of forty.
 
     Per-key results are returned rather than a single verdict, and a miss does
@@ -5732,7 +5746,8 @@ def resolve_commitments(
 
     Args:
         project_code: engagement or initiative code.
-        keys: commitment ids or distinct description substrings.
+        keys: commitment ids, unique 8+ character id prefixes, or distinct
+            description substrings.
         outcome: done | dropped — applied to every key in the batch.
     """
     if outcome not in ("done", "dropped"):
@@ -10860,7 +10875,11 @@ def commitments_sweep(project_code: str = "", undated_only: bool = False) -> dic
     `likely_duplicates` pairs same-project rows whose descriptions read as
     one obligation (#311) — typically a row logged by hand mid-session and
     the row auto-ingest wrote for the same meeting. A flag, not a verdict:
-    resolve the redundant row with `resolve_commitment` if they match.
+    resolve the redundant row with `resolve_commitment` if they match. A pair
+    with `same_object` set (#367) matched on a shared noun phrase rather than
+    wording — one task restated across meetings and a sprint import; read
+    both rows, since some are separate steps on one object. Those pairs are
+    never in `suggested_actions`.
 
     `suggested_actions` (#354) is that close-out, ready to send: `redundant`
     names the row each cluster keeps and each it would drop (a dated row over
@@ -10920,6 +10939,9 @@ def commitments_sweep(project_code: str = "", undated_only: bool = False) -> dic
                 "b_description": p.b.description,
                 "similarity": p.jaccard,
                 "same_meeting": p.same_meeting,
+                # #367: set when the looser shared-object pass paired them —
+                # a flag to read, never in `suggested_actions`.
+                "same_object": p.shared_object,
             }
             for p in likely_duplicates(v)
         ]
