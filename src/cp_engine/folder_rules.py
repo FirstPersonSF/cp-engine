@@ -49,7 +49,7 @@ ACTIVE_STATUSES = ("Deal", "Open")
 # cnc-5239 is bound to `/Canonic/CAN 5239 Canonic Site`.
 CONVENTION_ROOTS: dict[str, str] = {
     "client": "/1P Active Projects",
-    "self-fpsf": "/1P Internal",
+    "self-fpsf": "/1P Initiatives",
     "self-canonic": "/Canonic",
 }
 
@@ -620,8 +620,12 @@ def fill_sql(rows: list[AuditRow]) -> list[str]:
                 f"-- {r.code}\n"
                 "INSERT INTO public.project_integrations "
                 "(project_id, service, external_ref, label)\n"
-                f"VALUES ({_sql_str(r.project_id)}, 'dropbox', {ref}::jsonb, '')\n"
-                "ON CONFLICT (project_id, service, label) DO NOTHING;"
+                # project_integrations has no unique key on (project_id,
+                # service, label), so ON CONFLICT is rejected (42P10, found
+                # applying the first fill 2026-10-30); guard with NOT EXISTS.
+                f"SELECT {_sql_str(r.project_id)}, 'dropbox', {ref}::jsonb, ''\n"
+                "WHERE NOT EXISTS (SELECT 1 FROM public.project_integrations "
+                f"WHERE project_id = {_sql_str(r.project_id)} AND service = 'dropbox');"
             )
         elif r.bound["dropbox"] and r.bound_check["dropbox"] == "missing":
             out.append(

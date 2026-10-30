@@ -371,7 +371,7 @@ def _audit(db, dbx):
 def test_convention_roots():
     f = lambda kind: SimpleNamespace(company_kind=kind, full_job_name="X 1 Y")  # noqa: E731
     assert fr.suggested_folder(f("client")) == "/1P Active Projects/X 1 Y"
-    assert fr.suggested_folder(f("self-fpsf")) == "/1P Internal/X 1 Y"
+    assert fr.suggested_folder(f("self-fpsf")) == "/1P Initiatives/X 1 Y"
     assert fr.suggested_folder(f("self-canonic")) == "/Canonic/X 1 Y"
 
 
@@ -399,7 +399,9 @@ def test_audit_reports_exists_found_missing_and_root_missing():
     assert "GGL 5151 GRC Narrative" in sql and "GGL 5176 London Safety Video Phase I" in sql
     assert "CAN 5239 Canonic Site" in sql
     assert "SAP Concur" not in sql and "Mission Control" not in sql
-    assert "ON CONFLICT (project_id, service, label) DO NOTHING" in sql
+    # No unique key on project_integrations: the guard is NOT EXISTS, never ON CONFLICT (42P10).
+    assert "ON CONFLICT" not in sql
+    assert sql.count("WHERE NOT EXISTS (SELECT 1 FROM public.project_integrations") == 3
     assert sql.count("INSERT INTO public.project_integrations") == 3
 
 
@@ -425,7 +427,7 @@ def test_no_sql_for_out_of_scope_disabled_or_inherited():
     dbx = _Dbx({ROOT: [_folder("IBX 5143 Off", f"{ROOT}/IBX 5143 Off"),
                        _folder("IBX 5153 AI Campaign", f"{ROOT}/IBX 5153 AI Campaign")],
                 ACCT: [_folder("IBX 5153 AI Campaign", f"{ACCT}/IBX 5153 AI Campaign")],
-                "/1P Internal": [_folder("1PI 9010 House", "/1P Internal/1PI 9010 House")]})
+                "/1P Initiatives": [_folder("1PI 9010 House", "/1P Initiatives/1PI 9010 House")]})
     rows = _audit(db, dbx)
     assert rows["ibx-5153-ai-campaign"].inherited["dropbox"].startswith(f"{ACCT}/IBX 5153")
     assert not rows["1pi-9010-house"].in_scope
