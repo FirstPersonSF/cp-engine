@@ -4,7 +4,18 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
-## Unreleased
+## v0.133.0 — 2026-10-30
+
+**Several sessions at once, a skill guide, folder rules, email attachments, and a cleaner commitments sweep.** Minor: new `cxp session`, `cxp skills`, `cxp folders` and `cxp aliases` commands, new hosted `add_project_link`; mc-2 mig 206 (already applied) makes corpus-wide search index-first.
+
+- **Sessions (#394):** `cxp session start/end/list/commit`, a sync lock shared across worktrees, a session registry, and wrap-up commits that stage only the session's own files.
+- **Skills (#395):** `/cp-help`, a one-line hint at session start, and `cxp skills --html` for a shareable guide.
+- **Folders (#396):** inheritance from a parent's folder, account-scope sources for account and program nodes, a daily-health line for unbound folders, `cxp folders` audit.
+- **Sources:** `add_project_link` records Figma, Artifact and repo links (#370); forwarded email attachments are filed and ingested (#376).
+- **Commitments:** date-drift flags (#366), cross-source duplicates and short-id keys (#367).
+- **Ingest:** term aliases (#371) and alias-candidate collection with `cxp aliases` and `--scan` (#387); risk-bullet parsing (#369).
+- **Fixes:** stakeholder cards render into the company folder (#372), Dropbox error wording (#373), floating elements listed (#374), unscoped search (#375), flaky teardown (#386), concurrent transcript promotion (#393).
+
 
 *Skill guide: `/cp-help`, a session-start hint, a shareable page (#395).*
 Minor: new `cxp skills` command (cxp_commands ceiling 60→61); no new MC-2
