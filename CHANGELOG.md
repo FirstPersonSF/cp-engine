@@ -6,6 +6,27 @@ Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automat
 
 ## Unreleased
 
+**Work behind a login is recorded as a source: `add_project_link` (#370).** Minor: one new hosted verb (hosted_tools ceiling 59→60). The entries below it are patch-level.
+
+*`add_project_link(project_code, url, title, kind="source", note="")`.* A
+Figma file, a claude.ai Artifact or a GitHub repo had no record in the source
+store or the spine; only chat and Exec Summary prose pointed at it. The verb
+does not fetch the URL (it needs a login). It writes a small markdown link
+card (title, URL, provider detected from the host, kind, note, who added it
+and when) to `03 Assets/06 Spine/Link · <title>.md` in the project's Dropbox,
+the same way `ingest_url` uploads, and queues its ingest under the caller's
+identity. The card is then a normal source: `list_project_sources` lists
+`Link · <title>.md`, `semantic_search` finds it. The ingest stores the card's
+URL as the source's `url` (not a Dropbox share link), so a citation opens the
+work itself; only a file named like a card is read for it, and `ingest_url`
+defangs the tag in fetched pages. `kind="deliverable"` also creates a
+Deliverables-layer element (`_authored/link-<title>`) through
+`create_spine_element`, so `seal_sweep` sees it; a card already in the store
+is attached as its source. The same URL on the same project returns the
+existing card (`existing: true`), from the store or, while its ingest is
+pending, from Dropbox. A title already used for a different URL is refused.
+http(s) only; an empty title is refused. No CLI twin (as with `ingest_url`).
+
 *Corpus-wide `semantic_search` uses the index (#375).* mc-2 migration 206
 rewrote `match_chunks_for_project` to parse the query vector once and take
 corpus-wide candidates from the HNSW index before joining (2.9s warm and

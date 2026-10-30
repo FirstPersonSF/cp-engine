@@ -38,6 +38,7 @@ import socket
 from dataclasses import dataclass, field
 from urllib.parse import unquote, urljoin, urlparse
 
+from cp_engine.link_card import LINK_URL_TAG
 from cp_engine.source_markers import INGEST_NOTE_TAG
 
 MAX_FETCH_BYTES = 10 * 1024 * 1024
@@ -354,6 +355,8 @@ def prepare(fetched: Fetched, *, fetched_on: str) -> Prepared:
         gating = Gating(gated=False)
     # The body is third-party text: it must not be able to write our note.
     body = page.markdown.replace(INGEST_NOTE_TAG, INGEST_NOTE_TAG.replace("-", " "))
+    # ...nor set the link a card records (#370).
+    body = body.replace(LINK_URL_TAG, LINK_URL_TAG.replace("-", " "))
     head = [f"# {page.title}" if page.title else "",
             f"Source: {fetched.url}", f"Fetched: {fetched_on} via ingest_url"]
     if gating.gated:

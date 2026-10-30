@@ -10,6 +10,7 @@ function — the implementation lives in `cp_engine`, not here:
   pull_document_comments   project_sources.pull_document_comments
   push_to_dropbox          project_sources.push_to_dropbox / dropbox_destination
   ingest_url (#350)        url_source.fetch_url + prepare, then push_to_dropbox
+  add_project_link (#370)  link_card.build_card, then push_to_dropbox (no fetch)
   preflight                preflight.read_tree_context + read_mc2_titles + run_preflight
   list_vendors             rfp_pipeline.read_vendors
   list_rfp_respondents     rfp_pipeline.read_respondents
@@ -44,6 +45,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import contextlib
 import hashlib
 import os
 import tempfile
@@ -701,6 +703,279 @@ def ingest_url(
     _srv.audit(client, tool, {"project_code": project_code, "url": url,
                               "path": dropbox_path, "gated": prepared.gating.gated,
                               "ingest": bool(out["ingest"].get("queued"))}, 1)
+    return out
+
+
+# ── links to work behind a login (#370) ──────────────────────────────
+
+# Most card reads are answered by the source store; the Dropbox folder is
+# read only for cards whose ingest has not landed. This bounds that read.
+MAX_PENDING_CARD_READS = 25
+
+
+def _store_link_cards(client, pid: str) -> list[dict[str, Any]]:
+    """The project's ACTIVE ingested link cards (`Link · …`), under the
+    caller's identity. Raises on a read error; the caller degrades."""
+    from cp_engine.link_card import LINK_CARD_PREFIX
+    from cp_engine.mc2_db import Tables
+
+    return list((
+        client.table(Tables.RAG_ASSETS).select("id, title, url")
+        .eq("project_id", pid).eq("status", "active")
+        .like("title", f"{LINK_CARD_PREFIX}%").execute()
+    ).data or [])
+
+
+def _dropbox_cards(connector, folder: str) -> list[str]:
+    """Names of the card files in `folder` (non-recursive). [] when the
+    folder does not exist yet."""
+    from cp_engine.link_card import is_card_name
+
+    dbx = connector.dbx
+    try:
+        page = dbx.files_list_folder(folder)
+    except Exception as exc:  # noqa: BLE001
+        if "not_found" in str(exc):
+            return []
+        raise
+    names = [e.name for e in page.entries if is_card_name(getattr(e, "name", ""))]
+    while getattr(page, "has_more", False):
+        page = dbx.files_list_folder_continue(page.cursor)
+        names += [e.name for e in page.entries if is_card_name(getattr(e, "name", ""))]
+    return names
+
+
+def _dropbox_text(connector, path: str) -> str:
+    _meta, resp = connector.dbx.files_download(path)
+    return resp.content.decode("utf-8", errors="replace")
+
+
+def _find_link_card(client, pid: str, connector, folder: str, card) -> dict[str, Any]:
+    """Where this URL is already recorded on the project, if anywhere.
+
+    Returns `{found: {...}}` for an existing card, `{collision: name}` when a
+    card of the same name records a DIFFERENT url, else `{}`; `warnings`
+    names any read that failed (the check then did less, and says so).
+    """
+    from cp_engine.link_card import card_url_in, normalize_url
+
+    out: dict[str, Any] = {"warnings": []}
+    in_store: set[str] = set()
+    try:
+        rows = _store_link_cards(client, pid)
+    except Exception as exc:  # noqa: BLE001 — degrade to the Dropbox check
+        rows = []
+        out["warnings"].append(f"source-store read failed: {type(exc).__name__}: {exc}")
+    for r in rows:
+        title = r.get("title") or ""
+        in_store.add(title)
+        if r.get("url") and normalize_url(r["url"]) == card.url:
+            out["found"] = {"title": title, "asset_id": r.get("id"),
+                            "where": "source store", "ingested": True}
+            return out
+
+    try:
+        names = _dropbox_cards(connector, folder)
+    except Exception as exc:  # noqa: BLE001
+        out["warnings"].append(f"Dropbox listing failed: {type(exc).__name__}: {exc}")
+        return out
+    # The same name first: it is both the likeliest match and the collision.
+    names.sort(key=lambda n: n != card.filename)
+    pending = [n for n in names if n not in in_store or n == card.filename]
+    for name in pending[:MAX_PENDING_CARD_READS]:
+        path = f"{folder}/{name}"
+        try:
+            recorded = card_url_in(_dropbox_text(connector, path))
+        except Exception as exc:  # noqa: BLE001
+            out["warnings"].append(f"could not read {name}: {type(exc).__name__}")
+            continue
+        if recorded == card.url:
+            asset = next((r for r in rows if r.get("title") == name), None)
+            out["found"] = {"title": name, "dropbox_path": path,
+                            "asset_id": asset.get("id") if asset else None,
+                            "where": "source store" if asset else "Dropbox (ingest pending)",
+                            "ingested": asset is not None}
+            return out
+        if name == card.filename:
+            out["collision"] = {"title": name, "url": recorded}
+    if len(pending) > MAX_PENDING_CARD_READS:
+        out["warnings"].append(
+            f"{len(pending) - MAX_PENDING_CARD_READS} un-ingested cards not checked")
+    return out
+
+
+def _link_deliverable(project_code: str, card, title: str, asset_id: str | None,
+                      card_title: str) -> dict[str, Any]:
+    """Create (or find) the Deliverables element that stands for the link,
+    through `create_spine_element` itself — same row shape, same policy,
+    same collision guard. The slug comes from the card's title, so the same
+    card always maps to the same element."""
+    from cp_engine.link_card import card_title_from_name
+
+    name = card_title_from_name(card_title) or title
+    slug = _srv.slugify(f"link-{name}")
+    body = (f"{name} — the deliverable itself is at {card.url} "
+            f"({card.provider}; not fetched, it needs a login).")
+    if card.note:
+        body += f"\n\n{card.note}"
+    sources = ([{"type": "rag_asset", "id": asset_id, "title": card_title}]
+               if asset_id else None)
+    made = _srv.create_spine_element(
+        project_code, framing=name, body=body, layer="deliverable", slug=slug,
+        note=f"link: {card.url}", sources=sources,
+    )
+    eid = f"_authored/{slug}"
+    if made.get("existing_id"):
+        return {"element_id": eid, "created": False, "existing_id": made["existing_id"]}
+    if made.get("error"):
+        return {"element_id": eid, "created": False, "error": made["error"]}
+    out = {"element_id": made.get("element_id", eid), "created": True,
+           "row_id": made.get("row_id"), "layer": made.get("layer")}
+    if not asset_id:
+        out["next"] = (f"once the card lists, attach it: add_element_source("
+                       f"{project_code!r}, {out['element_id']!r}, {card_title!r})")
+    return out
+
+
+@hosted_tool
+def add_project_link(
+    project_code: str,
+    url: str,
+    title: str,
+    kind: str = "source",
+    note: str = "",
+) -> dict[str, Any]:
+    """Record work that lives behind a login — a Figma file, a claude.ai
+    Artifact, a GitHub repo — as a project source (and, optionally, a
+    deliverable).
+
+    Does NOT fetch the URL. It writes a small markdown **link card** (title,
+    URL, provider detected from the host — figma / claude-artifact / github /
+    other — kind, note, who added it and when) to the project's Dropbox at
+    `03 Assets/06 Spine/Link · <title>.md` and queues its ingest under your
+    identity. Once it lands the card is a normal source: `semantic_search`
+    finds it, `list_project_sources` lists it as `Link · <title>.md`, and its
+    `url` is the work itself, not a Dropbox link. The ingest runs in the
+    background: `ingest.run_id` is a receipt, not a finished source.
+
+    **`kind="deliverable"`** also creates a Deliverables-layer spine element
+    for it (`_authored/link-<title>`), so `seal_sweep` sees the round. A card
+    already in the store is attached as its source; a new one is attached
+    with `add_element_source` once it lists (the result says how).
+
+    **Idempotent.** The same URL on the same project returns the existing
+    card (`existing: true`) rather than a duplicate — whatever title it was
+    first given. A title already used by a card for a DIFFERENT url is
+    refused: pick another title. To change a link, ingest a corrected card
+    or rename the source.
+
+    http(s) URLs only; `title` is required (it is the name the link is listed
+    under — use the work's own name). Needs team membership (the upload uses
+    the service's Dropbox credentials). For a public web page whose TEXT you
+    want in the store, use `ingest_url` instead.
+    """
+    tool = "add_project_link"
+    refused = _team_gate(tool, project_code)
+    if refused:
+        return refused
+    client = _srv.user_client()
+
+    def _fail(error: str) -> dict[str, Any]:
+        _srv.audit(client, tool, {"project_code": project_code, "url": url,
+                                  "result": "error"}, 0)
+        return {"project_code": project_code, "url": url, "error": error}
+
+    from cp_engine import link_card
+    from cp_engine.clock import tenant_today
+
+    try:
+        card = link_card.build_card(
+            url, title, kind, note,
+            added_by=_srv.caller_email() or _srv.caller_subject() or "unknown",
+            added_on=tenant_today().isoformat(),
+        )
+    except link_card.LinkCardError as exc:
+        return _fail(str(exc))
+
+    gap = dropbox_credential_gap()
+    if gap:
+        return _fail(gap)
+    resolved = _resolve(client, project_code)
+    if resolved is None:
+        return _not_found(client, tool, project_code)
+    pid, _cid = resolved
+
+    from cp_engine.asset_ingest import resolve_project_folders_by_id
+
+    folders = resolve_project_folders_by_id(client, pid)
+    if folders is None or not folders.mc_dropbox_folder_id:
+        return _fail(_no_dropbox_folder(project_code))
+    folder_id = folders.mc_dropbox_folder_id
+
+    try:
+        from cloud_storage.dropbox_connector import DropboxConnector
+
+        connector = DropboxConnector()
+    except Exception as exc:  # noqa: BLE001 — auth/config: a named error
+        return _fail(f"Dropbox connector failed: {type(exc).__name__}: {exc}")
+
+    engine = _srv._engine_project_sources
+    dest_name = f"{SPINE_OUTPUT_DIR}/{card.filename}"
+    destination = engine.dropbox_destination(connector, folder_id, dest_name)
+    if isinstance(destination, dict):
+        return _fail(destination["error"])
+    folder = destination.rsplit("/", 1)[0]
+
+    found = _find_link_card(client, pid, connector, folder, card)
+    out: dict[str, Any] = {
+        "project_code": project_code,
+        "url": card.url,
+        "provider": card.provider,
+        "kind": card.kind,
+    }
+    if found.get("warnings"):
+        out["warnings"] = found["warnings"]
+
+    existing = found.get("found")
+    if existing:
+        out.update(existing=True, title=existing["title"],
+                   dropbox_path=existing.get("dropbox_path"),
+                   asset_id=existing.get("asset_id"), where=existing["where"])
+        if not existing["ingested"] and existing.get("dropbox_path"):
+            # Re-queue: harmless if the first one is still running (an
+            # unchanged file is skipped), and the fix if it never ran.
+            out["ingest"] = _queue_ingest(project_code, pid, folders,
+                                          existing["dropbox_path"])
+        card_title, asset_id = existing["title"], existing.get("asset_id")
+    else:
+        if found.get("collision"):
+            other = found["collision"].get("url") or "another url"
+            return _fail(f"a link card titled {card.filename!r} already records "
+                         f"{other} — choose another title for {card.url}")
+        with tempfile.TemporaryDirectory(prefix="cp-link-") as tmp:
+            local = Path(tmp) / card.filename
+            local.write_text(card.render(), encoding="utf-8")
+            result = engine.push_to_dropbox(connector, folder_id, str(local),
+                                            dest_name=dest_name, overwrite=False)
+        if result.get("error"):
+            return _fail(result["error"])
+        dropbox_path = result.get("dropbox_path") or destination
+        out.update(existing=False, title=card.filename, dropbox_path=dropbox_path,
+                   ingest=_queue_ingest(project_code, pid, folders, dropbox_path))
+        card_title, asset_id = card.filename, None
+
+    if card.kind == "deliverable":
+        out["deliverable"] = _link_deliverable(project_code, card, card.title,
+                                               asset_id, card_title)
+    with contextlib.suppress(Exception):  # the level echo never fails the write
+        out["level"] = _srv._level_for(project_code)
+    _srv.audit(client, tool, {
+        "project_code": project_code, "url": card.url, "kind": card.kind,
+        "existing": out["existing"], "path": out.get("dropbox_path"),
+        "ingest": bool((out.get("ingest") or {}).get("queued")),
+        **({"element": out["deliverable"].get("element_id")}
+           if "deliverable" in out else {}),
+    }, 0 if out["existing"] and "deliverable" not in out else 1)
     return out
 
 
