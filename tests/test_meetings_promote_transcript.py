@@ -25,7 +25,11 @@ class _Recorder:
         self._result = result if result is not None else {}
 
     def __call__(self, *args, **kwargs):
-        self.calls.append({"args": args, "kwargs": kwargs})
+        # Read the file while the call holds it: it is removed afterwards.
+        content = None
+        if args and isinstance(args[0], str) and Path(args[0]).is_file():
+            content = Path(args[0]).read_text()
+        self.calls.append({"args": args, "kwargs": kwargs, "content": content})
         return self._result
 
 
@@ -240,9 +244,11 @@ def test_happy_path():
     assert ingest_path.endswith("transcript.md")
     assert ingest.calls[0]["args"][2] == "Kickoff"
     # Flattened text actually written there.
-    assert Path(ingest_path).read_text() == (
+    assert ingest.calls[0]["content"] == (
         "[00:00:16] Drew Fiero: Oh, sorry.\n[00:00:18] Tony: No worries."
     )
+    # ...and removed once the stamp is done (#393).
+    assert not Path(ingest_path).exists()
 
     assert len(stamp.calls) == 1
     stamp_kw = stamp.calls[0]["kwargs"]
@@ -302,3 +308,86 @@ def test_ingest_and_stamp_share_identical_path():
         ingest=ingest, stamp=stamp, supabase_url="u", supabase_key="k",
     )
     assert ingest.calls[0]["args"][0] == stamp.calls[0]["kwargs"]["file_path"]
+
+
+# ---- #393: concurrent promotions of one recording ---------------------------
+
+
+def _concurrent_run(fn, rows):
+    """Run `fn` on each row in its own thread, released together. The fake
+    ingest reads the file, waits, and reads it again: on a shared, unlocked
+    path the other thread's write lands in between."""
+    import threading
+    import time
+
+    seen = {}
+    errors = []
+    start = threading.Barrier(len(rows))
+
+    def ingest(path, project_id, title, **_kw):
+        first = Path(path).read_text()
+        time.sleep(0.2)
+        second = Path(path).read_text()
+        seen[title] = (path, first, second)
+        return {"ok": True}
+
+    def stamp(client, *, title, file_path, **_kw):
+        # The stamp must see the same file the ingest read.
+        assert Path(file_path).read_text() == seen[title][1]
+        return {"stamped": True, "ids": [f"asset-{title}"]}
+
+    results = {}
+
+    def run(row):
+        try:
+            start.wait()
+            results[row["title"]] = fn(
+                _FakeClient(), row, "p1", "co1",
+                ingest=ingest, stamp=stamp, supabase_url="u", supabase_key="k",
+                force=True,
+            )
+        except Exception as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run, args=(r,)) for r in rows]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+    assert not errors
+    return results, seen
+
+
+def test_concurrent_promotions_of_one_recording_do_not_overwrite():
+    """#393: two promotions of the SAME recording at once. Each ingest must
+    read its own transcript, whole, start to finish — and both succeed."""
+    row_a = _row(title="A", transcript=[_seg("Alpha text.", "Drew", "00:01")])
+    row_b = _row(title="B", transcript=[_seg("Bravo text.", "Tony", "00:02")])
+
+    results, seen = _concurrent_run(promote_meeting_transcript, [row_a, row_b])
+
+    assert results["A"] == {"ok": True, "asset_id": "asset-A"}
+    assert results["B"] == {"ok": True, "asset_id": "asset-B"}
+    assert seen["A"][1:] == ("[00:01] Drew: Alpha text.",) * 2
+    assert seen["B"][1:] == ("[00:02] Tony: Bravo text.",) * 2
+    # Still one stable path per recording (it is rag_assets' dedup key), and
+    # it is cleaned up afterwards.
+    assert seen["A"][0] == seen["B"][0]
+    assert not Path(seen["A"][0]).exists()
+
+
+def test_concurrent_summary_embeds_of_one_recording_do_not_overwrite():
+    """Same race in `embed_meeting_summary`, which shares the pattern."""
+    from cp_engine.meetings import embed_meeting_summary
+
+    def embed(client, row, project_id, _company_id, **kw):
+        return embed_meeting_summary(client, row, project_id, **kw)
+
+    row_a = _row(title="A", summary="Alpha summary.")
+    row_b = _row(title="B", summary="Bravo summary.")
+
+    results, seen = _concurrent_run(embed, [row_a, row_b])
+
+    assert results["A"]["ok"] is True and results["B"]["ok"] is True
+    assert seen["A"][1:] == ("Alpha summary.",) * 2
+    assert seen["B"][1:] == ("Bravo summary.",) * 2

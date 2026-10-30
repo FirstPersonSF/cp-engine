@@ -9,7 +9,14 @@ from __future__ import annotations
 
 import re
 import tempfile
+import threading
+from contextlib import contextmanager
 from pathlib import Path
+
+try:  # POSIX only; on Windows the in-process lock below is all there is.
+    import fcntl
+except ImportError:  # pragma: no cover - not exercised on POSIX CI
+    fcntl = None
 
 from cp_engine.asset_ingest import _utc_now_iso
 from cp_engine.spine_promote import ingest_single_file
@@ -22,6 +29,43 @@ def _safe(s: str) -> str:
     """Sanitize an identifier into a filesystem-safe name (mirrors
     spine_promote._safe / asset_ingest._stable_dir_for's `re.sub`)."""
     return re.sub(r"[^A-Za-z0-9._-]", "_", str(s))
+
+
+# One in-process lock per stable path. fcntl.flock below already serialises
+# threads (each call opens its own descriptor), so this only matters where
+# fcntl is missing.
+_PATH_LOCKS: dict[str, threading.Lock] = {}
+_PATH_LOCKS_GUARD = threading.Lock()
+
+
+@contextmanager
+def _stable_file(subdir: str, key, name: str, text: str):
+    """Write `text` to `<tmp>/<subdir>/<key>/<name>`, hold that path, yield it.
+
+    The path must stay STABLE per key: the ingest pipeline stores it as
+    `rag_assets.file_path` and dedups on it, and the stamp locates the row by
+    it, so a random `mkdtemp` path would add a new row on every re-promote.
+    What must not happen is two calls for one key sharing the file at once:
+    one would read the other's text, or an empty file mid-write (#393). So the
+    whole write → ingest → stamp runs under an exclusive lock on
+    `<key>/.lock` — `flock` across processes and threads, plus an in-process
+    lock — and the file is removed before the lock is released.
+    """
+    dest_dir = Path(tempfile.gettempdir()) / subdir / _safe(key)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / name
+    with _PATH_LOCKS_GUARD:
+        thread_lock = _PATH_LOCKS.setdefault(str(dest), threading.Lock())
+    with thread_lock, open(dest_dir / ".lock", "a") as lock_fh:
+        if fcntl is not None:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+        try:
+            dest.write_text(text, encoding="utf-8")
+            yield str(dest)
+        finally:
+            dest.unlink(missing_ok=True)
+            if fcntl is not None:
+                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
 
 
 def stamp_meeting_asset(client, *, project_id: str, source_file_id: str,
@@ -100,19 +144,17 @@ def embed_meeting_summary(client, meeting_row, project_id, *,
         # STABLE dest path keyed on recording_id, under the SYSTEM temp dir
         # (mirroring spine_promote): deterministic per recording_id, so a
         # re-embed lands on the same rag_assets row.
-        dest_dir = Path(tempfile.gettempdir()) / "meeting-embed" / _safe(recording_id)
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        dest = dest_dir / "summary.md"
-        dest.write_text(summary, encoding="utf-8")
-        stable_path = str(dest)
+        # Held exclusively until the stamp is done (#393).
+        with _stable_file("meeting-embed", recording_id, "summary.md",
+                          summary) as stable_path:
+            ingest(stable_path, project_id, title,
+                   supabase_url=supabase_url, supabase_key=supabase_key)
 
-        ingest(stable_path, project_id, title,
-               supabase_url=supabase_url, supabase_key=supabase_key)
-
-        # SAME stable_path to stamp, then verify exactly one match.
-        st = stamp(client, project_id=project_id, source_file_id=str(recording_id),
-                   title=title, file_path=stable_path,
-                   meta={"kind": "meeting_summary"})
+            # SAME stable_path to stamp, then verify exactly one match.
+            st = stamp(client, project_id=project_id,
+                       source_file_id=str(recording_id),
+                       title=title, file_path=stable_path,
+                       meta={"kind": "meeting_summary"})
         ids = st.get("ids") or []
         if not st.get("stamped") or len(ids) != 1:
             reason = ("stamp matched no row" if not st.get("stamped")
@@ -180,7 +222,9 @@ def promote_meeting_transcript(client, meeting_row, project_id, company_id, *,
 
     The flattened transcript is written to a STABLE temp path keyed on
     recording_id (`<tmp>/meeting-promote/<recording_id>/transcript.md`), so a
-    re-promote lands on the same rag_assets row (idempotent). The SAME path goes
+    re-promote lands on the same rag_assets row (idempotent). The path is held
+    under an exclusive lock from write to stamp and removed afterwards, so
+    concurrent promotions of one recording take turns (#393). The SAME path goes
     to BOTH `ingest` and `stamp`; after stamping we VERIFY exactly one row matched
     (stamped True, len(ids)==1) before the write-back, else ok:False.
 
@@ -215,19 +259,18 @@ def promote_meeting_transcript(client, meeting_row, project_id, company_id, *,
 
         # STABLE dest path keyed on recording_id, under the SYSTEM temp dir:
         # deterministic per recording_id, so a re-promote lands on the same row.
-        dest_dir = Path(tempfile.gettempdir()) / "meeting-promote" / _safe(recording_id)
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        dest = dest_dir / "transcript.md"
-        dest.write_text(text, encoding="utf-8")
-        stable_path = str(dest)
+        # Held exclusively until the stamp is done: two promotions of one
+        # recording no longer read each other's file (#393).
+        with _stable_file("meeting-promote", recording_id, "transcript.md",
+                          text) as stable_path:
+            ingest(stable_path, project_id, title,
+                   supabase_url=supabase_url, supabase_key=supabase_key)
 
-        ingest(stable_path, project_id, title,
-               supabase_url=supabase_url, supabase_key=supabase_key)
-
-        # SAME stable_path to stamp, then verify exactly one match.
-        st = stamp(client, project_id=project_id, source_file_id=str(recording_id),
-                   title=title, file_path=stable_path,
-                   meta={"kind": "meeting_transcript"})
+            # SAME stable_path to stamp, then verify exactly one match.
+            st = stamp(client, project_id=project_id,
+                       source_file_id=str(recording_id),
+                       title=title, file_path=stable_path,
+                       meta={"kind": "meeting_transcript"})
         ids = st.get("ids") or []
         if not st.get("stamped") or len(ids) != 1:
             reason = ("stamp matched no row" if not st.get("stamped")
