@@ -222,7 +222,7 @@ def folders_cmd(write_sql: bool, offline: bool) -> None:
 
     Read-only: per workstream, which sources are on, the bound folder (and
     whether it exists), the folder inherited from a parent, and the
-    convention folder (`/1P Active Projects/<code> <name>`, `/1P Internal/…`,
+    convention folder (`/1P Active Projects/<code> <name>`, `/1P Initiatives/…`,
     `/Canonic/…`) with whether Dropbox has it. Nothing is written anywhere.
     """
     from cp_engine import asset_ingest, folder_rules

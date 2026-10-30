@@ -4,6 +4,14 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## Unreleased
+
+*Folder rules follow-ups (#396).* The internal convention root is
+`/1P Initiatives` (a top-level team folder that already exists), not
+`/1P Internal`. `cxp folders --write-sql` guards INSERTs with `WHERE NOT
+EXISTS` instead of `ON CONFLICT`, which `project_integrations` (no unique key
+on project/service/label) rejects with 42P10.
+
 ## v0.133.0 — 2026-10-30
 
 **Several sessions at once, a skill guide, folder rules, email attachments, and a cleaner commitments sweep.** Minor: new `cxp session`, `cxp skills`, `cxp folders` and `cxp aliases` commands, new hosted `add_project_link`; mc-2 mig 206 (already applied) makes corpus-wide search index-first.
