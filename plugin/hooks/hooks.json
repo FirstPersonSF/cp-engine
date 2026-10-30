@@ -1,5 +1,5 @@
 {
-  "description": "SessionStart: ONE entry. Claude Code runs same-matcher hooks in parallel with no ordering guarantee, so the two scripts are chained by session-start.sh in a fixed order: CLI-version observe/sync, then the tenant-clone freshness gate (#296).",
+  "description": "SessionStart: ONE entry. Claude Code runs same-matcher hooks in parallel with no ordering guarantee, so the two scripts are chained by session-start.sh in a fixed order: CLI-version observe/sync, then the tenant-clone freshness gate (#296). SessionEnd drops the session from the tenant clone's session registry (#394).",
   "hooks": {
     "SessionStart": [
       {
@@ -9,6 +9,18 @@
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh",
             "timeout": 60
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/session-end.sh",
+            "timeout": 15
           }
         ]
       }

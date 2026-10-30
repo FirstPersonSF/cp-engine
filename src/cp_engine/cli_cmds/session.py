@@ -1,4 +1,4 @@
-"""Session/repo verbs: capture-session, project-context, link-local.
+"""Session/repo verbs: capture-session, project-context, link-local, session.
 
 Split from cli.py (arch-phase-4, #33). Shared helpers stay in
 cp_engine.cli and are called via the module attribute so test
@@ -336,3 +336,213 @@ def link_local_cmd() -> None:
     )
 
 
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  `cxp session …` — several cp sessions at once (#394)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _session_root() -> Path:
+    from cp_engine.capture_session import find_tenant_root
+
+    root = find_tenant_root(Path.cwd().resolve())
+    if root is None:
+        click.echo(
+            "Error: no cp tenant here — cd into the tenant (or a session worktree).",
+            err=True,
+        )
+        sys.exit(2)
+    return root
+
+
+def _age(started_at: str) -> str:
+    from cp_engine.sessions import _now, _parse_ts
+
+    ts = _parse_ts(started_at)
+    if ts is None:
+        return "?"
+    mins = int((_now() - ts).total_seconds() // 60)
+    return f"{mins // 60}h{mins % 60:02d}m" if mins >= 60 else f"{mins}m"
+
+
+@click.group(name="session")
+def session_group() -> None:
+    """Run several cp sessions at once: one worktree per session."""
+
+
+@session_group.command(name="start")
+@click.argument("code")
+@click.option("--no-fetch", is_flag=True, help="Branch from the last-fetched origin/main.")
+def session_start_cmd(code: str, no_fetch: bool) -> None:
+    """Make a working folder (git worktree) for one workstream's session.
+
+    The folder sits beside the tenant clone, on a new `cp-session/…` branch
+    from origin/main. Open Claude Code there; wrap up as usual; then
+    `cxp session end`.
+    """
+    from cp_engine.sessions import SessionError, start_session
+
+    root = _session_root()
+    try:
+        entry = start_session(root, code, fetch=not no_fetch)
+    except SessionError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    click.echo(f"Session folder for {entry.project}:\n  {entry.worktree}")
+    click.echo(f"Branch {entry.branch} (pushes to origin/main).")
+    click.echo(f"Start it:  cd {entry.worktree} && claude")
+
+
+@session_group.command(name="end")
+@click.argument("code", required=False)
+@click.option("--force", is_flag=True, help="Remove even with unpushed or uncommitted work (it is lost).")
+def session_end_cmd(code: str | None, force: bool) -> None:
+    """Remove this session's worktree once its work is on origin/main."""
+    from cp_engine.sessions import SessionError, end_session
+
+    root = _session_root()
+    try:
+        entry, main = end_session(root, code, force=force)
+    except SessionError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    click.echo(f"Ended {entry.label()} session; removed {entry.worktree}.")
+    click.echo(f"Back to the tenant:  cd {main}")
+
+
+@session_group.command(name="list")
+def session_list_cmd() -> None:
+    """Show the cp sessions active on this machine's clone."""
+    from cp_engine.sessions import list_sessions, toplevel
+
+    root = _session_root()
+    entries = list_sessions(root)
+    if not entries:
+        click.echo("No cp sessions active.")
+        return
+    here = toplevel(root) or root
+    for e in entries:
+        mark = "*" if Path(e.worktree).resolve() == here else " "
+        kind = "worktree" if e.kind == "worktree" else "checkout"
+        click.echo(
+            f"{mark} {e.label():<40} {kind:<8} {_age(e.started_at):>6}  {e.worktree}"
+        )
+
+
+@session_group.command(name="commit")
+@click.argument("codes", nargs=-1, required=True)
+@click.option("-m", "--message", required=True, help="Commit message.")
+@click.option(
+    "--path", "extra", multiple=True,
+    help="Also commit this path (file or directory), e.g. master-cp.md. Repeatable.",
+)
+@click.option("--no-push", is_flag=True, help="Commit only.")
+@click.option("--dry-run", is_flag=True, help="List what would be committed and left.")
+def session_commit_cmd(
+    codes: tuple[str, ...], message: str, extra: tuple[str, ...], no_push: bool, dry_run: bool
+) -> None:
+    """Commit only this session's files, then merge origin and push.
+
+    Commits each workstream's working dir, its sprint files and
+    improvements.md (plus any --path) — never another session's edits.
+    Pushing fetches, merges origin/main, runs merge-check, then pushes
+    HEAD:main.
+    """
+    from cp_engine.sessions import (
+        SessionError,
+        commit_session,
+        others_line,
+        push_session,
+        session_paths,
+    )
+
+    root = _session_root()
+    try:
+        if dry_run:
+            mine, others = session_paths(root, list(codes), extra)
+            click.echo(f"Would commit {len(mine)} file(s):")
+            for p in mine:
+                click.echo(f"  {p}")
+            if others:
+                click.echo(f"Would leave {len(others)} other changed file(s):")
+                for p in others:
+                    click.echo(f"  {p}")
+            return
+        result = commit_session(root, list(codes), message, extra)
+    except SessionError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+    if result.sha:
+        click.echo(f"Committed {result.sha}: {len(result.committed)} file(s).")
+        for p in result.committed:
+            click.echo(f"  {p}")
+    else:
+        click.echo("Nothing of this session's to commit.")
+    if result.left_alone:
+        shown = ", ".join(result.left_alone[:8])
+        more = f" (+{len(result.left_alone) - 8} more)" if len(result.left_alone) > 8 else ""
+        click.echo(
+            f"Left {len(result.left_alone)} other changed file(s) uncommitted: "
+            f"{shown}{more}"
+        )
+    line = others_line(root, committed_only_mine=bool(result.sha))
+    if line:
+        click.echo(line)
+
+    if no_push:
+        return
+    try:
+        pushed = push_session(root)
+    except SessionError as exc:
+        click.echo(f"Not pushed: {exc}", err=True)
+        sys.exit(1)
+    if pushed.pushed:
+        merged = " after merging it" if pushed.merged else ""
+        click.echo(f"Pushed to {pushed.target}{merged} (merge-check clean).")
+    else:
+        click.echo(f"Nothing to push — {pushed.target} already has it.")
+
+
+@session_group.command(name="register")
+@click.option("--remove", is_flag=True, help="SessionEnd: unregister instead.")
+def session_register_cmd(remove: bool) -> None:
+    """Hook entry point: record (or drop) this Claude Code session.
+
+    Reads the hook's JSON from stdin. Silent unless other sessions are
+    active, and never fails the hook.
+    """
+    import json as _json
+
+    from cp_engine.capture_session import find_tenant_root
+    from cp_engine.sessions import hook_register, hook_unregister, others_line
+
+    try:
+        payload = _json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        payload = {}
+    sid = payload.get("session_id")
+    cwd = Path(payload.get("cwd") or Path.cwd())
+    root = find_tenant_root(cwd.resolve())
+    if not sid or root is None:
+        return
+    try:
+        if remove:
+            hook_unregister(root, sid)
+            return
+        hook_register(root, sid)
+        line = others_line(root, committed_only_mine=False)
+    except Exception:  # noqa: BLE001 — a hook must never fail session start
+        return
+    if line:
+        click.echo(
+            f"[cp] {line}. Wrap up with `cxp session commit <code> -m ...` so "
+            "only your files are committed."
+        )
+
+
+# cli.py registers every module-level click.Command as a TOP-level verb; the
+# subcommands above belong to the `session` group only.
+del session_start_cmd, session_end_cmd, session_list_cmd
+del session_commit_cmd, session_register_cmd

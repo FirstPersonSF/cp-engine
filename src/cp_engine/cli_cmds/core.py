@@ -54,8 +54,17 @@ def sync() -> None:
     # deliberate offline sync is legitimate. `cxp render` runs this too.
     _warn_if_behind_upstream(config.root)
 
+    # One sync/render at a time per clone — across all its worktrees (#394).
+    # Two at once both rewrite master-cp.md, the sprint READMEs and
+    # paths.json, and both write MC-2.
+    from cp_engine.sessions import LockHeld, tenant_lock
+
     try:
-        result = sync_tenant(config)
+        with tenant_lock(config.root, purpose="cxp sync"):
+            result = sync_tenant(config)
+    except LockHeld as exc:
+        click.echo(f"Sync not run: {exc}", err=True)
+        sys.exit(1)
     except SyncError as exc:
         click.echo(f"Sync failed: {exc}", err=True)
         sys.exit(1)

@@ -335,6 +335,22 @@ lives in that file's header. Real bugs still go to GitHub issues; never
 delete entries. `wrap up` sweeps for unlogged friction;
 `sweep improvements` harvests.
 
+## Running several sessions
+
+One tenant clone, several Claude Code sessions at once: give each its own
+working folder.
+
+1. **Start:** `cxp session start <code>` makes a git worktree beside the
+   tenant on its own branch, and prints the folder. Open Claude Code there.
+2. **Wrap up** as usual. The commit step is `cxp session commit <code> -m
+   ...`: it commits only that workstream's files, merges `origin/main`, runs
+   `merge-check`, and pushes to `main`. Use it in a shared clone too.
+3. **End:** `cxp session end` removes the folder once its work is on
+   `origin/main`.
+
+`cxp session list` shows who is working where. `cxp sync` runs one at a
+time per clone; a second waits briefly, then names the holder.
+
 ## Wrapping up from a hosted session
 
 `/cp-wrapup` is a Claude Code **plugin** skill. It edits `cp.md` directly and

@@ -3,7 +3,7 @@ name: cp-wrapup
 description: Run the per-session `wrap up` ritual in a cp tenant — refresh each touched project's Exec Summary, sweep cross-cutting decisions and open commitments, run spine + word-count checks, then commit and push. Carries a hosted-session branch for sessions that reach the tenant only through the `cp-hosted` MCP server, with no `cxp` and no file access. Use whenever the user says "wrap up", "wrap this up", "let's close out the session", or asks to finalize a cp working session. NOT for closing out a finished engagement — that is `/cp-wrap`.
 ---
 
-# Wrap up a cp session
+# Wrap up a cp working session
 
 The per-session close-out ritual. Everything here is procedure that only
 applies once, at the end of a session — which is why it lives in a skill
@@ -208,33 +208,45 @@ GitHub issues. Never delete entries.
 
 ## 9 — Commit and push
 
-Commit the entire `sprints/<YYYY-W##>/` directory alongside the master
-roll-up and each touched project's `cp.md`. Then push.
+**Commit with `cxp session commit`, never `git add -A`:**
 
-**Stage by path, never `git add -A`.** Another session may be editing in the
-same tree; a whole-tree add commits its half-finished files under your
-message, and `git log` then names the wrong session for them (`53d61fdc`,
-2026-10-01). Stage the touched projects' directories, `sprints/`, and the
-generated roll-ups.
+```bash
+cxp session commit <code> [<code> ...] -m "[session] <code>: <what changed>"
+```
 
-The auto-ingest webhook pushes to the same remote while you work, so the
-push usually needs a merge first: `git fetch`, then `git merge origin/main`
-(not a rebase — `--ours`/`--theirs` swap meaning mid-rebase). `cxp sync`
-warns when the clone is behind its upstream; heed it.
+It commits only this session's files: each named workstream's directory
+(not a nested child workstream's, unless you name the child too), that
+workstream's sprint files under `sprints/<YYYY-W##>/`, and `improvements.md`.
+Add anything else you hand-edited with `--path` (e.g. `--path master-cp.md`
+for a cross-cutting decision). Generated roll-ups are rebuilt by the cron
+sync; do not add them. `--dry-run` lists what would be committed and what
+would be left alone. Another session's edits, even staged ones, stay
+uncommitted: a whole-tree add committed them under your message once, and
+`git log` then named the wrong session for them (`53d61fdc`, 2026-10-01).
 
-**Resolve by region, not by file.** Conflicts **inside** `cp-engine:start` /
-`cp-engine:end` markers resolve as ours — sync regenerates them. **Inspect
-everything else.** Never loop `git checkout --ours` over conflicted files: a
-sprint file is hand-written outside its marked regions, and that is where
-auto-ingest writes its `cp:hash` bullets. A blanket `--ours` on 2026-08-25
-deleted a whole meeting's 20 bullets, and the file still looked right.
+It then pushes the same way from the tenant clone or a session worktree:
+`git fetch`, `git merge origin/main` (never a rebase: `--ours`/`--theirs`
+swap meaning mid-rebase), `cxp merge-check` against `origin/main`, then
+push to `main`. It pushes only when merge-check is clean.
 
-**After any merge, run `cxp merge-check` before committing the
-resolution.** It checks that every `cp:hash` on the remote side survives in
-the working tree. Mid-merge the default `--ref MERGE_HEAD` is right; once
-the merge is committed, pass `--ref origin/main`. Exit 0 means nothing was
-lost. Exit 1 lists each missing bullet with its file: restore it from the
-ref, then run it again. Push only on exit 0.
+It names the other sessions active on this clone, if any, and the files it
+left uncommitted. Tell the user both.
+
+**On a merge conflict** it stops with the merge in progress and lists the
+files. **Resolve by region, not by file.** Conflicts **inside**
+`cp-engine:start` / `cp-engine:end` markers resolve as ours (sync
+regenerates them). **Inspect everything else.** Never loop `git checkout
+--ours` over conflicted files: a sprint file is hand-written outside its
+marked regions, and that is where auto-ingest writes its `cp:hash` bullets.
+A blanket `--ours` on 2026-08-25 deleted a whole meeting's 20 bullets, and
+the file still looked right. Run `cxp merge-check` (default `--ref
+MERGE_HEAD`). Exit 0 means nothing was lost. Exit 1 lists each missing
+bullet with its file: restore it from the ref and run it again. Then
+`git commit --no-edit` and run `cxp session commit` again to push.
+
+**In a session worktree** (from `cxp session start <code>`), finish with
+`cxp session end`. It removes the worktree only once its work is on
+`origin/main`.
 
 ---
 

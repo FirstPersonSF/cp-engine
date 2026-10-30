@@ -122,8 +122,11 @@ def prep_agenda_cmd(
     # the network round-trip isn't acceptable (CI dry-runs, etc.).
     if not no_sync and is_sync_stale(config):
         click.echo("master-cp sync is stale; running cxp sync first…", err=True)
+        from cp_engine.sessions import tenant_lock
+
         try:
-            sync_tenant(config)
+            with tenant_lock(config.root, purpose="cxp prep-agenda sync"):
+                sync_tenant(config)
         except Exception as exc:
             click.echo(f"sync failed (continuing with stale data): {exc}", err=True)
 
