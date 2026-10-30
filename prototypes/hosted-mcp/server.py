@@ -10555,6 +10555,10 @@ def _sweep_row_dict(row: Any) -> dict[str, Any]:
         "ttl": getattr(row, "ttl", None),
         "undated": due is None,
         "source_meeting_id": getattr(row, "source_meeting_id", None),
+        # #366: dates the description names, and whether due_date disagrees
+        # ('undated' | 'mismatch' | None).
+        "text_dates": [d.isoformat() for d in getattr(row, "text_dates", ())],
+        "date_drift": getattr(row, "date_drift", None),
     }
 
 
@@ -10872,10 +10876,16 @@ def commitments_sweep(project_code: str = "", undated_only: bool = False) -> dic
     meeting was tagged. Each entry is `route_commitment`'s argument object
     as-is — `{project_code, key, target_code}`. The flag is a heuristic:
     read the row, then call `route_commitment(**entry)` or leave it.
+
+    `date_drift` (#366) lists rows whose description names a date the row's
+    `due_date` does not carry — `drift: "mismatch"` (the due date moved and
+    the text did not, or the reverse) or `"undated"` (the text names a date,
+    the row has none). Fix with `set_commitment_date`, or edit the text.
     """
     client = user_client()
     from cp_engine.commitments_sweep import (
         canonical_codes,
+        date_drift_rows,
         likely_duplicates,
         suggested_resolutions,
         suggested_routes,
@@ -10937,6 +10947,7 @@ def commitments_sweep(project_code: str = "", undated_only: bool = False) -> dic
         "total": sum(len(v) for v in buckets.values()),
         "likely_duplicates": duplicates,
         "likely_duplicate_pairs": sum(len(v) for v in duplicates.values()),
+        "date_drift": date_drift_rows(result),
         "suggested_actions": {
             **suggested_resolutions(result),
             "route_commitment": routes,

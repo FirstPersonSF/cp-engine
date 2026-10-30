@@ -4,6 +4,24 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## Unreleased
+
+**A date written into a commitment's text is flagged when its due date disagrees.** Patch (no new verb, command or table).
+
+*Date drift in the sweep (#366).* `set_commitment_date` moves a row's
+`due_date`, but a date written into its description stayed behind, so the row
+went on asserting the old date. `cxp commitments-sweep` now prints
+`⚠ DATE IN TEXT` under a row whose description names a calendar date
+(`10/30`, `Oct 30`, `2026-10-30`, `30 October`, padded `10-30`) that its
+`due_date` does not carry, or that has no `due_date` at all. The hosted
+`commitments_sweep` returns the same as `date_drift` (and `text_dates` /
+`date_drift` per row). A flag only: fix the date or the text.
+
+*Meeting ingest keeps dates in date fields.* The engagement, initiative,
+account and sprint-planning prompts gain one rule: a deadline goes in `by` /
+`date` / `expected_by`, never in the item's text, and a date the meeting
+revises is emitted once, with the final date.
+
 ## v0.132.0 — 2026-10-27
 
 **A URL can become a source, and an upload says it isn't one yet.** Minor (new hosted verb).

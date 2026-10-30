@@ -95,3 +95,28 @@ def test_sweep_returns_a_ready_resolve_payload_and_resolves_nothing(server, wire
     done = server.resolve_commitments(**call)
     assert done["resolved"] == 1, done["results"]
     assert closed == ["m1"]
+
+
+def test_sweep_returns_date_drift_rows(server, wired):
+    """#366: a row whose text names a date its due_date does not carry."""
+    wired.store["projects"] = [{"id": CHILD_ID, "code": CHILD}]
+    wired.store["commitments"] = [
+        {"id": "d1", "project_id": CHILD_ID, "status": "open", "source_kind": "meeting_ingest",
+         "description": "Email Janet re: kickoff + first ideas due Oct 30",
+         "created_at": "2026-10-26T12:00:00+00:00", "due_date": None},
+        {"id": "d2", "project_id": CHILD_ID, "status": "open", "source_kind": "meeting_ingest",
+         "description": "Schedule note to Janet (status + 10/30 share date)",
+         "created_at": "2026-10-26T12:00:00+00:00", "due_date": "2026-11-02"},
+        {"id": "d3", "project_id": CHILD_ID, "status": "open", "source_kind": "meeting_ingest",
+         "description": "Treated stills for the landing page",
+         "created_at": "2026-10-26T12:00:00+00:00", "due_date": "2026-10-30"},
+    ]
+    out = server.commitments_sweep()
+    assert "error" not in out, out
+    assert [(d["key"], d["drift"]) for d in out["date_drift"]] == [
+        ("d1", "undated"), ("d2", "mismatch"),
+    ]
+    rows = {r["id"]: r for r in out["buckets"][CHILD]}
+    assert rows["d2"]["text_dates"] == ["2026-10-30"]
+    assert rows["d2"]["date_drift"] == "mismatch"
+    assert rows["d3"]["text_dates"] == [] and rows["d3"]["date_drift"] is None

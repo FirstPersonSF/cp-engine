@@ -382,3 +382,35 @@ def test_generate_plan_appends_action_items_to_existing_record_ask_list(
     texts = [a["text"] for a in record_asks]
     assert "LLM-detected ask from transcript" in texts
     assert "Fathom action item" in texts
+
+
+def test_every_meeting_prompt_keeps_dates_out_of_the_text() -> None:
+    """#366: a date written into an item's text does not move when its
+    due_date does. Every prompt that emits dated items says the date goes
+    in the date field, and that a revised date is emitted once, final."""
+    from cp_engine import plan_from_account_meeting as acct
+    from cp_engine import plan_from_transcript as tr
+
+    for name, template in (
+        ("engagement", tr._PROMPT_TEMPLATE),
+        ("initiative", tr._INITIATIVE_PROMPT_TEMPLATE),
+        ("account", acct._PROMPT_TEMPLATE),
+        ("sprint-planning", acct._SPRINT_PLANNING_PROMPT_TEMPLATE),
+    ):
+        rules = template.split("# Rules")[1].split("# Output format")[0]
+        assert "Dates go in the date field, never in the text" in rules, name
+        assert "FINAL date" in rules, name
+    assert "`expected_by` on `set-client-ask-task`" in tr._PROMPT_TEMPLATE
+    assert "`date` on `set-milestone`" in tr._INITIATIVE_PROMPT_TEMPLATE
+
+
+def test_built_prompt_carries_the_date_rule() -> None:
+    """The rule survives `.format` (no stray braces) in the built prompt."""
+    prompt = _build_prompt(
+        transcript="2026-10-26 - Meeting about ibx-5153\nDrew: hi",
+        project_context="(no context)",
+        project_code="ibx-5153",
+        transcript_path=Path("/tmp/t.txt"),
+        team=("drew",),
+    )
+    assert 'not `text: "Send Janet the first concepts by Oct 30"`' in prompt
