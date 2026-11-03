@@ -33,6 +33,51 @@ def test_successor_inherits_what_its_predecessor_served():
     assert "old" in fixes[0].reason
 
 
+def test_estimate_work_item_targets_are_inherited():
+    """`serves` usually holds estimate item ids, which have no spine row."""
+    fixes = sa.plan(FLOAT, [_edge("supersedes", "new", "old")],
+                    [_row("old", status="superseded", serves=["ef7b-uuid"])])
+    assert fixes[0].serves == ["ef7b-uuid"]
+
+
+def test_read_fetches_the_predecessors_serve_targets():
+    """A dead target must be SEEN to be dropped: _read loads it."""
+    calls = []
+
+    class Q:
+        def __init__(self, name):
+            self.name, self.ids = name, None
+
+        def select(self, *a):
+            return self
+
+        def eq(self, *a):
+            return self
+
+        def limit(self, *a):
+            return self
+
+        def in_(self, col, vals):
+            if col == "est_item_id":
+                self.ids = set(vals)
+                calls.append(self.ids)
+            return self
+
+        def execute(self):
+            if self.name == "spine_relations":
+                data = [_edge("supersedes", "new", "old")]
+            elif self.ids == {"new", "old"}:
+                data = [_row("old", status="superseded", serves=["gone"])]
+            else:
+                data = [_row("gone", archived=True)]
+            return type("R", (), {"data": data})()
+
+    client = type("C", (), {"table": lambda self, n: Q(n)})()
+    rel, sub = sa._read(client, {(P, "new")})
+    assert {"gone"} in calls
+    assert sa.plan(FLOAT, rel, sub) == []
+
+
 def test_successor_takes_predecessors_place_in_the_brief():
     fixes = sa.plan(FLOAT, [_edge("supersedes", "new", "old"),
                             _edge("canon_of", "old", "_authored/inputs-briefing")],
