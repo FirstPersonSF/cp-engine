@@ -4,6 +4,12 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.133.3 — 2026-11-03
+
+**The morning spine fix's inherit rule now fires.** Patch: no new verb, command or MC-2 change.
+
+*Serve targets read before judged (#409).* Rule 1 (a successor inherits its predecessor's `serves`) only loaded spine rows that were edge endpoints, and `serves` usually holds estimate work-item ids with no spine row, so it dropped nearly every target. It now loads the predecessors' serve targets and drops only targets known dead (spine rows, none live).
+
 ## v0.133.2 — 2026-11-03
 
 **The morning health line names only the floating spine elements that need a person, plus Drive names its account.** Patch: no new verb, command or MC-2 change.
