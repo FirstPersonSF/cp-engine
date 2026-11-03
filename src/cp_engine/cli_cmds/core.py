@@ -1029,8 +1029,9 @@ def promote_uphill_cmd(
 def health_cmd(do_post: bool, as_json: bool, scheduled: str | None, channel: str | None) -> None:
     """The daily health line: sync, ingest, webhook, hosted, CI, spine, summaries.
 
-    Architecture plan step 3. Read-only everywhere; prints to stdout unless
-    --post. Exits 1 when any check needs a look, so a workflow run goes red
+    Architecture plan step 3. Read-only unless --post, which first runs the
+    morning spine fix (binds floating elements the spine already answers);
+    prints to stdout unless --post. Exits 1 when any check needs a look, so a workflow run goes red
     on a bad day instead of reading green.
     """
     import json as _json
@@ -1053,7 +1054,9 @@ def health_cmd(do_post: bool, as_json: bool, scheduled: str | None, channel: str
             click.echo(f"not the morning slot ({scheduled!r}); the other slot posts today.")
             sys.exit(0)
     client = get_client(config, required=False)
-    report = daily_health.gather(tenant_root=root, client=client)
+    # --post is the morning run: clear what the spine already answers first
+    # (spine_autofix), so the line names only what needs a person.
+    report = daily_health.gather(tenant_root=root, client=client, fix_spine=do_post)
     if as_json:
         click.echo(_json.dumps(report.to_dict(), indent=2))
     else:

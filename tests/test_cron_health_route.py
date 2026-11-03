@@ -242,3 +242,18 @@ def test_a_rejected_unknown_job_does_not_alert(env):
     cron_router._reject_alerted.clear()
     assert _post({"slot": "23 12 * * *"}, sign=False, job="nope").status_code == 401
     assert alerts == []
+
+
+def test_posting_run_fixes_the_spine_and_a_dry_run_does_not(env):
+    """The morning spine fix rides the posting run only: a dry run never writes."""
+    seen: list = []
+
+    def gather(**kw):
+        seen.append(kw.get("fix_spine"))
+        return daily_health.HealthReport(when=PDT_MORNING,
+                                         checks=[daily_health.Check("Sync", True, "ok")])
+
+    env.mp.setattr(daily_health, "gather", gather)
+    assert _post({"slot": "23 12 * * *", "dry_run": True}).json()["status"] == "dry_run"
+    assert _post({"slot": "23 12 * * *"}).json()["status"] == "posted"
+    assert seen == [False, True]

@@ -428,7 +428,7 @@ def check_webhook(client, now: datetime) -> Check:
                  text, detail)
 
 
-def check_unbound(client) -> Check:
+def check_unbound(client, *, fix: bool = False, today: str | None = None) -> Check:
     """Live spine elements left unbound, and the important-but-floating subset
     (the `spine_lint` finding: important, unbound, serves nothing).
 
@@ -439,7 +439,11 @@ def check_unbound(client) -> Check:
     left out of the warning (2026-10-05). A deliverable is the work others
     serve, so it is never floating (2026-10-06). Floating elements are named
     under the line, project code + `est_item_id`, the first
-    `FLOATING_LISTED` of them; `detail["floating_elements"]` has all (#374)."""
+    `FLOATING_LISTED` of them; `detail["floating_elements"]` has all (#374).
+
+    With `fix`, the morning spine fix (`spine_autofix`) runs first on the
+    floating set and the line names only what it could not clear; what it
+    fixed is in `detail["fixed"]`, never on the line."""
     label = "Spine unbound"
     if client is None:
         return _unreadable(label, _NO_CLIENT, "no client")
@@ -477,6 +481,15 @@ def check_unbound(client) -> Check:
     except Exception:  # noqa: BLE001
         canon = set()
     floating = {k for k in floating_all if k[0] not in closed and k not in canon}
+    fixed: dict = {}
+    if fix and floating:
+        from cp_engine import spine_autofix
+        from cp_engine.clock import tenant_today
+
+        fixed = spine_autofix.run(
+            client, apply=True, today=today or tenant_today().isoformat(),
+            floating=[{"project_id": p, "est_item_id": e} for p, e in sorted(floating, key=str)])
+        floating -= {(f["project_id"], f["est_item_id"]) for f in fixed.get("fixed", [])}
     text = f"{len(elements) - len(people)}"
     if people:
         text += f" · {len(people)} people"
@@ -484,7 +497,13 @@ def check_unbound(client) -> Check:
         text += f" · {len(floating)} floating"
     detail = {"unbound": len(elements), "people": len(people),
               "floating": len(floating),
-              "floating_closed": len(floating_all) - len(floating)}
+              "floating_closed": len(floating_all - floating) - len(fixed.get("fixed", []))}
+    if fixed:
+        detail["fixed"] = fixed.get("fixed", [])
+        if fixed.get("failed"):
+            detail["fix_failed"] = fixed["failed"]
+        if fixed.get("error"):
+            detail["fix_error"] = fixed["error"]
     items: list[str] = []
     if floating:
         # Name them (#374): a count alone sent the reader into this filter by
@@ -661,7 +680,13 @@ class HealthReport:
     def errors(self) -> dict[str, str]:
         """{label: error} for every check carrying one — what the line leaves
         out. Logs, `--json` and the cron run row carry it; Slack does not."""
-        return {c.label: c.detail["error"] for c in self.checks if c.detail.get("error")}
+        out = {c.label: c.detail["error"] for c in self.checks if c.detail.get("error")}
+        for c in self.checks:  # a spine fix that failed: logged, never on the line
+            why = c.detail.get("fix_error") or "; ".join(
+                f"{f['est_item_id']}: {f['error']}" for f in c.detail.get("fix_failed", []))
+            if why:
+                out[f"{c.label} fix"] = why
+        return out
 
     def to_dict(self) -> dict:
         return {"when": self.when.isoformat(), "ok": self.ok,
@@ -692,8 +717,13 @@ def gather(
     hosted_fetch: Callable[[str], dict] = fetch_json,
     hosted_url: str = HOSTED_HEALTH_URL,
     now: datetime | None = None,
+    fix_spine: bool = False,
 ) -> HealthReport:
-    """Run every check. Each check renders its own failure; none raises."""
+    """Run every check. Each check renders its own failure; none raises.
+
+    `fix_spine` runs the morning spine fix before the unbound check, so the
+    line names only the floating elements it could not clear. It WRITES; the
+    posting runs pass it, a plain `cxp health` stays read-only."""
     import cp_engine
     from cp_engine.sprints import current_sprint_week_iso
 
@@ -712,7 +742,7 @@ def gather(
         check_webhook(client, now),
         check_hosted(hosted, hosted_err),
         check_ci(github, now),
-        check_unbound(client),
+        check_unbound(client, fix=fix_spine, today=now.date().isoformat()),
         check_folders(client),
         check_stale_summaries(tenant_root),
         check_copies(hosted, cp_engine.__version__, current_sprint_week_iso(now)),
