@@ -80,6 +80,10 @@ def plan(floating: list[dict], relations: list[dict], substance: list[dict]) -> 
         return next((r for r in by_key.get((pid, eid), [])
                      if r.get("status") == "live" and not r.get("archived")), None)
 
+    def dead(pid, eid) -> bool:
+        rows = by_key.get((pid, eid), [])
+        return bool(rows) and live(pid, eid) is None
+
     def served_by(pid, eid) -> list[str] | None:
         """What an element served: its live row's serves, else the serves its
         versions agree on. None when the versions disagree (ambiguous)."""
@@ -110,8 +114,10 @@ def plan(floating: list[dict], relations: list[dict], substance: list[dict]) -> 
             inherited = served_by(pid, old)
             if inherited is None:
                 continue  # versions disagree: not ours to pick
-            # Only targets that are still live work; a dead target is no bind.
-            alive = [t for t in inherited if live(pid, t) is not None and t != eid]
+            # Drop only targets KNOWN dead (spine rows, none live). `serves`
+            # usually holds estimate work-item ids with no spine row at all;
+            # inheriting the pointer the predecessor already held is no guess.
+            alive = [t for t in inherited if t != eid and not dead(pid, t)]
             if alive:
                 serves += [t for t in alive if t not in serves]
                 reasons.append(f"serves what {old} served")
@@ -146,11 +152,19 @@ def _read(client, floating_keys: set[tuple]) -> tuple[list[dict], list[dict]]:
     touched = {e.get("from_item_id") for e in relations} | {e.get("to_item_id") for e in relations}
     substance: list[dict] = []
     if touched:
-        substance = (client.table(Tables.SPINE_SUBSTANCE)
-                     .select("project_id, est_item_id, status, archived, serves, layer")
-                     .in_("project_id", pids).in_("est_item_id", sorted(touched))
-                     .limit(5000).execute().data or [])
+        substance = _rows(client, pids, touched)
+        # The predecessors' serve targets too: whether each is still live.
+        targets = {t for r in substance for t in (r.get("serves") or [])} - touched
+        if targets:
+            substance += _rows(client, pids, targets)
     return relations, substance
+
+
+def _rows(client, pids: list, ids: set) -> list[dict]:
+    return (client.table(Tables.SPINE_SUBSTANCE)
+            .select("project_id, est_item_id, status, archived, serves, layer")
+            .in_("project_id", pids).in_("est_item_id", sorted(ids))
+            .limit(5000).execute().data or [])
 
 
 def _apply(client, fix: Fix, *, today: str) -> str | None:
