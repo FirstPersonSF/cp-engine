@@ -172,7 +172,10 @@ def _job_health(payload: dict) -> tuple[int, dict]:
                     warnings.append(f"idempotency unverified: {why}")
 
             client = mc2_db.get_client(config, required=False)
-            report = daily_health.gather(tenant_root=root, client=client)
+            # The posting run clears what the spine already answers first, so
+            # the line names only what needs a person; a dry run never writes.
+            report = daily_health.gather(tenant_root=root, client=client,
+                                         fix_spine=not dry_run)
             lines = report.render()
             # What the line leaves out (UI rule 1): logs + body + run row.
             check_errors = report.errors()
