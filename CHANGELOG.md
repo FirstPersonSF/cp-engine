@@ -4,7 +4,11 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
-## Unreleased
+## v0.133.2 — 2026-11-03
+
+**The morning health line names only the floating spine elements that need a person, plus Drive names its account.** Patch: no new verb, command or MC-2 change.
+
+*Morning spine fix (#408).* The posting health run (the cron job and `cxp health --post`) runs `spine_autofix` before the unbound check. It binds a floating element (important, unbound, serves nothing) only when an edge a person wrote already answers it: a successor (active `supersedes`) inherits its predecessor's live `serves` and its seat in the standing brief, and an active `informs` edge to a live deliverable binds `serves` to it. Nothing is inferred from titles or bodies. Fixes go to the run detail and logs; a failed write keeps the element on the line. Plain `cxp health` and cron dry runs stay read-only.
 
 *Drive names its account.* `cxp folders` opens with `Drive checked as <email>`, and a bound Drive folder Drive cannot see reads `not found: deleted, or not shared with <email>`. A failed `pull_document_comments` Drive read adds `[read as <email>; is the file shared with it?]`. On 2026-10-30 the webhook, hosted MCP and a laptop all read Drive as an account no project folder was shared with, and every symptom looked like a missing file. New `folder_rules.drive_account(conn)` reads the credential's email (no network), else asks Drive, and never raises.
 
