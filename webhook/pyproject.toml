@@ -13,7 +13,7 @@ dependencies = [
     # ./webhook` fails loudly instead of silently resolving elsewhere.
     # scripts/release.py bumps this line alongside the other version mirrors.
     "cp-engine==0.133.3",
-    "supabase>=2.0",
+    "supabase>=2.0,<2.34",
     "anthropic>=0.40",
     # Error alerting (arch-phase-3, issue #28). Init is env-gated on
     # SENTRY_DSN; the package is only imported when the DSN is set.
