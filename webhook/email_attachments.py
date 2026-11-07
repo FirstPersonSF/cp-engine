@@ -166,6 +166,25 @@ def attachment_names(payload: dict) -> list[str]:
     return out
 
 
+def attachment_meta(payload: dict) -> list[dict]:
+    """Name, type and size of every attachment the payload carries or the
+    Worker left out — what the unrouted holding pen keeps (#415). Never the
+    content. Skipped rows carry the Worker's reason."""
+    out: list[dict] = []
+    for item in payload.get("attachments") or []:
+        if isinstance(item, dict):
+            out.append({"filename": safe_filename(item.get("filename")),
+                        "mime_type": str(item.get("mime_type") or ""),
+                        "size": int(item.get("size") or 0)})
+    for item in payload.get("attachments_skipped") or []:
+        if isinstance(item, dict):
+            out.append({"filename": safe_filename(item.get("filename")),
+                        "mime_type": str(item.get("mime_type") or ""),
+                        "size": int(item.get("size") or 0),
+                        "skipped": str(item.get("reason") or "left out by the mail worker")})
+    return out
+
+
 def decode_attachments(payload: dict) -> tuple[list[Attachment], list[dict]]:
     """The payload's attachments as bytes, plus a ``skipped`` row for each one
     left out (by the Worker, or here: bad base64, over a cap)."""

@@ -120,3 +120,27 @@ def test_sweep_returns_date_drift_rows(server, wired):
     assert rows["d2"]["text_dates"] == ["2026-10-30"]
     assert rows["d2"]["date_drift"] == "mismatch"
     assert rows["d3"]["text_dates"] == [] and rows["d3"]["date_drift"] is None
+
+
+def test_sweep_names_an_ask_whose_document_is_already_in_the_store(server, wired):
+    """#415: the ask for the written brief, beside the brief in the store."""
+    from cp_engine.clock import tenant_today
+
+    day = tenant_today().isoformat()
+    wired.store["projects"] = [{"id": CHILD_ID, "code": CHILD}]
+    wired.store["commitments"] = [
+        {"id": "ask-brief", "project_id": CHILD_ID, "status": "open",
+         "source_kind": "meeting_ingest", "created_at": f"{day}T12:00:00+00:00",
+         "description": "Written brief document (from Tara Haney (SAP Concur))"},
+    ]
+    wired.store["rag_assets"] = [
+        {"id": "a1", "project_id": CHILD_ID, "status": "active",
+         "title": "Creative Brief V2.docx", "created_at": f"{day}T09:00:00+00:00"},
+    ]
+    wired.store["unrouted_emails"] = []
+    out = server.commitments_sweep()
+    assert "error" not in out, out
+    (entry,) = out["documents_may_have_arrived"]
+    assert entry["key"] == "ask-brief"
+    assert entry["files"][0]["name"] == "Creative Brief V2.docx"
+    assert out["documents_check_warnings"] == []

@@ -547,6 +547,48 @@ def check_folders(client) -> Check:
     return Check(label, False, f"{len(unbound)} unbound", detail, items)
 
 
+DOCS_LISTED = 10  # sub-lines under "Docs arrived"; the rest are counted
+
+
+def check_documents(client, today=None) -> Check:
+    """Open asks for a document that may already be here (#415).
+
+    The commitments sweep's `document_arrivals` check, tenant-wide: an open
+    ask that names a document (brief, deck, SOW …) beside a source-store
+    file, or an unrouted email's attachment, whose name answers it. Named
+    under the line as `code · ask-id · file`; `detail["arrivals"]` has all.
+    A half that cannot be read (e.g. mc-2 migration 207 not applied) turns
+    the line ⚠️ with `partial` — never a quiet ✅."""
+    label = "Docs arrived"
+    if client is None:
+        return _unreadable(label, _NO_CLIENT, "no client")
+    try:
+        from cp_engine import document_arrivals
+        from cp_engine.commitments_sweep import canonical_codes, sweep
+
+        groups = sweep(client, today=today)
+        try:
+            canonical = canonical_codes(client)
+        except Exception:  # noqa: BLE001 — only the +code alias match degrades
+            canonical = {}
+        found, warnings = document_arrivals.find(
+            client, groups, today=today or tenant_now().date(), canonical=canonical)
+    except Exception as exc:  # noqa: BLE001
+        return _unreadable(label, exc)
+    detail: dict = {"arrivals": found}
+    items = [f"{e['project_code']} · {e['key'][:8]} · {e['files'][0]['name']}"
+             for e in found[:DOCS_LISTED]]
+    if len(found) > DOCS_LISTED:
+        items.append(f"…and {len(found) - DOCS_LISTED} more")
+    if warnings:
+        detail["error"] = _clip("; ".join(warnings))
+        text = f"{len(found)} asks · partial" if found else "partial"
+        return Check(label, False, text, detail, items)
+    if not found:
+        return Check(label, True, "none", detail)
+    return Check(label, False, f"{len(found)} asks", detail, items)
+
+
 def _project_codes(client, ids: set) -> dict:
     """{project_id: code} for `ids`; {} when the read fails."""
     try:
@@ -744,6 +786,7 @@ def gather(
         check_ci(github, now),
         check_unbound(client, fix=fix_spine, today=now.date().isoformat()),
         check_folders(client),
+        check_documents(client, now.date()),
         check_stale_summaries(tenant_root),
         check_copies(hosted, cp_engine.__version__, current_sprint_week_iso(now)),
     ]

@@ -4,6 +4,10 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## Unreleased
+
+- **An open ask for a document now shows the file that may already answer it (#415).** `commitments_sweep` (hosted `documents_may_have_arrived`, CLI `📎` lines) and a new `Docs arrived` health line match open asks naming a document against source-store files and against attachments on unrouted emails, whose names the webhook now keeps in `unrouted_emails.attachments` (needs mc-2 migration 207; the webhook falls back to text-only until it is applied) — and `/api/route-email` says which attachments routing cannot file.
+
 ## v0.133.3 — 2026-11-03
 
 **The morning spine fix's inherit rule now fires.** Patch: no new verb, command or MC-2 change.

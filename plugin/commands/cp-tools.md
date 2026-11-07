@@ -371,6 +371,12 @@ hash recipe everywhere: `cp_engine.asks.ask_hash(<co>-<number>,
   matched on a shared noun phrase, not wording — one task restated across
   meetings and a sprint import; it is never in `suggested_actions`, so close
   the redundant row yourself by its short id.
+  `commitments_sweep`'s `documents_may_have_arrived` (#415) puts an open ask
+  that names a document (brief, deck, SOW …) beside a file that may answer
+  it: one in the source store, or an attachment on an email still in the
+  unrouted queue from the person the ask names (that one is NOT in the
+  store — forward the original to `cp+<code>@`). Open the file; if it is
+  the thing asked for, resolve the ask. cp sees only mail sent to it.
 - `list_commitments(project_code, status?)` — the read side (`status` ∈
   `open | done | dropped | routed | expired | all`). Use at wrap up to reconcile promised vs.
   delivered; `date_status` shows ratification, `source_kind` shows origin.

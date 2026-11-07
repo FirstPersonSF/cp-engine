@@ -621,6 +621,8 @@ def commitments_sweep_cmd(
     rows the ingest flagged `[off-project? → <code>]` come with a ready
     `route_commitment(...)` line (#358). A row whose text names a date
     its due date does not carry is flagged `⚠ DATE IN TEXT` (#366).
+    An open ask for a document that a source-store file or an unrouted
+    email's attachment may already answer is listed under `📎` (#415).
     `--misfiled` scores the unflagged rows too — it reads MC-2 and the
     tree and writes nothing.
     """
@@ -660,6 +662,17 @@ def commitments_sweep_cmd(
         index = build_routing_index(list_active_all(config), client=client, tenant_root=config.root)
         report = score_open_commitments(index, groups, canonical) if index else []
     click.echo(render_sweep(groups, today=today_d, canonical=canonical, misfiled=report))
+    # #415: open asks for a document a file in the store, or an unrouted
+    # email's attachment, may already answer.
+    from cp_engine import document_arrivals
+
+    found, warnings = document_arrivals.find(
+        client, groups, today=today_d, code=code, canonical=canonical,
+    )
+    lines = document_arrivals.render(found, warnings)
+    if lines:
+        click.echo("")
+        click.echo("\n".join(lines))
 
 
 @click.command("draft-summaries")

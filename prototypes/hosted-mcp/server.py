@@ -10997,8 +10997,22 @@ def commitments_sweep(project_code: str = "", undated_only: bool = False) -> dic
     `due_date` does not carry — `drift: "mismatch"` (the due date moved and
     the text did not, or the reverse) or `"undated"` (the text names a date,
     the row has none). Fix with `set_commitment_date`, or edit the text.
+
+    `documents_may_have_arrived` (#415) lists open asks that name a document
+    (brief, deck, SOW …) beside files that may already answer them: a
+    source-store file whose name shares the document word, arrived from 14
+    days before the ask was logged; or an attachment on an email still in the
+    unrouted queue (sent to the bare cp@ or a bad +code), from the person the
+    ask names. Each entry is `{project_code, key, description, files: [{name,
+    arrived, where: "store"|"unrouted", ref, shared, sender?}]}`. Open the file;
+    if it is the thing asked for, resolve the ask. An unrouted attachment is
+    NOT in the store — forward the original email to cp+<code>@. cp sees
+    only mail sent to it: an attachment that stayed in someone's inbox is
+    invisible here. `documents_check_warnings` names a half that could not
+    be read (it never reads as "nothing arrived").
     """
     client = user_client()
+    from cp_engine import document_arrivals
     from cp_engine.commitments_sweep import (
         canonical_codes,
         date_drift_rows,
@@ -11050,6 +11064,9 @@ def commitments_sweep(project_code: str = "", undated_only: bool = False) -> dic
     except Exception:  # noqa: BLE001 — the self-flag check degrades, routes still list
         canonical = {}
     routes = suggested_routes(result, canonical)
+    arrived, arrived_warnings = document_arrivals.find(
+        client, result, today=tenant_today(), code=code, canonical=canonical,
+    )
     # Audited so `wrap_status` can see the step ran; an unaudited step is
     # one it can only ever report as missing. Success only — an error
     # return means the check did not run.
@@ -11067,6 +11084,8 @@ def commitments_sweep(project_code: str = "", undated_only: bool = False) -> dic
         "likely_duplicates": duplicates,
         "likely_duplicate_pairs": sum(len(v) for v in duplicates.values()),
         "date_drift": date_drift_rows(result),
+        "documents_may_have_arrived": arrived,
+        "documents_check_warnings": arrived_warnings,
         "suggested_actions": {
             **suggested_resolutions(result),
             "route_commitment": routes,
