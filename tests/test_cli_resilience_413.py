@@ -182,3 +182,23 @@ def test_tolerant_load_reports_the_missing_path_and_skips_it(tmp_path):
     assert [name for name, _ in missing] == ["unf-forge", "storyos"]
     assert cfg.projects[0].local_path is None
     assert "unf-forge" not in cfg.local_repos
+
+
+def test_missing_mc2_clone_is_named_as_missing_not_unconfigured(
+    tmp_path, monkeypatch, no_supabase_env
+):
+    clone = tmp_path / "storyos-clone"
+    clone.mkdir()
+    _tenant(tmp_path, storyos_path=clone)
+    gone = tmp_path / "gone" / "mc-2"
+    (tmp_path / ".cp-engine.local.toml").write_text(
+        (tmp_path / ".cp-engine.local.toml").read_text()
+        + f'\n[local-repos]\n"mc-2" = "{gone}"\n'
+    )
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(main, ["commitments-sweep", "cnc-5239"])
+
+    assert result.exit_code == 1
+    assert "no MC-2 clone configured" not in result.stderr
+    assert f"is not on this machine: {gone}" in result.stderr

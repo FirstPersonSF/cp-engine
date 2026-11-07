@@ -51,3 +51,10 @@ def test_pull_spine_element_returns_serves_with_kinds(server, client, monkeypatc
     assert "error" not in out, out
     assert out["serves"] == [WORK_ITEM]
     assert out["serves_kinds"] == {WORK_ITEM: "work_item"}
+
+
+def test_pull_selects_the_serves_column(server):  # noqa: F811
+    """The fake client returns whole rows whatever is selected, so the pull
+    test above cannot see a missing column; production PostgREST can."""
+    cols = {c.strip() for c in server.SPINE_PULL_COLUMNS.split(",")}
+    assert "serves" in cols

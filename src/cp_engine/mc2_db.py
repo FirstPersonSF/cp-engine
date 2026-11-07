@@ -731,7 +731,16 @@ def load_supabase_creds(config: "TenantConfig | None" = None) -> tuple[str, str]
     if env_file:
         tried += f" and {env_file}"
     else:
-        tried += " (no MC-2 clone configured in [local-repos] of .cp-engine.local.toml)"
+        missing_clone = _configured_mc2_clone(config)
+        if missing_clone is not None:
+            # A read-only command loaded config past a missing clone (#413):
+            # the clone IS configured, it is just not on this machine.
+            tried += (
+                f" (the mc-2 clone set in [local-repos] of .cp-engine.local.toml "
+                f"is not on this machine: {missing_clone})"
+            )
+        else:
+            tried += " (no MC-2 clone configured in [local-repos] of .cp-engine.local.toml)"
     raise _backend_unavailable(
         "MC-2 backend requires SUPABASE_URL and SUPABASE_SERVICE_KEY. "
         f"Tried: {tried}. For local dev, copy mc-2/backend/.env.example "
@@ -892,6 +901,21 @@ def _op_read(reference: str) -> str:
             f"`op read` exited {exc.returncode}" + (f" ({said})" if said else "")
         ) from None
     return result.stdout.strip()
+
+
+def _configured_mc2_clone(config: "TenantConfig") -> str | None:
+    """The raw `[local-repos]."mc-2"` path from `.cp-engine.local.toml`, or
+    None. Only consulted when `config.local_repos` has no mc-2 entry — i.e.
+    the entry was dropped because the path does not exist (#413)."""
+    root = getattr(config, "root", None)
+    if root is None:
+        return None
+    try:
+        with (Path(root) / ".cp-engine.local.toml").open("rb") as fh:
+            raw = (tomllib.load(fh).get("local-repos") or {}).get("mc-2")
+    except (OSError, tomllib.TOMLDecodeError, AttributeError):
+        return None
+    return raw if isinstance(raw, str) and raw else None
 
 
 def _mc2_env_file(config: "TenantConfig") -> Path | None:
