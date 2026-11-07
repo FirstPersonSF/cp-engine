@@ -22,6 +22,12 @@ those, so this check would not have seen it; had the email been forwarded
 to cp+sap-5198@, the brief would have been in the store on 10-09 and this
 check would have named it beside the ask the first sweep after 10-16.
 
+ONLY ASKS OWED TO US. A row's ``direction`` must be ``them_to_us``: a file
+can answer what someone owes us, never what we owe ("Finalize the SOW"
+beside our own "SOW v01.docx"). A them-to-us ask that ingest filed under
+another direction is missed — the direction is the row's claim, and this
+check does not second-guess it.
+
 THE MATCH. An ask NAMES a document when its text carries a document word
 (brief, deck, report, SOW …). A file answers it when its name shares that
 word with the ask — "Creative Brief V2.docx" and "Written brief document".
@@ -51,6 +57,10 @@ from cp_engine.commitments_sweep import SweepRow, _content_words, _stem
 from cp_engine.mc2_db import Tables
 
 log = logging.getLogger(__name__)
+
+# The commitment direction this check reads: owed TO us (mig 097 vocabulary:
+# us_to_them | them_to_us | internal).
+THEM_TO_US = "them_to_us"
 
 # A document that arrived up to this long BEFORE the ask was logged still
 # counts — meeting ingest logs the ask at the next call, after the email.
@@ -144,17 +154,31 @@ STORE_COLUMNS = "id, title, created_at, status, project_id"
 UNROUTED_COLUMNS = "id, from_addr, subject, received_at, attempted_code, status, attachments"
 
 
+# PostgREST caps a response at 1000 rows by default; every read here pages
+# past it in a stable order (`id`), so a big store never silently drops files.
+PAGE = 1000
+
+
+def _pages(query_for) -> list[dict]:
+    """All rows of ``query_for()`` (a fresh filtered query each call), read in
+    ``PAGE``-row ranges ordered by ``id`` until a short page."""
+    rows: list[dict] = []
+    start = 0
+    while True:
+        page = query_for().order("id").range(start, start + PAGE - 1).execute().data or []
+        rows.extend(page)
+        if len(page) < PAGE:
+            return rows
+        start += PAGE
+
+
 def read_store(client: Any, project_ids: list[str]) -> list[Arrival]:
     """The projects' source-store files (``rag_assets``), archived dropped."""
     if not project_ids:
         return []
-    rows = (
-        client.table(Tables.RAG_ASSETS)
-        .select(STORE_COLUMNS)
-        .in_("project_id", sorted(set(project_ids)))
-        .execute()
-        .data
-    ) or []
+    ids = sorted(set(project_ids))
+    rows = _pages(lambda: client.table(Tables.RAG_ASSETS).select(STORE_COLUMNS)
+                  .in_("project_id", ids))
     out: list[Arrival] = []
     for r in rows:
         day = _day(r.get("created_at"))
@@ -172,13 +196,8 @@ def read_unrouted(client: Any) -> list[Arrival]:
     Raises when the read fails — including before mc-2 migration 207 adds
     the ``attachments`` column; the caller reports that, it never reads as
     "nothing waiting"."""
-    rows = (
-        client.table(Tables.UNROUTED_EMAILS)
-        .select(UNROUTED_COLUMNS)
-        .eq("status", "unrouted")
-        .execute()
-        .data
-    ) or []
+    rows = _pages(lambda: client.table(Tables.UNROUTED_EMAILS).select(UNROUTED_COLUMNS)
+                  .eq("status", "unrouted"))
     out: list[Arrival] = []
     for r in rows:
         day = _day(r.get("received_at"))
@@ -242,7 +261,9 @@ def arrivals(
         pid = code_ids.get(code)
         mine = [a for a in store if pid and a.project_id == pid]
         for r in rows:
-            if not document_words(r.description):
+            # Only a thing owed TO us can be answered by a file that arrived;
+            # "Finalize the SOW" beside our own "SOW v01.docx" is not an answer.
+            if r.direction != THEM_TO_US or not document_words(r.description):
                 continue
             logged = today - timedelta(days=r.age_days)
             since = logged - timedelta(days=LOOKBACK_DAYS)
@@ -295,7 +316,7 @@ def code_ids_for(client: Any, groups: dict[str, list[SweepRow]],
 
         owner = resolve_commitment_owner(client, code)
         return {code: owner["id"]} if owner else {}
-    rows = client.table(Tables.PROJECTS).select("id, code").execute().data or []
+    rows = _pages(lambda: client.table(Tables.PROJECTS).select("id, code"))
     return {r["code"]: r["id"] for r in rows if r.get("code") and r.get("id")}
 
 

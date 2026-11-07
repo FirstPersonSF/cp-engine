@@ -92,7 +92,7 @@ class _Query:
     def _passthrough(self, *_a, **_k):
         return self
 
-    in_ = ilike = order = limit = neq = is_ = or_ = _passthrough
+    in_ = ilike = order = limit = neq = is_ = or_ = range = _passthrough
 
     def execute(self):
         if self._op == "insert":

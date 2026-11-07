@@ -139,7 +139,8 @@ def _sweep_columns(client: Any) -> str:
     """Owner columns are schema-dependent (see `mc2_db.owner_columns`)."""
     return (
         "id, description, owner_email, owner_name, due_date, date_status, "
-        f"status, source_kind, source_meeting_id, {mc2_db.owner_columns(client)}, created_at"
+        f"status, source_kind, source_meeting_id, {mc2_db.owner_columns(client)}, created_at, "
+        "direction"
     )
 
 # --stale: undated AND at least this old — the "is this still real?" bucket.
@@ -158,6 +159,9 @@ class SweepRow:
     ttl: str | None  # 'warn' | 'expire' | None (14-day TTL, #136)
     source_meeting_id: str | None = None
     text_dates: tuple[date, ...] = ()  # dates the description names (#366)
+    # us_to_them | them_to_us | internal | None (#415: only them_to_us — a
+    # thing owed TO us — can be answered by a file someone sent).
+    direction: str | None = None
 
     @property
     def undated(self) -> bool:
@@ -200,6 +204,7 @@ def _row(c: dict, today: date) -> SweepRow:
         ttl=_ttl_bucket(c, today),
         source_meeting_id=c.get("source_meeting_id"),
         text_dates=text_dates(c.get("description") or "", created or today),
+        direction=c.get("direction"),
     )
 
 

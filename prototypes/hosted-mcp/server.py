@@ -10667,6 +10667,7 @@ def _sweep_row_dict(row: Any) -> dict[str, Any]:
         "ttl": getattr(row, "ttl", None),
         "undated": due is None,
         "source_meeting_id": getattr(row, "source_meeting_id", None),
+        "direction": getattr(row, "direction", None),
         # #366: dates the description names, and whether due_date disagrees
         # ('undated' | 'mismatch' | None).
         "text_dates": [d.isoformat() for d in getattr(row, "text_dates", ())],
@@ -10998,7 +10999,8 @@ def commitments_sweep(project_code: str = "", undated_only: bool = False) -> dic
     the text did not, or the reverse) or `"undated"` (the text names a date,
     the row has none). Fix with `set_commitment_date`, or edit the text.
 
-    `documents_may_have_arrived` (#415) lists open asks that name a document
+    `documents_may_have_arrived` (#415) lists open asks OWED TO US
+    (`direction: them_to_us`) that name a document
     (brief, deck, SOW …) beside files that may already answer them: a
     source-store file whose name shares the document word, arrived from 14
     days before the ask was logged; or an attachment on an email still in the

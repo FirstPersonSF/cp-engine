@@ -131,6 +131,7 @@ def test_sweep_names_an_ask_whose_document_is_already_in_the_store(server, wired
     wired.store["commitments"] = [
         {"id": "ask-brief", "project_id": CHILD_ID, "status": "open",
          "source_kind": "meeting_ingest", "created_at": f"{day}T12:00:00+00:00",
+         "direction": "them_to_us",
          "description": "Written brief document (from Tara Haney (SAP Concur))"},
     ]
     wired.store["rag_assets"] = [
@@ -144,3 +145,4 @@ def test_sweep_names_an_ask_whose_document_is_already_in_the_store(server, wired
     assert entry["key"] == "ask-brief"
     assert entry["files"][0]["name"] == "Creative Brief V2.docx"
     assert out["documents_check_warnings"] == []
+    assert out["buckets"][CHILD][0]["direction"] == "them_to_us"
