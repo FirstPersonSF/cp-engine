@@ -44,18 +44,60 @@ def _key_rejected_line(reason: str) -> str:
     )
 
 
-class _CxpGroup(click.Group):
-    """The `cxp` group: turns a refused Supabase key into one clear line.
+# The cp-hosted verb that does the same job as a `cxp` command, for the
+# commands that have one (#413). Named when this machine cannot reach MC-2, so
+# the person can carry on through the hosted connector instead of stopping.
+HOSTED_FALLBACK = {
+    "commitments-sweep": "commitments_sweep",
+    "spine-lint": "spine_lint",
+    "seal-sweep": "seal_sweep",
+    "preflight": "preflight",
+    "promote-uphill": "promote_uphill",
+    "spine": "list_spine_elements",
+}
 
-    Without this, every command that reads MC-2 died with a long
-    postgrest/pydantic traceback when the key was rejected (2026-10-22:
-    Supabase disabled the legacy anon/service_role keys). Only auth refusals
-    are caught — every other exception propagates exactly as before.
+
+def _backend_unavailable_line(command: str | None, exc: BaseException) -> str:
+    """One line for "this machine can't reach MC-2" (#413).
+
+    Names the cause (the credential error, whitespace-collapsed so a
+    multi-line `op` message stays on one line) and, where one exists, the
+    cp-hosted verb that does the same job without this machine's credentials.
+    """
+    cause = " ".join(str(exc).split()) or type(exc).__name__
+    name = f"cxp {command}" if command else "cxp"
+    line = f"{name}: can't reach Mission Control from this machine — {cause}"
+    verb = HOSTED_FALLBACK.get(command or "")
+    if verb:
+        line += (
+            f" Or ask the session to run `{verb}` on the cp-hosted connector "
+            "instead; it needs no local credentials."
+        )
+    return line
+
+
+class _CxpGroup(click.Group):
+    """The `cxp` group: turns two credential failures into one clear line.
+
+    A refused Supabase key (2026-10-22: Supabase disabled the legacy
+    anon/service_role keys) and an unreachable MC-2 — no credentials, or a
+    locked 1Password (#413) — used to end in a long traceback. Each now
+    prints one line naming the cause (and, for the second, the cp-hosted
+    verb that does the same job) and exits non-zero. Every other exception
+    propagates exactly as before.
     """
 
     def invoke(self, ctx: click.Context):
+        from cp_engine.sync import BackendUnavailable
+
         try:
             return super().invoke(ctx)
+        except BackendUnavailable as exc:
+            print(
+                _backend_unavailable_line(ctx.invoked_subcommand, exc),
+                file=sys.stderr,
+            )
+            sys.exit(1)
         except Exception as exc:
             from cp_engine.mc2_db import supabase_key_rejection
 
@@ -169,6 +211,68 @@ def _load_config_or_die() -> "TenantConfig":  # noqa: F821
         sys.exit(1)
 
 
+def _load_config_for_read(
+    code: str | None = None, *, exit_code: int = 1, error_prefix: str = "Config error"
+):
+    """Load tenant config for a READ-ONLY command; tolerate unrelated clones.
+
+    A configured repo clone that is missing on this machine (say the
+    `storyos` checkout) used to stop every command, including read-only
+    per-project ones that never open a clone (#413). Here it warns once on
+    stderr and carries on — unless the missing clone is the one this command
+    acts on: its code IS `code`, or it is attached to `code`'s workstream (a
+    `_repo-<name>.md` in its working dir). Commands that write keep
+    `_load_config_or_die`, which still fails on any missing path.
+    """
+    missing: list[tuple[str, Path]] = []
+    try:
+        config = load(Path.cwd(), missing_paths=missing)
+    except CommittedConfigMissing:
+        click.echo(
+            "No .cp-engine.toml in this directory. Run `cxp init` "
+            "or cd into the cp tenant root.",
+            err=True,
+        )
+        sys.exit(exit_code)
+    except ConfigError as exc:
+        click.echo(f"{error_prefix}: {exc}", err=True)
+        sys.exit(exit_code)
+    if not missing:
+        return config
+
+    attached: set[str] = set()
+    if code:
+        from cp_engine.spine import SpineDirNotFound, find_spine_dir
+
+        try:
+            workdir = find_spine_dir(config.root, code)
+        except SpineDirNotFound:
+            workdir = None
+        if workdir is not None:
+            attached = {
+                p.name[len("_repo-"):-len(".md")]
+                for p in workdir.glob("_repo-*.md")
+            }
+    seen: set[str] = set()
+    for name, path in missing:
+        if name in seen:
+            continue
+        seen.add(name)
+        if code and (name == code or name in attached):
+            click.echo(
+                f"{error_prefix}: the local clone of {name}, which {code} "
+                f"uses, is not on this machine ({path}). Fix the path in "
+                ".cp-engine.local.toml, or leave it empty to skip it.",
+                err=True,
+            )
+            sys.exit(exit_code)
+        click.echo(
+            f"(note: the local clone of {name} is not at {path}; carrying "
+            "on without it. Fix or empty that path in .cp-engine.local.toml "
+            "to silence this.)",
+            err=True,
+        )
+    return config
 
 
 # ──────────────────────────────────────────────────────────────────────

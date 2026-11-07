@@ -1465,6 +1465,10 @@ def list_spine_elements(
     per-doc source stubs so orientation reads the authored working set;
     "stubs" shows only them; ""/"all" shows everything.
 
+    `serves_count` counts the element's `serves` targets, which mix two id
+    spaces (estimate work-item UUIDs and `_authored/...` spine ids, #416);
+    `pull_spine_element` lists them with `serves_kinds`.
+
     `compact=true` trims each row to the orientation fields — slug, framing,
     layer, binding, important, version_label, plus the scope/canon/
     absorbed_by markers — dropping status, dates and actor. Prefer
@@ -1771,6 +1775,12 @@ def pull_spine_element(
     with `warning: "Superseded by X on <date> — read that first."` plus
     `superseded_by` / `contradicted_by` (#352).
 
+    `serves` is what the element is bound to, in two id spaces (#416): an
+    estimate work-item UUID, or another spine element's `_authored/<slug>`.
+    `serves_kinds` names each (`work_item` / `spine_element` / `unknown`,
+    from the id's shape). A `work_item` id usually has no spine row: look it
+    up in the estimate, not with `pull_spine_element`.
+
     Args:
         element_id: `spine_substance.est_item_id` (e.g. "_authored/janet-dossier")
                     or the row's own `id`. Exact match only on this server —
@@ -1852,6 +1862,8 @@ def pull_spine_element(
         "synced_at": row.get("synced_at"),
         "note": row.get("note"),
         "actor": row.get("actor"),
+        "serves": row.get("serves") or [],
+        **_serves_kinds_field(row),
         "sources": row.get("sources"),
         **_next_version_sources(row),
         "body": row.get("body"),
@@ -3631,6 +3643,18 @@ def _next_version_sources(row: dict[str, Any]) -> dict[str, Any]:
     return {"sources_for_next_version": pending} if pending else {}
 
 
+def _serves_kinds_field(row: dict[str, Any]) -> dict[str, Any]:
+    """#416 — `serves_kinds: {id: kind}` beside `serves`, so a reader knows
+    which id space each target is in without guessing: `work_item` (an
+    estimate work-item UUID) or `spine_element` (an `_authored/...` element;
+    `unknown` for any other shape). Derived from the id's shape — no read, no
+    schema change. Absent when nothing is served."""
+    from cp_engine.substance import serves_kinds
+
+    serves = row.get("serves") or []
+    return {"serves_kinds": serves_kinds(serves)} if serves else {}
+
+
 def _read_live_sources(client, project_id: str, est_item_id: str) -> Any:
     """Re-read the element's LIVE row `sources` after a guarded write.
 
@@ -5303,10 +5327,20 @@ def set_spine_element(
     Args left None are NOT touched: this is a partial update, and it can never
     null a field. `layer` is normalized through the canonical vocabulary, so
     'decision' and 'Decisions' land identically and the spine UI's by-layer
-    filters keep working. `serves` rebinds the element to work-item ids; pass
-    `[]` to unbind, and `binding` follows automatically ('live' when serves is
-    non-empty, 'unbound' when empty) — the same rule the authored-element
-    builders use.
+    filters keep working. `serves` rebinds the element; pass `[]` to unbind,
+    and `binding` follows automatically ('live' when serves is non-empty,
+    'unbound' when empty) — the same rule the authored-element builders use.
+
+    `serves` HOLDS TWO ID SPACES, with no marker in the column (#416):
+      - an estimate work-item UUID (most rows) — a slot in the engagement's
+        estimate. Most have NO spine row; that is normal, not a dead target.
+      - another spine element's `est_item_id`, `_authored/<slug>` — an
+        authored deliverable or activity with no estimate row behind it.
+    Before binding, decide which one you mean: a deliverable that exists both
+    as an estimate line and as an authored element can be bound either way,
+    and the two are different targets. The return echoes `serves_kinds`
+    (`{id: "work_item" | "spine_element" | "unknown"}`, read from the id's
+    shape) so you can check what you bound.
 
     TWO DELIBERATE DIFFERENCES from the stdio verb, both worth knowing before
     you rely on this:
@@ -5345,7 +5379,8 @@ def set_spine_element(
             step carrying both the old and new title, since the old one is
             otherwise gone the moment the write lands; only the disk-mirror
             filename keeps the pre-rename slug.
-        serves: work-item ids to bind to; `[]` unbinds. Routing to a
+        serves: ids to bind to — estimate work-item UUIDs and/or
+            `_authored/<slug>` spine element ids (see above); `[]` unbinds. Routing to a
             deliverable's slot, or to an activity that feeds one, PROPOSES an
             `informs` edge to that deliverable (#174) — returned under
             `feeds_proposed`, awaiting a human confirm; never active. ON A STAKEHOLDER this
@@ -5527,6 +5562,7 @@ def set_spine_element(
         out["framing"] = row.get("framing")
     if serves is not None:
         out["serves"] = row.get("serves")
+        out.update(_serves_kinds_field(row))
         out["binding"] = row.get("binding")
         # #174: routing is the moment a human says where this belongs. When
         # that work item leads to a deliverable, PROPOSE the feeds edge — a

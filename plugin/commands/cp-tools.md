@@ -201,8 +201,8 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
 - `set_spine_element(project_code, key, important?, note?, layer?, framing?, serves?, actor?)` —
   (`element_id` accepted as an alias for `key`)
   partial update of an element's flags and element-level facts: retitle
-  with `framing` (the est_item_id never changes), rebind with `serves` (work-item
-  ids; `[]` unbinds — `binding` follows automatically), re-file with `layer`
+  with `framing` (the est_item_id never changes), rebind with `serves` (`[]`
+  unbinds — `binding` follows automatically), re-file with `layer`
   (e.g. a client input filed as a note: `layer="feedback"`),
   and tag WHO IS SPEAKING with `actor` (partner | client | vendor | inferred —
   the schema half of the v04 authority ordering; list/pull surface it, and a
@@ -214,6 +214,13 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   active edge. Held back when the document arrived after the work (#270), when
   the pair was already asked (a dismissal stays dismissed), or when the target
   card's layer disagrees with its deliverable kind (#177).
+  **`serves` holds two id spaces, unmarked (#416):** an estimate work-item
+  UUID (most rows; usually no spine row behind it, which is normal) or
+  another spine element's `_authored/<slug>` (an authored deliverable or
+  activity, no estimate row). A deliverable can exist as both — decide which
+  you mean before binding. `set_spine_element` and `pull_spine_element`
+  return `serves_kinds: {id: work_item | spine_element | unknown}`, read
+  from the id's shape.
   On an `important` false→true flip the hosted copy also promotes the element's
   source meeting transcript to RAG (delegated to mc-2; reported under
   `promotion`).

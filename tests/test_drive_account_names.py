@@ -88,11 +88,22 @@ def test_audit_names_the_account_and_the_likely_cause():
     assert f"bound fid-1 [not found: deleted, or not shared with {SA}]" in text
 
 
-def test_audit_without_an_account_reads_as_before():
+def test_audit_without_an_account_still_points_at_sharing():
+    """#416: an unknown account must not collapse back to a bare "not found",
+    which reads as a missing folder when it is usually a sharing gap."""
     text = fr.render_audit([_row("not found")])
     assert "Drive checked as" not in text
-    assert "bound fid-1 [not found]" in text
+    assert ("bound fid-1 [not found: deleted, or not shared with the account "
+            "Drive reads as (could not tell which)]") in text
     assert "[exists]" in fr.render_audit([_row("exists")], drive_account=SA)
+
+
+def test_account_from_the_connectors_own_credential():
+    """#416: `GoogleDriveConnector` keeps its credential on `_credentials`; a
+    service whose transport hides it must still name the account offline."""
+    conn = _Conn(_Service(about_error=AssertionError("must not call Drive")))
+    conn._credentials = types.SimpleNamespace(service_account_email=SA)
+    assert fr.drive_account(conn) == SA
 
 
 def _install_connector(monkeypatch, service):
