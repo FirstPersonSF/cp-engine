@@ -414,14 +414,32 @@ def pull_document_comments(project_code: str, doc_title: str) -> dict[str, Any]:
 _NOT_INGESTED = (
     "uploaded — not yet ingested: add_element_source, pull_project_source and "
     "semantic_search cannot see this file until it is. Call push_to_dropbox "
-    "again with ingest=True (overwrite=True), or run Ingest assets on the MC-2 "
-    "project page."
+    "again with the same filename and destination, no content_base64 and "
+    "ingest=True, or run Ingest assets on the MC-2 project page."
 )
 _NOT_INGESTED_LINK = (
-    "not yet ingested — after the upload, run Ingest assets on the MC-2 project "
-    "page (or `cxp ingest-assets <code>`); until then add_element_source cannot "
-    "resolve the file."
+    "not yet ingested — once the POST succeeds, call push_to_dropbox again with "
+    "the same filename, dest_name and dest_path, no content_base64 and "
+    "ingest=True: that queues the ingest of the uploaded file. Until then "
+    "add_element_source cannot resolve it."
 )
+
+
+def _dropbox_file_state(connector, path: str) -> str:
+    """'file', 'folder' or 'missing' for `path`. Any other failure raises."""
+    try:
+        meta = connector.dbx.files_get_metadata(path)
+    except Exception as exc:  # noqa: BLE001
+        if "not_found" in str(exc):
+            return "missing"
+        raise
+    # FileMetadata carries `size`; FolderMetadata does not.
+    return "file" if getattr(meta, "size", None) is not None else "folder"
+
+
+def _ingested_flag(ingest: dict[str, Any] | None) -> str | bool:
+    """The result's `ingested`: "queued" only when a run was queued."""
+    return "queued" if ingest and ingest.get("queued") else False
 
 
 def _queue_ingest(project_code: str, pid: str, folders, dropbox_path: str,
@@ -484,7 +502,9 @@ def push_to_dropbox(
     - **omit it** — returns a temporary (~4h) `upload_url` for the same
       destination, plus the `curl` line to POST the file to it. Use this
       from a shell for anything but a small file: the bytes never pass
-      through the conversation.
+      through the conversation. To ingest it, POST the file, then call
+      again with the same `filename`/`dest_name`/`dest_path`, no content
+      and `ingest=True`.
 
     **`dest_name` DEFAULTS TO `03 Assets/06 Spine/<filename>`** — the
     tenant's home for generated work. Pass a bare name for the project root.
@@ -505,9 +525,14 @@ def push_to_dropbox(
 
     **AN UPLOAD IS NOT AN INGEST.** The file is in Dropbox, not in the source
     store: `add_element_source` and `pull_project_source` cannot see it yet.
-    Pass **`ingest=True`** (with `content_base64`) to queue the ingest of
-    exactly this file — upstream, under your identity — and get a `run_id`;
-    otherwise the result says `ingested: false` and how to get there.
+    Pass **`ingest=True`** to queue the ingest of exactly this file —
+    upstream, under your identity — and get a `run_id`. With
+    `content_base64` it is uploaded, then queued. Without content it
+    queues the file ALREADY at the destination (the second step after an
+    `upload_url` POST); when no file is there yet — or `overwrite=True`
+    asks to replace it — you get the `upload_url` instead, and nothing is
+    queued. The result says `ingested: "queued"` only when a run was
+    queued; otherwise `ingested: false` and how to get there.
 
     A WRITE with the service's Dropbox credentials, so it needs team
     membership and is not served on the read-only endpoint.
@@ -554,6 +579,34 @@ def push_to_dropbox(
         destination = engine.dropbox_destination(connector, folder_id, dest_name, dest_path)
         if isinstance(destination, dict):
             return _fail(destination["error"])
+        missing_note = None
+        if ingest and not overwrite:
+            # The second step of the upload-link path (#410): ingest the
+            # file the caller POSTed. Only a file that is really there.
+            try:
+                state = _dropbox_file_state(connector, destination)
+            except Exception as exc:  # noqa: BLE001
+                return _fail(f"could not check {destination}: {type(exc).__name__}: {exc}")
+            if state == "folder":
+                return _fail(f"{destination} is a folder, not a file — "
+                             "pass the file's own filename")
+            if state == "file":
+                queued = _queue_ingest(
+                    project_code, pid, folders, destination,
+                    _project_root(engine, connector, folder_id, dest_path),
+                )
+                _srv.audit(client, tool, {"project_code": project_code,
+                                          "path": destination, "kind": "ingest_existing",
+                                          "ingest": bool(queued.get("queued"))}, 1)
+                return {
+                    "project_code": project_code,
+                    "dropbox_path": destination,
+                    **({"folder_inherited": inherited} if inherited else {}),
+                    "ingested": _ingested_flag(queued),
+                    "ingest": queued,
+                }
+            missing_note = (f"nothing at {destination} yet, so nothing was queued — "
+                            "POST the file to upload_url first")
         try:
             from dropbox.files import CommitInfo, WriteMode
 
@@ -579,8 +632,10 @@ def push_to_dropbox(
                     "'Content-Type: application/octet-stream' "
                     "--data-binary @<local file>"),
             # The bytes do not exist yet, so nothing can be queued now —
-            # whatever `ingest` said.
+            # whatever `ingest` said. The next step queues it.
             "ingested": False,
+            **({"ingest": {"queued": False, "reason": missing_note}}
+               if missing_note else {}),
             "next": _NOT_INGESTED_LINK,
         }
 
@@ -609,6 +664,7 @@ def push_to_dropbox(
             project_code, pid, folders, result.get("dropbox_path") or "",
             _project_root(engine, connector, folder_id, dest_path),
         )
+        out["ingested"] = _ingested_flag(out["ingest"])
     else:
         out["next"] = _NOT_INGESTED
     _srv.audit(client, tool, {"project_code": project_code,

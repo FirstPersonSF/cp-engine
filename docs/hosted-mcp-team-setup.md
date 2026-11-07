@@ -37,7 +37,8 @@ sync`, and the tenant's SessionStart hook, remove the old `cp-sources`
 entry from `.mcp.json`. The hosted server cannot see your disk: original
 files come back in the result (`content_base64`, or a temporary Dropbox
 `download_url`), and `push_to_dropbox` takes the bytes or hands back an
-`upload_url` to POST the file to.
+`upload_url` to POST the file to (call it again with `ingest=True` and no
+content afterwards to queue the ingest).
 
 ## Requirements (already true for all partners)
 

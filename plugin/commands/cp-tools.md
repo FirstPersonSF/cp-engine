@@ -105,8 +105,13 @@ worked — not as current direction. `Holding` carries its status and no note.
   know where a file goes, ASK. Team members only; writes with the service's
   Dropbox credentials. **An upload is not an ingest** (#350): the file is not
   in the source store, so `add_element_source` cannot resolve it yet. Pass
-  `ingest=true` (with `content_base64`) to queue the ingest of exactly that
-  file and get a `run_id`; without it the result says `ingested: false`.
+  `ingest=true` to queue the ingest of exactly that file and get a `run_id`.
+  With `content_base64` it uploads, then queues. On the `upload_url` path,
+  POST the file, then call again with the same `filename`/`dest_name`/
+  `dest_path`, no content and `ingest=true`: that queues the file already
+  there (if nothing is there yet, you get the `upload_url` back and nothing
+  is queued). The result says `ingested: "queued"` only when a run was
+  queued, else `ingested: false`.
 - `ingest_url(project_code, url, filename?, dest_path?, overwrite?)` — bring a
   web page (or a PDF at a URL) into the source store: fetches it, turns HTML
   into markdown, uploads to `03 Assets/01 Client Assets/` (or `dest_path`) and

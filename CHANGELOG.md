@@ -4,6 +4,10 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## Unreleased
+
+- `push_to_dropbox`: the `upload_url` path can now finish with an ingest — call again with the same path, no content and `ingest=True` to queue the file already in Dropbox; `ingested` reads `"queued"` when a run was queued (#410).
+
 ## v0.133.3 — 2026-11-03
 
 **The morning spine fix's inherit rule now fires.** Patch: no new verb, command or MC-2 change.

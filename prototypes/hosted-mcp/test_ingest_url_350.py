@@ -88,11 +88,23 @@ def env(server, monkeypatch):
     monkeypatch.setenv("DROPBOX_ACCESS_TOKEN", "t")
     import cloud_storage.dropbox_connector as dc
 
+    # `in_dropbox`: path -> "file" | "folder"; anything else is not_found.
+    in_dropbox: dict[str, str] = {}
+
+    def fake_metadata(path):
+        kind = in_dropbox.get(path)
+        if kind is None:
+            raise RuntimeError("ApiError('path', LookupError('not_found'))")
+        return SimpleNamespace(name=path.rsplit("/", 1)[-1],
+                               **({"size": 7} if kind == "file" else {}))
+
     monkeypatch.setattr(dc, "DropboxConnector",
                         lambda: SimpleNamespace(dbx=SimpleNamespace(
                             files_get_temporary_upload_link=lambda commit_info:
-                            SimpleNamespace(link="https://up.invalid/t"))))
+                            SimpleNamespace(link="https://up.invalid/t"),
+                            files_get_metadata=fake_metadata)))
     state = SimpleNamespace(folders=_folders(), pushes=[], hops=[], audit=audit,
+                            in_dropbox=in_dropbox,
                             hop_result={"ok": True, "run_id": "ibx-5153-campaign/r1",
                                         "status": "running"})
     monkeypatch.setattr("cp_engine.asset_ingest.resolve_project_folders_by_id",
@@ -235,6 +247,75 @@ def test_an_upload_link_says_the_file_will_not_be_ingested_by_itself(pt, env):
     out = pt.push_to_dropbox("ibx-5153", "deck.pptx")
     assert out["upload_url"] and "not yet ingested" in out["next"]
     assert env.hops == []
+
+
+def test_push_with_ingest_says_queued(pt, env):
+    """#410: `ingested` tells the truth when a run was queued."""
+    out = pt.push_to_dropbox("ibx-5153", "brief.docx", base64.b64encode(b"B").decode(),
+                             ingest=True)
+    assert out["ingested"] == "queued"
+
+
+# ── push_to_dropbox: the upload-link path can finish with an ingest (#410) ──
+
+DECK = "/Clients/Acme/IBX/03 Assets/06 Spine/deck.pptx"
+
+
+def test_the_upload_link_names_the_call_that_queues_the_ingest(pt, env):
+    out = pt.push_to_dropbox("ibx-5153", "deck.pptx")
+    assert "ingest=True" in out["next"] and "no content_base64" in out["next"]
+
+
+def test_a_second_call_with_ingest_queues_the_uploaded_file(pt, env):
+    first = pt.push_to_dropbox("ibx-5153", "deck.pptx", ingest=True)
+    assert first["upload_url"] and first["ingested"] is False and env.hops == []
+    env.in_dropbox[DECK] = "file"  # the caller POSTed it
+    out = pt.push_to_dropbox("ibx-5153", "deck.pptx", ingest=True)
+    assert "error" not in out, out
+    assert "upload_url" not in out
+    assert out["dropbox_path"] == DECK
+    assert env.hops == [{"code": "ibx-5153-campaign", "mc_project_id": "p1",
+                         "file_ids": [DECK]}]
+    assert out["ingested"] == "queued" and out["ingest"]["run_id"]
+    assert env.pushes == []  # nothing re-uploaded
+    assert env.audit[-1][1]["kind"] == "ingest_existing"
+
+
+def test_ingest_without_a_file_there_says_so_and_queues_nothing(pt, env):
+    out = pt.push_to_dropbox("ibx-5153", "deck.pptx", ingest=True)
+    assert out["ingested"] is False and env.hops == []
+    assert out["ingest"]["queued"] is False
+    assert "nothing at" in out["ingest"]["reason"] and DECK in out["ingest"]["reason"]
+    assert out["upload_url"]
+
+
+def test_overwrite_with_ingest_returns_the_link_not_a_queue(pt, env):
+    env.in_dropbox[DECK] = "file"
+    out = pt.push_to_dropbox("ibx-5153", "deck.pptx", ingest=True, overwrite=True)
+    assert out["upload_url"] and out["ingested"] is False and env.hops == []
+
+
+def test_ingest_of_an_existing_file_keeps_the_reach_guard(pt, env):
+    env.folders = _folders(asset_ingest_folders=("Client Decks",))
+    env.in_dropbox[DECK] = "file"
+    out = pt.push_to_dropbox("ibx-5153", "deck.pptx", ingest=True)
+    assert env.hops == [] and out["ingested"] is False
+    assert "Client Decks" in out["ingest"]["reason"]
+
+
+def test_ingest_of_a_folder_is_refused(pt, env):
+    env.in_dropbox[DECK] = "folder"
+    out = pt.push_to_dropbox("ibx-5153", "deck.pptx", ingest=True)
+    assert "is a folder" in out["error"] and env.hops == []
+
+
+def test_ingest_of_an_existing_file_at_dest_path(pt, env):
+    path = "/Clients/Acme/IBX/02 Drafts/brief.docx"
+    env.in_dropbox[path] = "file"
+    out = pt.push_to_dropbox("ibx-5153", "brief.docx", ingest=True,
+                             dest_path="/Clients/Acme/IBX/02 Drafts")
+    assert out["ingested"] == "queued"
+    assert env.hops[-1]["file_ids"] == [path]
 
 
 # ── the hop ──────────────────────────────────────────────────────────
