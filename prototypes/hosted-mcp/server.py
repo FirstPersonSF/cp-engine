@@ -616,7 +616,7 @@ mcp_server = MCPServer(
         "sequence for a session like this one, which has no `cxp` and no file "
         "editing. Read `master-cp.md` for the project index; get each "
         "project's path from there rather than constructing it.\n\n"
-        "MOST TOOLS READ; 31 OF THEM WRITE. The writers are the `create_*`, `set_*`, "
+        "MOST TOOLS READ; 33 OF THEM WRITE. The writers are the `create_*`, `set_*`, "
         "`add_*`, `remove_*`, `promote_*`, `retire_*`, `resolve_*`, "
         "`route_*`, `rotate_*`, `seal_to_*` and `capture_*` verbs, plus "
         "`log_improvement`, `push_to_dropbox` and `ingest_url` — a name that "
@@ -11427,6 +11427,9 @@ MAIN_ONLY_TOOLS: dict[str, str] = {
     "ingest_url": "Dropbox upload (service credentials) + POST mc-2 -> asset ingest",
     "add_project_link": "Dropbox upload of a link card (service credentials) + POST "
                         "mc-2 -> asset ingest + optional INSERT spine_substance",
+    # #412: the registry and pipeline writers, under the caller's identity
+    "create_vendor": "INSERT vendors",
+    "add_rfp_respondent": "INSERT rfp_respondents",
 }
 
 READ_INSTRUCTIONS = (

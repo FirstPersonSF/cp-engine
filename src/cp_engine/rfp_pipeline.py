@@ -164,6 +164,105 @@ def advance(current: str, new: str) -> tuple[str, str | None]:
 
 
 # ──────────────────────────────────────────────────────────────────────
+#  Row builders for the two writes (#412)
+# ──────────────────────────────────────────────────────────────────────
+#
+# PURE: validation and the row dict, no network. The hosted `create_vendor`
+# and `add_rfp_respondent` verbs insert these under the CALLER's client, so
+# RLS (mig 196: `is_team_member()`) decides whether the write lands, and the
+# validation here runs before anything reaches the database.
+
+
+def _clean(value: str | None) -> str | None:
+    out = (value or "").strip()
+    return out or None
+
+
+def _clean_tags(tags) -> list[str]:
+    """Trimmed, de-duplicated (case-insensitively), order kept."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for t in tags or []:
+        s = str(t or "").strip()
+        if s and s.lower() not in seen:
+            seen.add(s.lower())
+            out.append(s)
+    return out
+
+
+def vendor_row(
+    name: str,
+    *,
+    city: str | None = None,
+    timezone: str | None = None,
+    website: str | None = None,
+    key_person: str | None = None,
+    contact_route: str | None = None,
+    contact_email: str | None = None,
+    email_confidence: str = "unresearched",
+    capability_tags=None,
+    watch_outs: str | None = None,
+    notes: str | None = None,
+) -> dict:
+    """The `vendors` row for a new registry entry, or raise `VendorError`.
+
+    `email_confidence` goes through `validate_email` — an address nobody
+    vouched for is refused here, not stored and flagged. `status` is always
+    `active`: a new entry is never born archived.
+    """
+    clean_name = _clean(name)
+    if not clean_name:
+        raise VendorError("name is required")
+    email, conf = validate_email(contact_email, email_confidence)
+    return {
+        "name": clean_name,
+        "slug": slugify(clean_name),
+        "city": _clean(city),
+        "timezone": _clean(timezone),
+        "website": _clean(website),
+        "key_person": _clean(key_person),
+        "contact_route": _clean(contact_route),
+        "contact_email": email,
+        "email_confidence": conf,
+        "capability_tags": _clean_tags(capability_tags),
+        "watch_outs": _clean(watch_outs),
+        "notes": _clean(notes),
+        "status": "active",
+    }
+
+
+def respondent_row(
+    project_id: str,
+    vendor: dict,
+    *,
+    status: str = "not_sent",
+    response_note: str | None = None,
+    decline_reason: str | None = None,
+) -> dict:
+    """The `rfp_respondents` row inviting a REGISTRY vendor to one project.
+
+    `vendor` is the registry row (`id`, `name`); the name is denormalised
+    from it so the pipeline survives the vendor being archived. A
+    `decline_reason` only means something on a `declined` row — on any
+    other status it is refused rather than stored as a contradiction.
+    """
+    st = validate_status(status)
+    reason = _clean(decline_reason)
+    if reason and st != "declined":
+        raise VendorError(
+            f"decline_reason is for a 'declined' respondent; status is '{st}'"
+        )
+    return {
+        "project_id": project_id,
+        "vendor_id": vendor["id"],
+        "vendor_name": vendor["name"],
+        "status": st,
+        "response_note": _clean(response_note),
+        "decline_reason": reason,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────
 #  Rendering
 # ──────────────────────────────────────────────────────────────────────
 

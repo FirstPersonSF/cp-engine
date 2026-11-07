@@ -61,7 +61,7 @@ spine note that the client confirmed the Q4 date". Under the hood:
 | Project state | `get_project_state` (Exec Summary + current sprint file), `read_project_file` |
 | Search | `semantic_search` (vector search over the ingested corpus) |
 | Sources & meetings | `list_project_sources`, `pull_project_source`, `fetch_project_source` (the original file), `compare_project_sources`, `pull_document_comments`, `push_to_dropbox`, `ingest_url` (a web page into the store, gating flagged), `add_project_link` (a Figma file, Artifact or repo recorded as a source or deliverable, not fetched), `list_project_meetings` |
-| Drafting readiness | `preflight` (run before an RFP/SOW/brief/estimate), `list_vendors`, `list_rfp_respondents` |
+| Drafting readiness | `preflight` (run before an RFP/SOW/brief/estimate), `list_vendors`, `list_rfp_respondents`, `create_vendor` (add a shop to the registry), `add_rfp_respondent` (invite a registry vendor to a project's RFP) |
 | Spine — read | `list_spine_elements`, `pull_spine_element` |
 | Spine — author | `create_spine_element`, `set_spine_element`, `add_spine_version`, `add_spine_document`, `promote_spine_transcript` |
 | Spine — retire | `retire_spine_element`, `retire_spine_elements` |

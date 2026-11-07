@@ -234,3 +234,56 @@ def test_vocabulary_matches_the_migration_check_constraints() -> None:
     assert set(EMAIL_CONFIDENCE) == {
         "confirmed", "likely", "unpublished", "unresearched",
     }
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  #412 — the row builders behind create_vendor / add_rfp_respondent
+# ──────────────────────────────────────────────────────────────────────
+
+from cp_engine.rfp_pipeline import respondent_row, vendor_row  # noqa: E402
+
+
+def test_vendor_row_carries_only_mig_169_columns() -> None:
+    row = vendor_row(" Secret Level ", city="Los Angeles, CA",
+                     capability_tags=["animation", " Animation", "", "VFX"])
+    assert set(row) == {
+        "name", "slug", "city", "timezone", "website", "key_person",
+        "contact_route", "contact_email", "email_confidence",
+        "capability_tags", "watch_outs", "notes", "status",
+    }
+    assert row["name"] == "Secret Level" and row["slug"] == "secret-level"
+    assert row["capability_tags"] == ["animation", "VFX"]
+    assert row["status"] == "active" and row["email_confidence"] == "unresearched"
+    assert row["contact_email"] is None and row["website"] is None
+
+
+def test_vendor_row_refuses_an_unvouched_address() -> None:
+    with pytest.raises(VendorError, match="Refusing to store"):
+        vendor_row("Trilogy", contact_email="jane.doe@trilogy.example")
+    ok = vendor_row("Trilogy", contact_email="hi@trilogy.example",
+                    email_confidence="confirmed")
+    assert ok["contact_email"] == "hi@trilogy.example"
+
+
+def test_vendor_row_requires_a_name() -> None:
+    with pytest.raises(VendorError, match="name is required"):
+        vendor_row("   ")
+
+
+def test_respondent_row_denormalises_the_registry_name() -> None:
+    row = respondent_row("p1", {"id": "v1", "name": "Kristen & David"})
+    assert row == {
+        "project_id": "p1", "vendor_id": "v1", "vendor_name": "Kristen & David",
+        "status": "not_sent", "response_note": None, "decline_reason": None,
+    }
+
+
+def test_respondent_row_refuses_a_decline_reason_off_a_declined_row() -> None:
+    with pytest.raises(VendorError, match="decline_reason"):
+        respondent_row("p1", {"id": "v1", "name": "X"}, status="sent",
+                       decline_reason="busy")
+    row = respondent_row("p1", {"id": "v1", "name": "X"}, status="declined",
+                         decline_reason="busy")
+    assert row["decline_reason"] == "busy"
+    with pytest.raises(VendorError):
+        respondent_row("p1", {"id": "v1", "name": "X"}, status="invited")
