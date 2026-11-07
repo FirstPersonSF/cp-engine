@@ -6,7 +6,7 @@ Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automat
 
 ## Unreleased
 
-- Long audio and video no longer fail ingest at Whisper's 25 MB limit: document-ingest re-encodes, then splits on time and stitches with shifted timestamps (component library pin bumped to `5c8fc83`, #411).
+- Long audio and video no longer fail ingest at Whisper's 25 MB limit: document-ingest re-encodes, then splits on time and stitches with shifted timestamps (component library pin bumped to `3e2eb91`, #411).
 
 ## v0.133.3 — 2026-11-03
 
