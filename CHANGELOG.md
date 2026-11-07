@@ -7,6 +7,7 @@ Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automat
 ## Unreleased
 
 - `push_to_dropbox`: the `upload_url` path can now finish with an ingest — call again with the same path, no content and `ingest=True` to queue the file already in Dropbox; `ingested` reads `"queued"` when a run was queued (#410).
+- Long audio and video no longer fail ingest at Whisper's 25 MB limit: document-ingest re-encodes, then splits on time and stitches with shifted timestamps (component library pin bumped to `3e2eb91`, #411).
 
 ## v0.133.3 — 2026-11-03
 
