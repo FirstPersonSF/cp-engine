@@ -10,6 +10,7 @@ Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automat
 - Long audio and video no longer fail ingest at Whisper's 25 MB limit: document-ingest re-encodes, then splits on time and stitches with shifted timestamps (component library pin bumped to `3e2eb91`, #411).
 - cp-hosted gains `create_vendor` and `add_rfp_respondent` (#412): the vendor registry and RFP pipeline are writable under the caller's identity, with `email_confidence` enforced and duplicates refused; no MC-2 migration needed (mig 196's team-write policies already cover it).
 - Off-project flag on meeting-ingest commitments: names on the tagged company's stakeholder cards now count for it and against a reroute, so one or two other-company names no longer flag a row that names the tagged company's people (#414).
+- **An open ask for a document now shows the file that may already answer it (#415).** `commitments_sweep` (hosted `documents_may_have_arrived`, CLI `📎` lines) and a new `Docs arrived` health line match open asks naming a document against source-store files and against attachments on unrouted emails, whose names the webhook now keeps in `unrouted_emails.attachments` (needs mc-2 migration 207; the webhook falls back to text-only until it is applied) — and `/api/route-email` says which attachments routing cannot file.
 
 ## v0.133.3 — 2026-11-03
 

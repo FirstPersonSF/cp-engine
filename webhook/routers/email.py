@@ -283,11 +283,32 @@ def _record_unrouted(payload: dict, *, reason: str, attempted_code: str | None) 
         "attempted_code": attempted_code,
         "status": "unrouted",
     }
+    # #415: the attachments' NAMES (never their bytes). The holding pen
+    # stores no files, so without this an attachment on an unrouted email
+    # left no trace at all — nothing could say "the brief you are waiting
+    # for came in on this email". Column added by mc-2 migration 207.
+    meta = email_attachments.attachment_meta(payload)
+    if meta:
+        row["attachments"] = meta
+    table = client.table(mc2_db.Tables.UNROUTED_EMAILS)
     try:
-        client.table(mc2_db.Tables.UNROUTED_EMAILS).upsert(row, on_conflict="id").execute()
+        try:
+            table.upsert(row, on_conflict="id").execute()
+        except Exception:  # noqa: BLE001 — retried below without the new column
+            if "attachments" not in row:
+                raise
+            # Migration 207 not applied yet: keep the email, lose only the
+            # names (the pre-#415 behaviour), and say so in the logs.
+            log.warning(
+                "inbound-email: unrouted upsert with attachment names failed — "
+                "retrying without them (is mc-2 migration 207 applied?)",
+                exc_info=True,
+            )
+            row.pop("attachments")
+            client.table(mc2_db.Tables.UNROUTED_EMAILS).upsert(row, on_conflict="id").execute()
         log.info(
-            "inbound-email: recorded unrouted email id=%s reason=%s attempted=%s",
-            row_id, reason, attempted_code,
+            "inbound-email: recorded unrouted email id=%s reason=%s attempted=%s attachments=%d",
+            row_id, reason, attempted_code, len(row.get("attachments") or []),
         )
         return True
     except Exception:  # noqa: BLE001 — best-effort, never fail the request
@@ -534,6 +555,24 @@ async def route_email(request: Request) -> dict:
     }
     strip = email_strip.strip_quoted_history(payload["text"])
 
+    # #415: the holding pen kept the attachments' names, not their bytes, so
+    # routing cannot file them. Read separately (the column arrives with mc-2
+    # migration 207; a missing column must not block routing the text).
+    unfiled: list[str] = []
+    try:
+        att_rows = (
+            client.table(mc2_db.Tables.UNROUTED_EMAILS)
+            .select("attachments")
+            .eq("id", message_id)
+            .execute()
+            .data
+        ) or []
+        for a in (att_rows[0].get("attachments") if att_rows else None) or []:
+            if isinstance(a, dict) and a.get("filename"):
+                unfiled.append(str(a["filename"]))
+    except Exception:  # noqa: BLE001 — names are a courtesy; the route goes ahead
+        log.info("route-email: attachment names unreadable for %s", message_id, exc_info=True)
+
     with git_ops._cloned_tenant() as tenant_root:
         config = load_config(tenant_root)
         try:
@@ -581,6 +620,16 @@ async def route_email(request: Request) -> dict:
         )
 
     result["routed_from"] = "unrouted"
+    if unfiled:
+        result["attachments_not_filed"] = {
+            "names": unfiled,
+            "reason": "an unrouted email keeps attachment names, not files — "
+                      f"forward the original email to cp+{code}@ to file them",
+        }
+        warnings.append(
+            f"{len(unfiled)} attachment(s) not filed: {', '.join(unfiled)} — "
+            f"forward the original email to cp+{code}@"
+        )
     if warnings:
         result["warnings"] = warnings
     result["message_id"] = message_id
