@@ -1150,8 +1150,8 @@ _ACTORS = frozenset({"partner", "client", "vendor", "inferred"})
 # `origin`/`field_states`/`review_flags` carry the #314 machine-derived marker
 # and distill-fidelity flags (SELECT-granted to authenticated; read only here).
 SPINE_PULL_COLUMNS = (
-    SPINE_LIST_COLUMNS + ", body, sources, note, project_code, rel_path, "
-    "origin, field_states, review_flags"
+    SPINE_LIST_COLUMNS + ", body, sources, serves, note, project_code, "
+    "rel_path, origin, field_states, review_flags"
 )
 COMMITMENT_COLUMNS = (
     "id, description, owner_email, owner_name, direction, due_date, "
@@ -1464,10 +1464,6 @@ def list_spine_elements(
     `tier` is the signal/noise facet (#158): "working"/"authored" drops the
     per-doc source stubs so orientation reads the authored working set;
     "stubs" shows only them; ""/"all" shows everything.
-
-    `serves_count` counts the element's `serves` targets, which mix two id
-    spaces (estimate work-item UUIDs and `_authored/...` spine ids, #416);
-    `pull_spine_element` lists them with `serves_kinds`.
 
     `compact=true` trims each row to the orientation fields — slug, framing,
     layer, binding, important, version_label, plus the scope/canon/
