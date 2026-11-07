@@ -142,6 +142,42 @@ def _as_tuple(value: object) -> tuple:
 AUTHORED_KEY_PREFIX = "_authored/"
 
 
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+# The two id spaces a `serves` entry can hold (#416), told apart by shape only.
+SERVES_WORK_ITEM = "work_item"
+SERVES_SPINE_ELEMENT = "spine_element"
+SERVES_UNKNOWN = "unknown"
+
+
+def serves_kind(target_id: str) -> str:
+    """Which id space one `serves` entry is in, from its shape alone (#416).
+
+    `spine_substance.serves` holds two kinds of id with no marker:
+      - ``work_item`` — a UUID: an estimate work item (a slot in the
+        engagement's phases). Most rows. It may or may not also have a
+        uuid-keyed spine row; no spine row is normal, not a dead target (#409).
+      - ``spine_element`` — ``_authored/<slug>``: another spine element's
+        `est_item_id` (an authored deliverable, activity, brief…), with no
+        estimate row behind it.
+    Anything else is ``unknown``. Pure: no read, so it cannot say whether the
+    target still exists — only which table to look in.
+    """
+    t = str(target_id or "")
+    if t.startswith(AUTHORED_KEY_PREFIX):
+        return SERVES_SPINE_ELEMENT
+    if _UUID_RE.match(t):
+        return SERVES_WORK_ITEM
+    return SERVES_UNKNOWN
+
+
+def serves_kinds(serves) -> dict[str, str]:
+    """`{id: kind}` for every entry of a `serves` list (see `serves_kind`)."""
+    return {str(t): serves_kind(t) for t in (serves or [])}
+
+
 def derive_placement(est_item_id: str) -> str:
     """Where an element renders: ``context`` (the shelf) or ``item`` (a slot).
 

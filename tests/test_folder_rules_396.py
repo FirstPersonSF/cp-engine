@@ -599,7 +599,7 @@ def test_audit_checks_bound_drive_folders(monkeypatch):
     assert checks == {"5101": "exists", "5102": "not found", "5103": "trashed",
                       "5104": "not a folder"}
     text = fr.render_audit(list(rows.values()))
-    assert "bound fid-gone [not found]" in text
+    assert "bound fid-gone [not found: deleted, or not shared with" in text  # #416
 
 
 def test_audit_drive_unchecked_offline_or_on_other_errors():

@@ -1809,6 +1809,7 @@ def _spine_element(row: dict) -> dict:
         "binding": row.get("binding"),
         "status": row.get("status"),
         "serves": row.get("serves") or [],
+        **_serves_kinds_field(row),
         "sources": row.get("sources") or [],
         **_next_version_sources(row),
         "version_label": row.get("version_label"),
@@ -1818,6 +1819,16 @@ def _spine_element(row: dict) -> dict:
         "scope": _row_scope(row),
         **_provenance_fields(row),
     }
+
+
+def _serves_kinds_field(row: dict) -> dict:
+    """#416 — which id space each `serves` entry is in (`work_item` = an
+    estimate work-item UUID, `spine_element` = an `_authored/...` element),
+    from the id's shape. Absent when nothing is served."""
+    from cp_engine.substance import serves_kinds
+
+    serves = row.get("serves") or []
+    return {"serves_kinds": serves_kinds(serves)} if serves else {}
 
 
 def _next_version_sources(row: dict) -> dict:

@@ -631,14 +631,10 @@ def commitments_sweep_cmd(
     if bool(code) == sweep_all:
         click.echo("Error: pass a project CODE or --all (exactly one).", err=True)
         raise SystemExit(2)
-    try:
-        config = load(Path.cwd())
-    except ConfigError as exc:
-        click.echo(f"Error: {exc}", err=True)
-        raise SystemExit(1)
+    config = _cli._load_config_for_read(code, error_prefix="Error")
 
     today_d = today.date() if today else tenant_today()
-    client = mc2_db.get_client(config)
+    client = mc2_db.get_client(config)  # BackendUnavailable → one line (cli._CxpGroup)
     try:
         groups = sweep(
             client,

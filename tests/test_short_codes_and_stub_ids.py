@@ -105,8 +105,9 @@ def test_stub_sweep_dates_uuid_sources_despite_authored_ids(monkeypatch, tmp_pat
         "spine_relations": [],
         "rag_assets": [{"id": U1, "created_at": "2026-07-21T10:00:00+00:00"}],
     })
-    monkeypatch.setattr(cli, "_load_config_or_die",
-                        lambda: SimpleNamespace(root=tmp_path))
+    # stub-sweep is read-only, so it loads config via the tolerant loader (#413).
+    monkeypatch.setattr(cli, "_load_config_for_read",
+                        lambda *_a, **_k: SimpleNamespace(root=tmp_path))
     monkeypatch.setattr(mc2_db, "get_client", lambda _c: client)
     monkeypatch.setattr(spine_cmds, "_resolve_project_id_loud",
                         lambda *_a, **_k: "pid")

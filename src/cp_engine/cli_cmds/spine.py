@@ -62,7 +62,7 @@ def spine_cmd(code: str) -> None:
 
     from cp_engine.spine import render_source_documents, render_sweep
 
-    config = _cli._load_config_or_die()
+    config = _cli._load_config_for_read(code)
     elements, project_dir = _cli._load_spine_elements(config, code)
 
     click.echo(render_sweep(code, elements, today=tenant_today()))
@@ -102,7 +102,7 @@ def where_cmd(code: str) -> None:
     from cp_engine.sync import BackendUnavailable
     from cp_engine.where import build_where_report, fetch_substance_status
 
-    config = _cli._load_config_or_die()
+    config = _cli._load_config_for_read(code)
     try:
         client = mc2_db.get_client(config)
     except BackendUnavailable as exc:
@@ -531,14 +531,13 @@ def spine_lint_cmd(code: str) -> None:
     from cp_engine.spine_lint import lint_cp_placeholders, lint_spine_rows
     from cp_engine.sync import BackendUnavailable
 
-    config = _cli._load_config_or_die()
+    config = _cli._load_config_for_read(code)
     warnings: list[str] = []
 
     try:
         client = mc2_db.get_client(config)
     except BackendUnavailable as exc:
-        click.echo(f"cxp spine-lint needs MC-2 for the spine checks: {exc}",
-                   err=True)
+        click.echo(_cli._backend_unavailable_line("spine-lint", exc), err=True)
         sys.exit(1)
 
     # Accept the same codes the MCP verbs do (#151): resolve the caller's
@@ -673,11 +672,11 @@ def seal_sweep_cmd(
     from cp_engine.spine import SpineDirNotFound, find_spine_dir
     from cp_engine.sync import BackendUnavailable
 
-    config = _cli._load_config_or_die()
+    config = _cli._load_config_for_read(code)
     try:
         client = mc2_db.get_client(config)
     except BackendUnavailable as exc:
-        click.echo(f"cxp seal-sweep needs MC-2: {exc}", err=True)
+        click.echo(_cli._backend_unavailable_line("seal-sweep", exc), err=True)
         sys.exit(1)
 
     # Same dual-spelling resolution as spine-lint (#151): a drifted project
@@ -755,7 +754,7 @@ def stub_sweep_cmd(code: str, verify_target: str | None = None) -> None:
     from cp_engine.stub_sweep import find_stubs, render_sweep
     from cp_engine.sync import BackendUnavailable
 
-    config = _cli._load_config_or_die()
+    config = _cli._load_config_for_read(code)
     try:
         client = mc2_db.get_client(config)
     except BackendUnavailable as exc:
@@ -871,7 +870,7 @@ def feeds_sweep_cmd(code: str) -> None:
     from cp_engine.feeds_propose import fetch_inputs, propose_feeds, render_report
     from cp_engine.sync import BackendUnavailable
 
-    config = _cli._load_config_or_die()
+    config = _cli._load_config_for_read(code)
     try:
         client = mc2_db.get_client(config)
     except BackendUnavailable as exc:
@@ -914,7 +913,7 @@ def exec_lint_cmd(code: str) -> None:
     from cp_engine.exec_summary_lint import lint_exec_summary
     from cp_engine.spine import SpineDirNotFound, find_spine_dir
 
-    config = _cli._load_config_or_die()
+    config = _cli._load_config_for_read(code)
     try:
         cp_md = find_spine_dir(config.root, code) / "cp.md"
         cp_md_text = cp_md.read_text(encoding="utf-8")

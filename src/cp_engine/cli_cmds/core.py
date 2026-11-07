@@ -12,6 +12,8 @@ from pathlib import Path
 
 import click
 
+import cp_engine.cli as _cli
+
 from cp_engine.merge_check import check_merge, commits_behind_upstream
 from cp_engine.config import CommittedConfigMissing, ConfigError, load
 from cp_engine.init import InitAborted, run_init
@@ -265,11 +267,7 @@ def brief_cmd(code: str) -> None:
     )
     from cp_engine.spine import SpineDirNotFound, find_spine_dir
 
-    try:
-        config = load(Path.cwd())
-    except ConfigError as exc:
-        click.echo(f"Error: {exc}", err=True)
-        sys.exit(2)
+    config = _cli._load_config_for_read(code, exit_code=2, error_prefix="Error")
 
     # Offline half: the working dir + cp.md (Facts, trimmed Exec Summary,
     # Last-session line, newest sessions/ capture).
@@ -733,11 +731,7 @@ def preflight_cmd(code: str, artifact_kind: str, weeks: int, as_json: bool) -> N
         )
         sys.exit(2)
 
-    try:
-        config = load(Path.cwd())
-    except ConfigError as exc:
-        click.echo(f"Error: {exc}", err=True)
-        sys.exit(2)
+    config = _cli._load_config_for_read(code, exit_code=2, error_prefix="Error")
 
     cp_md_text: str | None = None
     try:

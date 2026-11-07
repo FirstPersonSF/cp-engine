@@ -632,10 +632,14 @@ def drive_account(conn: Any) -> str | None:
         service = conn.service
     except Exception:  # noqa: BLE001
         return None
-    creds = getattr(getattr(service, "_http", None), "credentials", None)
-    email = getattr(creds, "service_account_email", None)
-    if isinstance(email, str) and "@" in email:
-        return email
+    # The built service's credential first, then the connector's own copy
+    # (`GoogleDriveConnector._credentials`, #416): either names the service
+    # account without a network call. Only the email is read, never a key.
+    for creds in (getattr(getattr(service, "_http", None), "credentials", None),
+                  getattr(conn, "_credentials", None)):
+        email = getattr(creds, "service_account_email", None)
+        if isinstance(email, str) and "@" in email:
+            return email
     try:
         about = service.about().get(fields="user(emailAddress)").execute()
         email = (about.get("user") or {}).get("emailAddress")
@@ -813,8 +817,14 @@ def render_audit(rows: list[AuditRow], *, drive_account: str | None = None) -> s
                 where = f"bound {r.bound[s]}"
                 if r.bound_check[s]:
                     check = r.bound_check[s]
-                    if s == "drive" and check == "not found" and drive_account:
-                        check = f"not found: deleted, or not shared with {drive_account}"
+                    if s == "drive" and check == "not found":
+                        # Drive's 404 covers both; name the account (#416).
+                        check = (
+                            f"not found: deleted, or not shared with {drive_account}"
+                            if drive_account else
+                            "not found: deleted, or not shared with the account "
+                            "Drive reads as (could not tell which)"
+                        )
                     where += f" [{check}]"
             elif r.inherited[s]:
                 where = f"inherited {r.inherited[s]}"

@@ -4,6 +4,13 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## Unreleased
+
+- A locked 1Password (or any missing MC-2 credential) now ends every `cxp` command in one line naming the cause and, for `commitments-sweep`, `spine-lint`, `seal-sweep`, `preflight`, `promote-uphill` and `spine`, the cp-hosted verb that does the same job, instead of a traceback (#413).
+- Read-only per-project commands (`commitments-sweep`, `spine-lint`, `seal-sweep`, `exec-lint`, `feeds-sweep`, `stub-sweep`, `where`, `spine`, `brief`, `preflight`) note a missing, unrelated local clone once on stderr and carry on; they still stop when the clone is the workstream's own, and writers still stop on any missing path (#413).
+- `pull_spine_element` and `set_spine_element` return `serves_kinds` (`work_item` for an estimate UUID, `spine_element` for `_authored/...`), and `/cp-tools` and the verb docstrings document the two id spaces `serves` holds (#416).
+- `cxp folders` says "not shared with the account Drive reads as" even when it cannot read the account's email, and reads it from the connector's own credential first (#416).
+
 ## v0.133.3 — 2026-11-03
 
 **The morning spine fix's inherit rule now fires.** Patch: no new verb, command or MC-2 change.

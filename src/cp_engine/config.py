@@ -260,19 +260,37 @@ COMMITTED_FILENAME = ".cp-engine.toml"
 LOCAL_FILENAME = ".cp-engine.local.toml"
 
 
-def load(tenant_root: Path) -> TenantConfig:
+def load(
+    tenant_root: Path,
+    *,
+    missing_paths: list[tuple[str, Path]] | None = None,
+) -> TenantConfig:
     """Load and merge `.cp-engine.toml` (committed) with `.cp-engine.local.toml`.
 
     Raises one of the `ConfigError` subclasses on any failure. Never returns
     a partial config — silent skipping would defeat the file split's purpose.
+
+    The one opt-out is `missing_paths` (#413), for read-only commands that
+    never touch a configured repo clone: pass a list and a configured local
+    path that does not exist on disk is appended to it as `(name, path)`
+    instead of raising `LocalPathNotFound`. That project then loads with
+    `local_path=None` (as if skipped) and a `[local-repos]` entry is dropped.
+    The caller decides whether the missing path matters (see
+    `cli._load_config_for_read`). Without the list, behaviour is unchanged.
     """
     tenant_root = tenant_root.resolve()
     committed = _load_committed(tenant_root)
-    local = _load_local(tenant_root, committed_has_projects=bool(committed["projects"]))
+    local = _load_local(
+        tenant_root,
+        committed_has_projects=bool(committed["projects"]),
+        missing_paths=missing_paths,
+    )
 
     _enforce_engine_version(committed["engine_version_constraint"])
 
-    projects = _merge_projects(committed["projects"], local["repos"])
+    projects = _merge_projects(
+        committed["projects"], local["repos"], missing_paths=missing_paths
+    )
 
     kwargs: dict = {
         "name": committed["name"],
@@ -639,7 +657,12 @@ def _parse_attention_digest(raw: dict, source: Path) -> AttentionDigestConfig:
     )
 
 
-def _load_local(tenant_root: Path, *, committed_has_projects: bool) -> dict:
+def _load_local(
+    tenant_root: Path,
+    *,
+    committed_has_projects: bool,
+    missing_paths: list[tuple[str, Path]] | None = None,
+) -> dict:
     """Load `.cp-engine.local.toml`.
 
     If the committed config lists no projects, the local file has nothing
@@ -674,12 +697,17 @@ def _load_local(tenant_root: Path, *, committed_has_projects: bool) -> dict:
                 f"{path}: [repos].{code} must be a string path or empty string for skip"
             )
 
-    local_repos = _parse_local_repos(data, path)
+    local_repos = _parse_local_repos(data, path, missing_paths=missing_paths)
 
     return {"repos": repos, "local_repos": local_repos}
 
 
-def _parse_local_repos(data: dict, source: Path) -> dict[str, Path]:
+def _parse_local_repos(
+    data: dict,
+    source: Path,
+    *,
+    missing_paths: list[tuple[str, Path]] | None = None,
+) -> dict[str, Path]:
     """Parse the optional `[local-repos]` table into repo-name → resolved Path.
 
     The section is keyed by GitHub repo name (e.g. "mc-2", "cp-engine") rather
@@ -704,7 +732,10 @@ def _parse_local_repos(data: dict, source: Path) -> dict[str, Path]:
         try:
             resolved_path = expanded.resolve(strict=True)
         except FileNotFoundError as exc:
-            raise LocalPathNotFound(code=repo_name, path=expanded) from exc
+            if missing_paths is None:
+                raise LocalPathNotFound(code=repo_name, path=expanded) from exc
+            missing_paths.append((repo_name, expanded))
+            continue
         resolved[repo_name] = resolved_path
     return resolved
 
@@ -712,6 +743,8 @@ def _parse_local_repos(data: dict, source: Path) -> dict[str, Path]:
 def _merge_projects(
     committed: list[dict],
     local_repos: dict[str, str],
+    *,
+    missing_paths: list[tuple[str, Path]] | None = None,
 ) -> tuple[ProjectConfig, ...]:
     committed_codes = {p["code"] for p in committed}
     local_codes = set(local_repos.keys())
@@ -743,7 +776,10 @@ def _merge_projects(
             try:
                 resolved = expanded.resolve(strict=True)
             except FileNotFoundError as exc:
-                raise LocalPathNotFound(code=code, path=expanded) from exc
+                if missing_paths is None:
+                    raise LocalPathNotFound(code=code, path=expanded) from exc
+                missing_paths.append((code, expanded))
+                resolved = None
             local_path = resolved
 
         merged.append(

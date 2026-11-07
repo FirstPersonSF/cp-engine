@@ -883,6 +883,14 @@ def _op_read(reference: str) -> str:
             f"1Password didn't answer within {OP_READ_TIMEOUT_S}s "
             "(locked, or an unlock prompt is waiting)"
         ) from None
+    except subprocess.CalledProcessError as exc:
+        # `op`'s own complaint ("not currently signed in", "account is
+        # locked") is the cause a person can act on; the default message only
+        # says the command exited 1 (#413). stderr carries no secret.
+        said = next((ln.strip() for ln in (exc.stderr or "").splitlines() if ln.strip()), "")
+        raise RuntimeError(
+            f"`op read` exited {exc.returncode}" + (f" ({said})" if said else "")
+        ) from None
     return result.stdout.strip()
 
 
