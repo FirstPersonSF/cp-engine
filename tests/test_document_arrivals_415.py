@@ -27,11 +27,15 @@ LINK_CARD = "Link · SAP 5198 Creative Brief v01.md"
 TARA = '"Haney, Tara" <tara.haney@sap.com>'
 
 
-def _ask(id_: str, desc: str, created: str = "2026-10-16", owner: str | None = None):
+def _ask(id_: str, desc: str, created: str = "2026-10-16", owner: str | None = None,
+         direction: str = "them_to_us"):
+    """An open ask. Default `them_to_us`: Tara owes us the brief. (The real
+    0f955d7c row was filed `us_to_them` by ingest — see the test below.)"""
     return _row({
         "id": id_, "description": desc, "owner_name": owner, "owner_email": None,
         "due_date": None, "date_status": "proposed", "status": "open",
         "source_kind": "meeting_ingest", "created_at": f"{created}T17:18:06+00:00",
+        "direction": direction,
     }, TODAY)
 
 
@@ -83,6 +87,26 @@ def test_a_file_that_arrived_before_the_ask_was_logged_still_counts():
     assert f["name"] == BRIEF_FILE and f["where"] == "store" and f["shared"] == ["brief"]
 
 
+def test_our_own_ask_beside_our_own_file_does_not_flag():
+    """'Finalize the SOW' is something WE owe; our own ingested 'SOW v01.docx'
+    is our draft, not an answer. Only a them_to_us row is a candidate."""
+    groups = {CODE: [_ask("ours", "Finalize the SOW for the 2027 videos",
+                          direction="us_to_them"),
+                     _ask("internal", "Draft the SOW for review", direction="internal"),
+                     _ask("unset", "Send the SOW", direction=None)]}
+    sow = _store("SAP 5198 SOW v01.docx", "2026-10-17")
+    assert da.arrivals(groups, today=TODAY, store=[sow], unrouted=[],
+                       code_ids={CODE: PID}) == []
+    # The same file DOES answer a them_to_us ask for it.
+    owed = {CODE: [_ask("theirs", "Signed SOW back from procurement")]}
+    assert len(da.arrivals(owed, today=TODAY, store=[sow], unrouted=[],
+                           code_ids={CODE: PID})) == 1
+
+
+def test_the_sweep_row_carries_direction():
+    assert _ask("a", "x", direction="them_to_us").direction == "them_to_us"
+
+
 def test_an_old_file_or_another_projects_file_does_not_count():
     groups = {CODE: [_ask("a", WRITTEN_BRIEF)]}
     old = _store("Old Creative Brief.docx", "2026-08-01")
@@ -125,8 +149,9 @@ def test_names_sender_by_address_or_two_name_words():
 
 
 class _Q:
-    def __init__(self, rows, boom=None):
+    def __init__(self, rows, boom=None, log=None):
         self.rows, self.boom, self.cols = rows, boom, None
+        self.log, self.ordered, self.span = log, None, None
 
     def select(self, cols):
         self.cols = cols
@@ -139,18 +164,47 @@ class _Q:
     def in_(self, *_a):
         return self
 
+    def order(self, col):
+        self.ordered = col
+        return self
+
+    def range(self, start, end):
+        self.span = (start, end)
+        return self
+
     def execute(self):
         if self.boom:
             raise self.boom
-        return SimpleNamespace(data=self.rows)
+        if self.log is not None:
+            self.log.append((self.ordered, self.span))
+        rows = sorted(self.rows, key=lambda r: str(r.get("id"))) if self.ordered else self.rows
+        if self.span:
+            rows = rows[self.span[0]: self.span[1] + 1]
+        return SimpleNamespace(data=rows)
 
 
 class _Client:
     def __init__(self, tables, boom=None):
-        self.tables, self.boom = tables, boom or {}
+        self.tables, self.boom, self.reads = tables, boom or {}, {}
 
     def table(self, name):
-        return _Q(self.tables.get(name, []), self.boom.get(name))
+        return _Q(self.tables.get(name, []), self.boom.get(name),
+                  self.reads.setdefault(name, []))
+
+
+def test_the_store_read_pages_past_the_1000_row_cap():
+    """PostgREST returns at most 1000 rows; prod held 894 rag_assets on
+    2026-11-07. The brief here sorts LAST by id, on the third page."""
+    rows = [{"id": f"a{i:05d}", "title": f"Notes {i}.txt", "status": "active",
+             "created_at": "2026-10-10T00:00:00+00:00", "project_id": PID}
+            for i in range(2100)]
+    rows.append({"id": "z-brief", "title": BRIEF_FILE, "status": "active",
+                 "created_at": "2026-10-09T19:02:00+00:00", "project_id": PID})
+    client = _Client({"rag_assets": rows})
+    got = da.read_store(client, [PID])
+    assert len(got) == 2101 and got[-1].name == BRIEF_FILE
+    assert client.reads["rag_assets"] == [("id", (0, 999)), ("id", (1000, 1999)),
+                                          ("id", (2000, 2999))]
 
 
 def test_find_reads_both_halves_and_names_the_one_it_could_not_read():
