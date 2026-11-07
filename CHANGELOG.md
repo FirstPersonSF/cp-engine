@@ -9,6 +9,7 @@ Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automat
 - `push_to_dropbox`: the `upload_url` path can now finish with an ingest — call again with the same path, no content and `ingest=True` to queue the file already in Dropbox; `ingested` reads `"queued"` when a run was queued (#410).
 - Long audio and video no longer fail ingest at Whisper's 25 MB limit: document-ingest re-encodes, then splits on time and stitches with shifted timestamps (component library pin bumped to `3e2eb91`, #411).
 - cp-hosted gains `create_vendor` and `add_rfp_respondent` (#412): the vendor registry and RFP pipeline are writable under the caller's identity, with `email_confidence` enforced and duplicates refused; no MC-2 migration needed (mig 196's team-write policies already cover it).
+- Off-project flag on meeting-ingest commitments: names on the tagged company's stakeholder cards now count for it and against a reroute, so one or two other-company names no longer flag a row that names the tagged company's people (#414).
 
 ## v0.133.3 — 2026-11-03
 
