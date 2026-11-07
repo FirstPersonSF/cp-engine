@@ -4,18 +4,19 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
-## Unreleased
+## v0.134.0 — 2026-11-07
+
+**Seven fixes from the 11-07 improvements sweep: long video ingests again, vendors are writable, and an open ask shows the file that may answer it.** Minor: new cp-hosted verbs `create_vendor` and `add_rfp_respondent`; one MC-2 migration (207, applied). Reconnect `/mcp` after the deploy.
 
 - `push_to_dropbox`: the `upload_url` path can now finish with an ingest — call again with the same path, no content and `ingest=True` to queue the file already in Dropbox; `ingested` reads `"queued"` when a run was queued (#410).
 - Long audio and video no longer fail ingest at Whisper's 25 MB limit: document-ingest re-encodes, then splits on time and stitches with shifted timestamps (component library pin bumped to `3e2eb91`, #411).
 - cp-hosted gains `create_vendor` and `add_rfp_respondent` (#412): the vendor registry and RFP pipeline are writable under the caller's identity, with `email_confidence` enforced and duplicates refused; no MC-2 migration needed (mig 196's team-write policies already cover it).
 - Off-project flag on meeting-ingest commitments: names on the tagged company's stakeholder cards now count for it and against a reroute, so one or two other-company names no longer flag a row that names the tagged company's people (#414).
-- **An open ask for a document now shows the file that may already answer it (#415).** `commitments_sweep` (hosted `documents_may_have_arrived`, CLI `📎` lines) and a new `Docs arrived` health line match open asks naming a document against source-store files and against attachments on unrouted emails, whose names the webhook now keeps in `unrouted_emails.attachments` (needs mc-2 migration 207; the webhook falls back to text-only until it is applied) — and `/api/route-email` says which attachments routing cannot file.
 - A locked 1Password (or any missing MC-2 credential) now ends every `cxp` command in one line naming the cause and, for `commitments-sweep`, `spine-lint`, `seal-sweep`, `preflight`, `promote-uphill` and `spine`, the cp-hosted verb that does the same job, instead of a traceback (#413).
 - Read-only per-project commands (`commitments-sweep`, `spine-lint`, `seal-sweep`, `exec-lint`, `feeds-sweep`, `stub-sweep`, `where`, `spine`, `brief`, `preflight`) note a missing, unrelated local clone once on stderr and carry on; they still stop when the clone is the workstream's own, and writers still stop on any missing path (#413).
 - `pull_spine_element` and `set_spine_element` return `serves_kinds` (`work_item` for an estimate UUID, `spine_element` for `_authored/...`), and `/cp-tools` and the verb docstrings document the two id spaces `serves` holds (#416).
 - `cxp folders` says "not shared with the account Drive reads as" even when it cannot read the account's email, and reads it from the connector's own credential first (#416).
-- **An open ask for a document now shows the file that may already answer it (#415).** `commitments_sweep` (hosted `documents_may_have_arrived`, CLI `📎` lines) and a new `Docs arrived` health line match open asks owed to us (`direction: them_to_us`) naming a document against source-store files and against attachments on unrouted emails, whose names the webhook now keeps in `unrouted_emails.attachments` (needs mc-2 migration 207; the webhook falls back to text-only until it is applied) — and `/api/route-email` says which attachments routing cannot file.
+- **An open ask for a document now shows the file that may already answer it (#415).** `commitments_sweep` (hosted `documents_may_have_arrived`, CLI `📎` lines) and a new `Docs arrived` health line match open asks owed to us (`direction: them_to_us`) naming a document against source-store files and against attachments on unrouted emails, whose names the webhook now keeps in `unrouted_emails.attachments` (mc-2 migration 207, applied to prod 2026-11-07; the webhook falls back to text-only without it) — and `/api/route-email` says which attachments routing cannot file.
 
 ## v0.133.3 — 2026-11-03
 
