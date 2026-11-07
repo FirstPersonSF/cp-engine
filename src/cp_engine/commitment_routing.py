@@ -36,7 +36,9 @@ outvote two Infoblox ones ("email Janet/Art/Leah/Jaime recap" on ibx-5153):
 Janet and Jaime recur in the tenant-wide sprint-planning record too, so as
 markers they were weak. The tagged company's stakeholder CARDS are now
 evidence of their own: a carded name the item writes as a proper noun
-counts 2 for the tagged company and never for another one, and while the
+counts 2 for the tagged company and never for another one (a first name
+carded at two companies counts for neither, unless the item writes the
+full name), and while the
 item names any, another company must win on more than names — its own
 name, two separate markers, or more of its own carded people than the item
 names of the tagged company's. One name, carded or mis-heard, never moves
@@ -272,7 +274,8 @@ class RoutingIndex:
             raw[code] = frozenset(t for t in toks if t not in drop and len(t) >= 4)
         self._ws_ident = _distinctive(raw)
         self._counts: dict[str, Counter] = {}  # term -> Counter(code -> docs)
-        self._people: dict[str, set[str]] = {}  # code -> carded name tokens
+        # code -> one token set per carded name ("Janet Noe" -> {janet, noe})
+        self._people: dict[str, set[frozenset[str]]] = {}
 
     # ── stakeholders (#414) ───────────────────────────────────────────────
 
@@ -286,19 +289,43 @@ class RoutingIndex:
             return False
         bucket = self._people.setdefault(owner, set())
         for name in names or ():
-            bucket |= {t for t in content_tokens(_fold(name)) if len(t) >= 3}
+            toks = frozenset(t for t in content_tokens(_fold(name)) if len(t) >= 3)
+            if toks:
+                bucket.add(toks)
         return True
 
     def people_of(self, code: str) -> frozenset[str]:
         owner = self.resolve(code)
-        return frozenset(self._people.get(owner, ())) if owner else frozenset()
+        return frozenset().union(*self._people.get(owner, ())) if owner else frozenset()
+
+    def _company_cards(self, cos: Iterable[str]) -> set[frozenset[str]]:
+        cos = set(cos)
+        out: set[frozenset[str]] = set()
+        for c, w in self._ws.items():
+            if w.company in cos:
+                out |= self._people.get(c, set())
+        return out
 
     def _company_people(self, co: str) -> frozenset[str]:
-        out: set[str] = set()
-        for c, w in self._ws.items():
-            if w.company == co:
-                out |= self._people.get(c, set())
-        return frozenset(out)
+        return frozenset().union(*self._company_cards({co}))
+
+    def _own_names(
+        self, co: str, own_cos: set[str], proper: frozenset[str]
+    ) -> tuple[frozenset[str], frozenset[str]]:
+        """(names that are `co`'s, names that are nobody's) among the item's
+        proper terms. A name carded at `co` AND at another company — eleven
+        first names were on 2026-11-07 (Chris, Michelle, Laurie…) — is
+        ambiguous and counts for neither side, unless the item writes a
+        `co` card's full name ("Morgan Lee")."""
+        elsewhere = frozenset().union(
+            *self._company_cards({w.company for w in self._ws.values()} - own_cos)
+        )
+        full: set[str] = set()
+        for card in self._company_cards({co}):
+            if len(card) >= 2 and card <= proper:
+                full |= card
+        mine = proper & self._company_people(co)
+        return frozenset((mine - elsewhere) | full), frozenset((mine & elsewhere) - full)
 
     # ── corpus ────────────────────────────────────────────────────────────
 
@@ -479,19 +506,21 @@ class RoutingIndex:
         # 2 — another company, on company-level STRONG evidence only.
         # The tagged company's carded people the item names (#414): strong
         # for it, and never evidence for anyone else.
-        own_people = {
-            co: frozenset(proper & self._company_people(co)) for co in own_cos
-        }
+        # A name carded both here and at another company counts for neither.
+        split = {co: self._own_names(co, own_cos, proper) for co in own_cos}
+        own_people = {co: mine for co, (mine, _) in split.items()}
         named_here = frozenset().union(*own_people.values()) if own_people else frozenset()
+        shared = frozenset().union(*(s for _, s in split.values())) if split else frozenset()
+        shared -= named_here
         own_best = max(
             (
-                self._company_score(c, terms - own_people[c], minus, own=True)[0]
+                self._company_score(c, terms - own_people[c] - shared, minus, own=True)[0]
                 + OWN_PERSON_WEIGHT * len(own_people[c])
                 for c in own_cos
             ),
             default=0,
         )
-        abroad = terms - named_here
+        abroad = terms - named_here - shared
         co_scores = {
             co: self._company_score(co, abroad, minus, proper=proper)
             for co in {w.company for w in self._ws.values()} - own_cos
