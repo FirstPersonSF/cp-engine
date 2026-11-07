@@ -4,6 +4,10 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## Unreleased
+
+- cp-hosted gains `create_vendor` and `add_rfp_respondent` (#412): the vendor registry and RFP pipeline are writable under the caller's identity, with `email_confidence` enforced and duplicates refused; no MC-2 migration needed (mig 196's team-write policies already cover it).
+
 ## v0.133.3 — 2026-11-03
 
 **The morning spine fix's inherit rule now fires.** Patch: no new verb, command or MC-2 change.

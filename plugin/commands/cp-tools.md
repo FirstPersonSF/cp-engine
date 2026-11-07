@@ -396,6 +396,32 @@ hash recipe everywhere: `cp_engine.asks.ask_hash(<co>-<number>,
 
 Engagements and initiatives can own commitments; standalone repos cannot.
 
+**Vendors & RFP respondents** (MC-2's `vendors` registry — cross-client,
+belongs to no project — and the per-project `rfp_respondents` pipeline;
+team members only). **`email_confidence` is load-bearing:** `confirmed` =
+read off the company's own site, `likely` = two independent sources agree,
+`unpublished` = they publish none, `unresearched` = nobody looked. Never
+synthesise an address from a first.last@ pattern.
+- `list_vendors(capability?, include_archived?)` — the registry, name-ordered;
+  `capability` matches one tag (case-insensitive substring).
+- `list_rfp_respondents(project_code)` — one project's pipeline: counts, rows,
+  watch-outs, and respondents with no confirmed address.
+- `create_vendor(name, city?, timezone?, website?, key_person?, contact_route?, contact_email?, email_confidence?, capability_tags?, watch_outs?, notes?)` —
+  add a shop to the registry under your identity (#412). A `contact_email`
+  is stored only at `confirmed` or `likely`; any other confidence is REFUSED,
+  not downgraded — leave the address empty and put the route in
+  `contact_route`. A name whose slug is already registered (active or
+  archived) is refused with `duplicate_of`. No `project_code`: the registry has
+  no workstream level, so the result's `level` is null.
+- `add_rfp_respondent(project_code, vendor, status?, response_note?, decline_reason?)` —
+  invite a REGISTRY vendor (`vendor` = its name or slug) to the project's RFP
+  (#412). Unregistered or archived vendors are refused — `create_vendor`
+  first. `status` defaults to `not_sent` (ladder: not_sent → sent →
+  acknowledged → responded → shortlisted → selected | declined | passed;
+  `declined` is them saying no, `passed` is us not choosing them);
+  `decline_reason` only with `declined`. A vendor already on the project is
+  refused with `duplicate_of`. Echoes `level`.
+
 **Exec Summary** (the `cp.md` region every index reads):
 - `capture_project_state(project_code, status?, objective?, where_it_stands?, next_up?, blockers?, updates_append?, still_current?)` — replaces only the fields you pass (bulleted ones take a list); `updates_append` adds one dated entry.
   Refuses, writing nothing and naming the field, a placeholder in any field or bullet — `probe`, `test`, `tbd`, `todo`, `x`, punctuation only, any single character (#353) — there is no sandbox, so probe with real text; "OK" and "On hold" pass.

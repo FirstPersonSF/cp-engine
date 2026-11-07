@@ -14,6 +14,8 @@ function — the implementation lives in `cp_engine`, not here:
   preflight                preflight.read_tree_context + read_mc2_titles + run_preflight
   list_vendors             rfp_pipeline.read_vendors
   list_rfp_respondents     rfp_pipeline.read_respondents
+  create_vendor (#412)     rfp_pipeline.vendor_row, then INSERT vendors
+  add_rfp_respondent (#412) rfp_pipeline.respondent_row, then INSERT rfp_respondents
 
 WHAT CHANGED IN THE MOVE. Two things the stdio verbs could assume are not true
 of a server the caller reaches over HTTP:
@@ -49,6 +51,7 @@ import contextlib
 import hashlib
 import os
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -1164,3 +1167,252 @@ def list_rfp_respondents(project_code: str) -> dict[str, Any]:
     _srv.audit(client, tool, {"project_code": project_code},
                len(result["respondents"]))
     return _srv._with_project_status(result, client, pid, project_code)
+
+
+# ── registry + pipeline writes (#412) ─────────────────────────────────
+#
+# Both are plain INSERTs under the CALLER's client: mig 196's
+# `vendors_team_write` / `rfp_respondents_team_write` policies
+# (`is_team_member()`) and mig 169's `authenticated` INSERT grant are the
+# authorization, so the row is attributed to a real person and the server
+# needs no write key. The row itself is built by the engine
+# (`rfp_pipeline.vendor_row` / `respondent_row`), where `email_confidence`
+# is enforced before anything reaches the database. The id is minted here
+# and the insert returns nothing (`returning=minimal`), so no write reads
+# back a whole row.
+
+_VENDOR_LOOKUP_COLUMNS = "id,name,slug,status"
+
+
+def _unique_violation(exc: Exception) -> bool:
+    text = str(exc)
+    return "23505" in text or "duplicate key" in text
+
+
+@hosted_tool
+def create_vendor(
+    name: str,
+    city: str = "",
+    timezone: str = "",
+    website: str = "",
+    key_person: str = "",
+    contact_route: str = "",
+    contact_email: str = "",
+    email_confidence: str = "unresearched",
+    capability_tags: list[str] | None = None,
+    watch_outs: str = "",
+    notes: str = "",
+) -> dict[str, Any]:
+    """Add a shop to the cross-client partner registry, under your identity.
+
+    The registry belongs to no project — a vendor found for one RFP is
+    reusable on every future one — so this takes no `project_code` and has
+    no workstream level. To invite the vendor to a project's RFP, follow
+    with `add_rfp_respondent(project_code, vendor)`.
+
+    **`email_confidence` is load-bearing** (`confirmed` = read off the
+    company's own site; `likely` = two independent sources agree;
+    `unpublished` = they publish none; `unresearched` = nobody has looked).
+    A `contact_email` is stored only as `confirmed` or `likely`; at any other
+    confidence the call is REFUSED, not downgraded. Never synthesise an
+    address from a first.last@ pattern — leave it empty and put the route
+    (a contact form, a person) in `contact_route`. `watch_outs` is what would
+    change the send order ("feature in production may constrain Q4").
+
+    Refuses a duplicate: a name whose slug is already in the registry
+    (active or archived) returns that vendor as `duplicate_of` and inserts
+    nothing. Team members only.
+    """
+    tool = "create_vendor"
+    refused = _team_gate(tool, None)
+    if refused:
+        refused.pop("project_code", None)
+        return refused
+    from cp_engine.rfp_pipeline import VendorError, vendor_row
+
+    client = _srv.user_client()
+
+    def _fail(error: str) -> dict[str, Any]:
+        _srv.audit(client, tool, {"name": name, "result": "error"}, 0)
+        return {"name": name, "error": error}
+
+    try:
+        row = vendor_row(
+            name, city=city, timezone=timezone, website=website,
+            key_person=key_person, contact_route=contact_route,
+            contact_email=contact_email, email_confidence=email_confidence,
+            capability_tags=capability_tags, watch_outs=watch_outs, notes=notes,
+        )
+    except VendorError as exc:
+        return _fail(str(exc))
+
+    try:
+        seen = (
+            client.table("vendors").select(_VENDOR_LOOKUP_COLUMNS)
+            .eq("slug", row["slug"]).limit(1).execute().data or []
+        )
+    except Exception as exc:  # noqa: BLE001 — MCP boundary
+        return _fail(f"vendor lookup failed: {type(exc).__name__}: {str(exc)[:200]}")
+    if seen:
+        dup = seen[0]
+        _srv.audit(client, tool, {"name": row["name"], "slug": row["slug"],
+                                  "duplicate_of": dup.get("id")}, 0)
+        return {
+            "name": row["name"],
+            "error": (
+                f"{dup.get('name')!r} is already in the registry (slug "
+                f"{row['slug']!r}, status {dup.get('status')}); nothing was "
+                "inserted. Use list_vendors to read it"
+                + (" — it is archived" if dup.get("status") == "archived" else "")
+                + "."
+            ),
+            "duplicate_of": {k: dup.get(k) for k in ("id", "name", "slug", "status")},
+        }
+
+    from postgrest.types import ReturnMethod
+
+    row = {"id": str(uuid.uuid4()), **row}
+    try:
+        client.table("vendors").insert(row, returning=ReturnMethod.minimal).execute()
+    except Exception as exc:  # noqa: BLE001 — MCP boundary
+        if _unique_violation(exc):
+            return _fail(f"{row['name']!r} was added to the registry concurrently "
+                         "(slug already taken); nothing was inserted")
+        return _fail(f"insert failed: {type(exc).__name__}: {str(exc)[:400]}")
+
+    _srv.audit(client, tool, {
+        "name": row["name"], "slug": row["slug"],
+        "email_confidence": row["email_confidence"],
+        "has_email": row["contact_email"] is not None,
+        "capability_tags": row["capability_tags"],
+    }, 1)
+    return {
+        "vendor_id": row["id"],
+        "name": row["name"],
+        "slug": row["slug"],
+        "status": row["status"],
+        "city": row["city"],
+        "email_confidence": row["email_confidence"],
+        "contact_email": row["contact_email"],
+        "capability_tags": row["capability_tags"],
+        "watch_outs": row["watch_outs"],
+        "caller": _srv.caller_email() or _srv.caller_subject(),
+        "level": None,
+        "level_note": "the vendor registry is cross-client; a vendor has no workstream",
+        "next": f"add_rfp_respondent(project_code, {row['name']!r}) to invite it to an RFP",
+    }
+
+
+@hosted_tool
+def add_rfp_respondent(
+    project_code: str,
+    vendor: str,
+    status: str = "not_sent",
+    response_note: str = "",
+    decline_reason: str = "",
+) -> dict[str, Any]:
+    """Invite a registry vendor to this project's RFP, under your identity.
+
+    `vendor` is the vendor's name or slug as `list_vendors` shows it; it must
+    already be in the registry (add it with `create_vendor` first), because
+    the contact and `email_confidence` discipline lives on the registry row
+    and an unregistered invite would bypass it. An archived vendor is refused.
+
+    `status` is a step on the ladder (default `not_sent`): not_sent → sent →
+    acknowledged → responded → shortlisted → selected | declined | passed.
+    `declined` is them saying no; `passed` is us not choosing them.
+    `decline_reason` is accepted only with `declined`.
+
+    Refuses a duplicate: a vendor already on this project's pipeline (same
+    registry vendor, or the same name) returns that row as `duplicate_of`
+    and inserts nothing. Team members only.
+    """
+    tool = "add_rfp_respondent"
+    refused = _team_gate(tool, project_code)
+    if refused:
+        return refused
+    from cp_engine.rfp_pipeline import VendorError, respondent_row, slugify
+
+    client = _srv.user_client()
+
+    def _fail(error: str, **extra: Any) -> dict[str, Any]:
+        _srv.audit(client, tool, {"project_code": project_code, "vendor": vendor,
+                                  "result": "error"}, 0)
+        return {"project_code": project_code, "vendor": vendor, "error": error, **extra}
+
+    try:
+        slug = slugify(vendor or "")
+    except VendorError:
+        return _fail("vendor is required — a name or slug from list_vendors")
+
+    resolved = _resolve(client, project_code)
+    if resolved is None:
+        return _not_found(client, tool, project_code)
+    pid, _cid = resolved
+
+    try:
+        found = (
+            client.table("vendors").select(_VENDOR_LOOKUP_COLUMNS)
+            .eq("slug", slug).limit(1).execute().data or []
+        )
+    except Exception as exc:  # noqa: BLE001 — MCP boundary
+        return _fail(f"vendor lookup failed: {type(exc).__name__}: {str(exc)[:200]}")
+    if not found:
+        return _fail(f"no vendor {vendor!r} (slug {slug!r}) in the registry — add it "
+                     "with create_vendor first, or check list_vendors")
+    reg = found[0]
+    if reg.get("status") != "active":
+        return _fail(f"{reg.get('name')!r} is {reg.get('status')} in the registry; "
+                     "an archived vendor is not invited")
+
+    try:
+        row = respondent_row(pid, reg, status=status, response_note=response_note,
+                             decline_reason=decline_reason)
+    except VendorError as exc:
+        return _fail(str(exc))
+
+    try:
+        existing = (
+            client.table("rfp_respondents").select("id,vendor_id,vendor_name,status")
+            .eq("project_id", pid).execute().data or []
+        )
+    except Exception as exc:  # noqa: BLE001 — MCP boundary
+        return _fail(f"respondent lookup failed: {type(exc).__name__}: {str(exc)[:200]}")
+    wanted = row["vendor_name"].strip().lower()
+    dup = next((r for r in existing
+                if r.get("vendor_id") == reg["id"]
+                or (r.get("vendor_name") or "").strip().lower() == wanted), None)
+    if dup is not None:
+        return _fail(
+            f"{dup.get('vendor_name')!r} is already a respondent on {project_code} "
+            f"(status {dup.get('status')}); nothing was inserted",
+            duplicate_of={k: dup.get(k) for k in ("id", "vendor_name", "status")},
+        )
+
+    from postgrest.types import ReturnMethod
+
+    row = {"id": str(uuid.uuid4()), **row}
+    try:
+        client.table("rfp_respondents").insert(
+            row, returning=ReturnMethod.minimal).execute()
+    except Exception as exc:  # noqa: BLE001 — MCP boundary
+        if _unique_violation(exc):
+            return _fail(f"{row['vendor_name']!r} was added to {project_code} "
+                         "concurrently; nothing was inserted")
+        return _fail(f"insert failed: {type(exc).__name__}: {str(exc)[:400]}")
+
+    _srv.audit(client, tool, {"project_code": project_code,
+                              "vendor": row["vendor_name"], "status": row["status"]}, 1)
+    out: dict[str, Any] = {
+        "respondent_id": row["id"],
+        "project_code": project_code,
+        "vendor_id": row["vendor_id"],
+        "vendor_name": row["vendor_name"],
+        "status": row["status"],
+        "caller": _srv.caller_email() or _srv.caller_subject(),
+    }
+    with contextlib.suppress(Exception):  # the level echo never fails the write
+        out["level"] = _srv._level_for(project_code)
+        if out["level"].get("warning"):
+            out.setdefault("warning", out["level"]["warning"])
+    return out
