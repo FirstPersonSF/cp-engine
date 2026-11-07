@@ -31,6 +31,17 @@ The tagged workstream's own vocabulary is the defence against a passing
 mention: "Schedule Canonic demo w/ Craig & Fiona" names Canonic, but Craig
 and Fiona are SAP's, so the SAP job out-scores and keeps it.
 
+**Named stakeholders (#414).** Vocabulary alone let two Salesloft names
+outvote two Infoblox ones ("email Janet/Art/Leah/Jaime recap" on ibx-5153):
+Janet and Jaime recur in the tenant-wide sprint-planning record too, so as
+markers they were weak. The tagged company's stakeholder CARDS are now
+evidence of their own: a carded name the item writes as a proper noun
+counts 2 for the tagged company and never for another one, and while the
+item names any, another company must win on more than names — its own
+name, two separate markers, or more of its own carded people than the item
+names of the tagged company's. One name, carded or mis-heard, never moves
+a row that names the tagged company's people.
+
 Posture is propose-only, as for #88 and #114: the item still lands on the
 tagged workstream with an `[off-project? → <code>]` suffix, and
 `route_commitment` (hosted) is the only path that moves it.
@@ -38,6 +49,7 @@ tagged workstream with an `[off-project? → <code>]` suffix, and
 
 from __future__ import annotations
 
+import logging
 import re
 import unicodedata
 from collections import Counter
@@ -48,6 +60,8 @@ from typing import Any
 
 from cp_engine.ingest_routing import _distinctive, identity_tokens, same_project
 from cp_engine.text_similarity import content_tokens
+
+log = logging.getLogger(__name__)
 
 # The stored flag. `off-project?` is what ingest writes (#114) and what
 # `route_commitment` strips; `cross-project?` is the sprint-file spelling
@@ -83,6 +97,9 @@ OWN_STRONG_SHARE = 0.75
 OWN_STRONG_DOCS = 2  # Latoya: three docs, all Salesloft's
 # The minimum score that moves anything.
 MIN_SCORE = 2
+# A name on one of the tagged company's stakeholder cards (#414) counts as a
+# strong own marker, whatever the record's share of it.
+OWN_PERSON_WEIGHT = 2
 
 # Work verbs and nouns every workstream shares; months and weekdays. They
 # rarely clear SHARE anyway — this keeps a thin corpus from minting them.
@@ -255,6 +272,33 @@ class RoutingIndex:
             raw[code] = frozenset(t for t in toks if t not in drop and len(t) >= 4)
         self._ws_ident = _distinctive(raw)
         self._counts: dict[str, Counter] = {}  # term -> Counter(code -> docs)
+        self._people: dict[str, set[str]] = {}  # code -> carded name tokens
+
+    # ── stakeholders (#414) ───────────────────────────────────────────────
+
+    def add_people(self, code: str, names: Iterable[str]) -> bool:
+        """Record the people on `code`'s stakeholder cards (client and
+        external side; the caller leaves the internal team out — it is on
+        every workstream and names none of them). Each name word is a
+        token: "Janet Noe" adds `janet` and `noe`."""
+        owner = self.resolve(code)
+        if owner is None:
+            return False
+        bucket = self._people.setdefault(owner, set())
+        for name in names or ():
+            bucket |= {t for t in content_tokens(_fold(name)) if len(t) >= 3}
+        return True
+
+    def people_of(self, code: str) -> frozenset[str]:
+        owner = self.resolve(code)
+        return frozenset(self._people.get(owner, ())) if owner else frozenset()
+
+    def _company_people(self, co: str) -> frozenset[str]:
+        out: set[str] = set()
+        for c, w in self._ws.items():
+            if w.company == co:
+                out |= self._people.get(c, set())
+        return frozenset(out)
 
     # ── corpus ────────────────────────────────────────────────────────────
 
@@ -310,17 +354,18 @@ class RoutingIndex:
         minus,
         own: bool = False,
         proper: frozenset[str] = frozenset(),
-    ) -> tuple[int, list[str], bool]:
-        """(score, evidence, strong). STRONG evidence is what may move a row
-        at all: an identity word the record actually owns (a name the whole
-        tenant mentions — Canonic — counts once and is not strong), or a
-        strong marker. Weak markers only add to a score."""
-        score, ev, strong = 0, [], False
+    ) -> tuple[int, list[str], tuple[str, ...]]:
+        """(score, evidence, strong terms). STRONG evidence is what may move
+        a row at all: an identity word the record actually owns (a name the
+        whole tenant mentions — Canonic — counts once and is not strong), or
+        a strong marker. Weak markers only add to a score."""
+        score, ev, strong = 0, [], []
         for t in sorted(terms & ident):
             mine, share = self._share(t, keys, minus)
             owned = not self._counts.get(t) or share >= (OWN_SHARE if own else IDENT_SHARE)
             score += ident_w if owned else 1
-            strong |= owned
+            if owned:
+                strong.append(t)
             ev.append(t)
         for t in sorted(terms - ident):
             w = self._weight(t, keys, minus, own)
@@ -328,13 +373,14 @@ class RoutingIndex:
                 w = 1
             if w:
                 score += w
-                strong |= w == 2
+                if w == 2:
+                    strong.append(t)
                 ev.append(t)
-        return score, ev, strong
+        return score, ev, tuple(strong)
 
     def _company_score(
         self, co: str, terms, minus, own: bool = False, proper=frozenset()
-    ) -> tuple[int, list[str], bool]:
+    ) -> tuple[int, list[str], tuple[str, ...]]:
         keys = {c for c, w in self._ws.items() if w.company == co}
         return self._score(keys, self._co_ident.get(co, frozenset()), 2, terms, minus, own, proper)
 
@@ -346,15 +392,35 @@ class RoutingIndex:
         nums=frozenset(),
         own: bool = False,
         proper=frozenset(),
-    ) -> tuple[int, list[str], bool]:
+    ) -> tuple[int, list[str], tuple[str, ...]]:
         score, ev, strong = self._score(
             {code}, self._ws_ident.get(code, frozenset()), 1, terms, minus, own, proper
         )
         num = _number(code)
         if num and num in nums:  # "Google 5173" names the job
-            score, strong = score + 2, True
+            score, strong = score + 2, (*strong, num)
             ev.append(num)
         return score, ev, strong
+
+    def _outweighs_names(self, co: str, strong: Sequence[str], named_here: frozenset[str]) -> bool:
+        """May `co`'s strong evidence move a row that names the tagged
+        company's people? Always, when it names none of them. Otherwise only
+        on more than names: `co`'s own name or code, two separate non-name
+        markers, or more of `co`'s carded people than the item names of the
+        tagged company's (#414). A lone marker — a carded name, or a
+        mis-heard one that happens to recur in `co`'s record — is not
+        enough."""
+        if not named_here:
+            return True
+        theirs = self._company_people(co)
+        names = [t for t in strong if t in theirs]
+        others = [t for t in strong if t not in theirs]
+        ident = self._co_ident.get(co, frozenset())
+        return (
+            any(t in ident for t in others)
+            or len(others) >= 2
+            or len(names) > len(named_here)
+        )
 
     def _company_target(self, co: str, terms, minus, nums, proper) -> str | None:
         members = [c for c, w in self._ws.items() if w.company == co]
@@ -411,11 +477,23 @@ class RoutingIndex:
         anchor_co = self._ws[anchor].company if anchor else None
 
         # 2 — another company, on company-level STRONG evidence only.
+        # The tagged company's carded people the item names (#414): strong
+        # for it, and never evidence for anyone else.
+        own_people = {
+            co: frozenset(proper & self._company_people(co)) for co in own_cos
+        }
+        named_here = frozenset().union(*own_people.values()) if own_people else frozenset()
         own_best = max(
-            (self._company_score(c, terms, minus, own=True)[0] for c in own_cos), default=0
+            (
+                self._company_score(c, terms - own_people[c], minus, own=True)[0]
+                + OWN_PERSON_WEIGHT * len(own_people[c])
+                for c in own_cos
+            ),
+            default=0,
         )
+        abroad = terms - named_here
         co_scores = {
-            co: self._company_score(co, terms, minus, proper=proper)
+            co: self._company_score(co, abroad, minus, proper=proper)
             for co in {w.company for w in self._ws.values()} - own_cos
         }
         foreign = sorted(
@@ -425,7 +503,12 @@ class RoutingIndex:
         if foreign:
             best_s, best_co = foreign[0]
             unique = len(foreign) == 1 or foreign[1][0] < best_s
-            if best_s >= MIN_SCORE and best_s > own_best and unique:
+            if (
+                best_s >= MIN_SCORE
+                and best_s > own_best
+                and unique
+                and self._outweighs_names(best_co, co_scores[best_co][2], named_here)
+            ):
                 target = self._company_target(best_co, terms, minus, nums, proper)
                 if target:
                     return RouteSuggestion(
@@ -538,15 +621,80 @@ def load_tree_documents(tenant_root: Path, codes: Iterable[str]) -> list[tuple[s
     return [(code, line) for code, key, line in found if len(seen[key]) == 1]
 
 
+def _card_people(card: Any) -> tuple[str, ...]:
+    """The names a client/external person card answers to; () for the
+    internal team and for cards that are not one person."""
+    if not getattr(card, "is_person", False) or getattr(card, "side", "") == "internal":
+        return ()
+    return tuple(getattr(card, "names", ()) or ())
+
+
+def load_stakeholder_people(
+    index: RoutingIndex,
+    roster: Iterable[Any],
+    *,
+    client: Any = None,
+    tenant_root: Path | None = None,
+) -> int:
+    """Teach `index` each workstream's carded people (#414): the generated
+    view on disk (the workstream's and its ancestors' cards) and, with a
+    client, every live Stakeholders card in MC-2. Best-effort and additive
+    — on a read failure the index scores as it did before #414, and the
+    failure is logged. Returns the number of cards applied."""
+    from cp_engine import stakeholders as sh
+
+    applied = 0
+    if tenant_root is not None:
+        try:
+            from cp_engine.plan_from_transcript import _find_project_dir
+
+            for p in roster:
+                code = getattr(p, "code", "") or ""
+                d = _find_project_dir(Path(tenant_root), code)
+                if d is None:
+                    continue
+                for card in sh.cards_from_view(Path(tenant_root), d):
+                    names = _card_people(card)
+                    if names and index.add_people(code, names):
+                        applied += 1
+        except Exception:  # noqa: BLE001 — people are additive
+            log.warning("commitment routing: stakeholder cards on disk unreadable", exc_info=True)
+    if client is not None:
+        try:
+            from cp_engine.asks import canonical_code
+            from cp_engine.mc2_db import Tables
+
+            projects = (
+                client.table(Tables.PROJECTS).select("id, full_job_name").execute().data or []
+            )
+            code_of = {
+                str(r["id"]): canonical_code(r.get("full_job_name"))
+                for r in projects
+                if r.get("id") and r.get("full_job_name")
+            }
+            for card in sh.fetch_cards(client):
+                names = _card_people(card)
+                if not names:
+                    continue
+                code = index.resolve(card.project_code) or code_of.get(str(card.project_id or ""))
+                if code and index.add_people(code, names):
+                    applied += 1
+        except Exception:  # noqa: BLE001 — people are additive
+            log.warning("commitment routing: stakeholder cards in MC-2 unreadable", exc_info=True)
+    return applied
+
+
 def build_routing_index(
     roster: Iterable[Any] | None,
     *,
     client: Any = None,
     tenant_root: Path | None = None,
 ) -> RoutingIndex | None:
-    """Roster + MC-2 commitment rows + (when on disk) the tree's own record.
-    None without a roster. Raises on a read failure — callers that must not
-    fail wrap it."""
+    """Roster + MC-2 commitment rows + (when on disk) the tree's own record,
+    plus each workstream's carded people (#414). None without a roster.
+    Raises on a commitment or tree read failure — callers that must not fail
+    wrap it; a stakeholder-card failure only logs (see
+    `load_stakeholder_people`)."""
     roster = list(roster or [])
     if not roster:
         return None
@@ -557,6 +705,7 @@ def build_routing_index(
     if tenant_root is not None:
         for code, text in load_tree_documents(tenant_root, [p.code for p in roster]):
             index.add_document(code, text)
+    load_stakeholder_people(index, roster, client=client, tenant_root=tenant_root)
     return index
 
 

@@ -4,6 +4,10 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## Unreleased
+
+- Off-project flag on meeting-ingest commitments: names on the tagged company's stakeholder cards now count for it and against a reroute, so one or two other-company names no longer flag a row that names the tagged company's people (#414).
+
 ## v0.133.3 — 2026-11-03
 
 **The morning spine fix's inherit rule now fires.** Patch: no new verb, command or MC-2 change.
