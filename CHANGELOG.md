@@ -4,6 +4,10 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## Unreleased
+
+- Long audio and video no longer fail ingest at Whisper's 25 MB limit: document-ingest re-encodes, then splits on time and stitches with shifted timestamps (component library pin bumped to `5c8fc83`, #411).
+
 ## v0.133.3 — 2026-11-03
 
 **The morning spine fix's inherit rule now fires.** Patch: no new verb, command or MC-2 change.
