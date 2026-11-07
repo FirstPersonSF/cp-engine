@@ -51,7 +51,7 @@ FROM python:3.11-slim
 # git is needed at runtime for the clone-on-each-request strategy.
 # openssh-client provides ssh for the deploy-key auth.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git openssh-client \
+    && apt-get install -y --no-install-recommends git openssh-client ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
