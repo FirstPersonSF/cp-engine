@@ -125,6 +125,13 @@ CARDS = [
     ("sap", None, "Fiona Ashley", "client", ""),
     ("sap", None, "Michelle Craig", "client", ""),
     ("sap", "sap-5174-vision-update-2026", "Jenny Chen", "client", ""),
+    # First names carded at two companies — prod had eleven on 2026-11-07
+    # (Chris x3, Brian, Dan, Jason, Kevin, Laurie, Michelle, Olivia, Scott,
+    # Steve, Taylor). A shared first name is nobody's evidence.
+    ("infoblox", None, "Morgan Lee", "client", ""),
+    ("infoblox", None, "Laurie Robison", "client", ""),
+    ("salesloft", None, "Laurie Ehrbar", "client", ""),
+    ("salesloft", "slt-5196-brand-campaign-26", "Michelle Payne", "client", ""),
     # Internal people are on every workstream; they name none of them.
     ("infoblox", None, "Drew Fiero", "internal", ""),
 ]
@@ -261,6 +268,46 @@ def test_genuinely_off_project_rows_still_flag(index, tagged, text, want) -> Non
     got = index.suggest(text, tagged)
     assert got is not None, f"no flag for {text!r} on {tagged}"
     assert got.target_code == want
+
+
+# ── SHARED FIRST NAMES: carded at two companies, evidence for neither ──────
+
+
+def test_a_shared_first_name_does_not_suppress_a_true_flag(index) -> None:
+    """Review probe on #420: Infoblox carding a different Morgan (Morgan
+    Lee) made "Morgan" count for Infoblox and vanish from Salesloft's
+    evidence, so a genuinely Salesloft row stopped flagging."""
+    got = index.suggest(
+        "Follow up with Art and Morgan on the QR code approval", "ibx-5153-ai-campaign"
+    )
+    assert got is not None and got.target_code == "slt-5196-brand-campaign-26"
+
+
+def test_a_full_name_settles_a_shared_first_name(index) -> None:
+    """"Morgan Lee" is Infoblox's card, written whole: it protects the row."""
+    assert index.suggest("Send Morgan Lee the guardrails recap; cc Art", "ibx-5153-ai-campaign") is None
+
+
+@pytest.mark.parametrize(
+    "tagged, text",
+    [
+        # Laurie is carded at Infoblox and Salesloft: on its own it moves
+        # nothing either way.
+        ("ibx-5153-ai-campaign", "Email Laurie the final deck"),
+        ("slt-5196-brand-campaign-26", "Email Laurie the final deck"),
+    ],
+)
+def test_a_shared_first_name_alone_moves_nothing(index, tagged, text) -> None:
+    assert index.suggest(text, tagged) is None
+
+
+def test_a_shared_first_name_does_not_protect_the_tagged_row(index) -> None:
+    """Michelle is SAP's and Salesloft's: on a Salesloft row she neither
+    keeps it (Salesloft) nor counts for SAP — Fiona still moves it."""
+    got = index.suggest("Send Fiona and Michelle the vision shortlist", "slt-5196-brand-campaign-26")
+    assert got is not None and got.target_code == "sap-5174-vision-update-2026"
+    got = index.suggest("Send Michelle the shortlist; cc Fiona", "slt-5196-brand-campaign-26")
+    assert got is not None and got.target_code == "sap-5174-vision-update-2026"
 
 
 def test_a_card_read_failure_leaves_scoring_as_before(tmp_path, monkeypatch) -> None:
