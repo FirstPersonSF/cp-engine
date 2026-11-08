@@ -2376,6 +2376,9 @@ def _write_milestone(
         direction=_commitments.US_TO_THEM,
         owner_name=owner,
         due_date=due_date,
+        # A "milestone" a client stakeholder owns (their landing page goes
+        # live) is theirs to deliver, not ours (#423).
+        infer_client_side=True,
         source_meeting_id=item.get("source_meeting_id") or meeting_id,
         warnings=warnings,
     )
@@ -2389,8 +2392,11 @@ def _write_client_ask_task(
     meeting_id: str | None = None,
     warnings: list | None = None,
 ) -> None:
-    """Insert a ``proposed`` client-ask commitment (direction us→them —
-    the client asked us for something, so we owe the response).
+    """Insert a ``proposed`` client-ask commitment (direction them→us —
+    an EXTERNAL party committed to give us something, which is what the
+    prompt's ``set-client-ask-task`` means: "external commitment we're
+    waiting on"). Until #423 this stamped us→them, filing every brief,
+    approval and asset the client owed us as something we owed them.
 
     ``from_party`` folds into the description (no commitment column).
     ``expected_by`` becomes the real ``due_date`` when it parses as ISO,
@@ -2430,7 +2436,8 @@ def _write_client_ask_task(
         cp_hash=ask_hash(resolved.get("canonical_code") or code, description),
         legacy_hashes=(_content_hash(code, "set-client-ask-task", what),),
         source_kind="meeting_ingest",
-        direction=_commitments.US_TO_THEM,
+        direction=_commitments.THEM_TO_US,
+        owner_name=from_party,
         due_date=due_date,
         source_meeting_id=item.get("source_meeting_id") or meeting_id,
         warnings=warnings,

@@ -19,6 +19,23 @@ def _reset_mc2_client_cache() -> None:
     mc2_db.reset_client_cache()
 
 
+@pytest.fixture(autouse=True)
+def _reset_commitments_caches() -> None:
+    """The entities roster and the per-project stakeholder names are cached
+    per process; a fake roster from one test leaked into the next (the
+    order-dependent `test_hand_typed_ask_is_imported_once…` failure)."""
+    from cp_engine import commitments
+
+    def reset() -> None:
+        commitments._PEOPLE_CACHE = None
+        commitments._PEOPLE_CACHE_AT = 0.0
+        commitments._CLIENT_NAMES_CACHE.clear()
+
+    reset()
+    yield
+    reset()
+
+
 @pytest.fixture
 def golden_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     """Freeze every clock/version a full-file renderer reads.

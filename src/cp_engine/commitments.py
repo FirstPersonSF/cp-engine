@@ -270,6 +270,134 @@ def resolve_owner_identity(
     return name or None, email
 
 
+# ── #423: a client-side owner settles direction ───────────────────────
+#
+# Meeting ingest filed what the client owes us as ours: 3 of 350 open rows
+# were them_to_us on 2026-11-07. The prompt's own words were right; the
+# writers stamped a fixed direction. The one signal precise enough to
+# override a writer is the owner's identity: a person with a live
+# Stakeholders card on the workstream's company who is NOT on our entities
+# roster (stakeholder cards include our own editors — "Jess — Editor").
+
+_CARD_NAME_SPLIT_RE = re.compile(r"\s+[—–-]\s+")
+_CLIENT_NAMES_CACHE: dict[str, tuple[float, frozenset[str]]] = {}
+
+
+def _first_owner(raw: str | None) -> str:
+    from cp_engine.asks import first_owner_name
+
+    return _clean_owner_name(first_owner_name(raw)).lower()
+
+
+def _on_roster(client: Any, name: str, warnings: list | None = None) -> bool:
+    """True when ``name`` is one of ours: an exact roster name, or a unique
+    containment among active people (the resolver's own rules)."""
+    needle = (name or "").strip().lower()
+    if not needle:
+        return False
+    people = _entity_people(client, warnings)
+    if any(p["name"].strip().lower() == needle for p in people):
+        return True
+    if len(needle) < 3:
+        return False
+    active = [p for p in people if p.get("archived_at") is None]
+    return any(needle in p["name"].strip().lower() for p in active)
+
+
+def client_side_names(
+    client: Any, project_id: str, warnings: list | None = None
+) -> frozenset[str]:
+    """Lower-cased names on live Stakeholders cards across the company that
+    owns ``project_id`` (cards sit on the account node or any job beneath).
+    Cached per project for the roster TTL. Never raises — [] on failure."""
+    now = time.monotonic()
+    hit = _CLIENT_NAMES_CACHE.get(project_id)
+    if hit and now - hit[0] < _PEOPLE_CACHE_TTL:
+        return hit[1]
+    names: set[str] = set()
+    try:
+        proj = (
+            client.table(Tables.PROJECTS)
+            .select("id, company_id")
+            .eq("id", project_id)
+            .limit(1)
+            .execute()
+        ).data or []
+        company_id = proj[0].get("company_id") if proj else None
+        if company_id:
+            sibs = (
+                client.table(Tables.PROJECTS)
+                .select("id")
+                .eq("company_id", company_id)
+                .execute()
+            ).data or []
+            ids = [r["id"] for r in sibs if r.get("id")] or [project_id]
+        else:
+            ids = [project_id]
+        cards = (
+            client.table(Tables.SPINE_SUBSTANCE)
+            .select("framing")
+            .eq("layer", "Stakeholders")
+            .eq("status", "live")
+            .eq("archived", False)
+            .in_("project_id", ids)
+            .execute()
+        ).data or []
+        for c in cards:
+            head = _CARD_NAME_SPLIT_RE.split((c.get("framing") or "").strip(), 1)[0]
+            head = _clean_owner_name(head).lower()
+            if head:
+                names.add(head)
+    except Exception as exc:  # noqa: BLE001 — enrichment, never a gate
+        log.warning("commitments: stakeholder names fetch failed: %s", exc)
+        if warnings is not None:
+            warnings.append(
+                f"direction check skipped — stakeholder cards unreadable "
+                f"({type(exc).__name__}: {exc})"
+            )
+        return frozenset()
+    out = frozenset(names)
+    _CLIENT_NAMES_CACHE[project_id] = (now, out)
+    return out
+
+
+def is_client_side_owner(
+    client: Any,
+    project_id: str,
+    owner_name: str | None,
+    owner_email: str | None = None,
+    warnings: list | None = None,
+) -> bool:
+    """True when the owner is a client-side person: no email of ours, not on
+    the entities roster, and named exactly on a live Stakeholders card of the
+    workstream's company. Conservative by design — an unknown owner is NOT
+    client-side; only a carded one is."""
+    if owner_email:
+        return False
+    name = _first_owner(owner_name)
+    if not name or _on_roster(client, name, warnings):
+        return False
+    return name in client_side_names(client, project_id, warnings)
+
+
+def settle_direction(
+    client: Any,
+    project_id: str,
+    direction: str,
+    owner_name: str | None,
+    owner_email: str | None = None,
+    warnings: list | None = None,
+) -> str:
+    """``them_to_us`` when a client-side owner holds the item, else
+    ``direction`` unchanged. An ask a client stakeholder owns cannot be one
+    we owe, nor internal work (#423)."""
+    if direction == THEM_TO_US:
+        return direction
+    if is_client_side_owner(client, project_id, owner_name, owner_email, warnings):
+        return THEM_TO_US
+    return direction
+
+
 def write_commitment(
     client: Any,
     *,
@@ -287,8 +415,13 @@ def write_commitment(
     source_meeting_id: str | None = None,
     warnings: list | None = None,
     legacy_hashes: tuple[str, ...] = (),
+    infer_client_side: bool = False,
 ) -> str:
     """Insert one commitment row; returns ``"inserted"`` or ``"duplicate"``.
+
+    ``infer_client_side`` (ingest writers only): a client-side owner turns
+    the row ``them_to_us`` whatever ``direction`` says (#423). Explicit
+    writers — a person or model naming the direction — leave it False.
 
     ``legacy_hashes`` are the same item's hashes under a recipe retired
     by step 4a (short code, per-verb tags). A row still carrying one is the
@@ -316,6 +449,10 @@ def write_commitment(
     owner_name, owner_email = resolve_owner_identity(
         client, owner_name, owner_email, warnings
     )
+    if infer_client_side:
+        direction = settle_direction(
+            client, owner["id"], direction, owner_name, owner_email, warnings
+        )
 
     row = commitment_row(
         project_id=owner["id"],
