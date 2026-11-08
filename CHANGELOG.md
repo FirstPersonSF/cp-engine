@@ -4,6 +4,14 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.134.1 — 2026-11-08
+
+**Meeting ingest now files what a client owes us as owed to us.** Patch: no new verbs, no MC-2 migration.
+
+- `set-client-ask-task` — the prompt's "external commitment we're waiting on" — wrote `us_to_them`; it now writes `them_to_us` and keeps the external party as the owner (#423).
+- Fathom action items, `set-milestone` and the sprint-file ask import settle direction from the owner: someone with no email of ours, not on the entities roster, and named on a live Stakeholders card of the workstream's company makes the row `them_to_us`. Unknown owners keep the writer's direction; explicitly-directed writes are untouched (#423).
+- The 44 open rows this misfiled were corrected in MC-2 on 2026-11-08 (open `them_to_us`: 3 → 47).
+
 ## v0.134.0 — 2026-11-07
 
 **Seven fixes from the 11-07 improvements sweep: long video ingests again, vendors are writable, and an open ask shows the file that may answer it.** Minor: new cp-hosted verbs `create_vendor` and `add_rfp_respondent`; one MC-2 migration (207, applied). Reconnect `/mcp` after the deploy.
