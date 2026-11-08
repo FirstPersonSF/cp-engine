@@ -359,6 +359,8 @@ def propose_commitments(
                 owner_email=owner_email,
                 owner_name=owner_name,
                 source_meeting_id=meeting_id,
+                # An action item a client stakeholder owns is owed TO us (#423).
+                infer_client_side=True,
             )
             summary["proposed" if outcome == "inserted" else "skipped_duplicate"] += 1
 

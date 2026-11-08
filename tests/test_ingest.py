@@ -1938,7 +1938,9 @@ def test_set_client_ask_task_inserts_row(tmp_path: Path) -> None:
     # ISO expected_by lands in the real due_date column, NOT the description.
     assert row["due_date"] == "2026-06-02"
     assert "2026-06-02" not in row["description"]
-    assert row["direction"] == "us_to_them"
+    # #423: an external party owes US this — never us_to_them.
+    assert row["direction"] == "them_to_us"
+    assert row["owner_name"] == "rena"
     assert row["source_meeting_id"] == "meet-abc"
     assert row["status"] == "open"
     assert row["date_status"] == "proposed"

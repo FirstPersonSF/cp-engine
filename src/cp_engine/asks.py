@@ -437,6 +437,17 @@ def build_import_row(
         "cp_hash": ask_hash(code, clean),
         "project_id": project_id,
     }
+    if client is not None and direction != "them_to_us":
+        # #423: an ask a client stakeholder owns is owed to us, whatever the
+        # wording says (only a carded, off-roster owner counts).
+        from cp_engine.commitments import settle_direction
+
+        settled = settle_direction(
+            client, project_id, direction or "internal", owner_name,
+            owner_email, warnings,
+        )
+        if settled == "them_to_us":
+            direction = settled
     if direction:
         row["direction"] = direction
     created = asked_created_at(asked_date)
