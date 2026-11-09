@@ -138,6 +138,7 @@ def _live_client():
     return create_client(url, key)
 
 
+@pytest.mark.live_network
 def test_live_account_rows_are_reachable_from_a_sibling():
     """Against real data: every account row's company has sibling projects.
 
