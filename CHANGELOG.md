@@ -4,6 +4,14 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.134.2 — 2026-11-08
+
+**An unreachable MC-2 fails in seconds again, and the `supabase` cap is gone.** Patch: no new verbs, no MC-2 migration.
+
+- `supabase` is no longer capped below 2.34 (engine, hosted MCP, webhook). The engine's client now turns `postgrest`'s own retry off — 1 + 2 + 4 s of sleeps per failed read — and keeps its one immediate reconnect retry, so a `cxp` command or sync against an unreachable MC-2 ends with the #413 one-liner instead of minutes of backoff (measured on 2.34.1: 7.0 s → 0.0 s per read) (#425).
+- The test suite makes no real HTTP calls: a root `conftest.py` guard fails every non-loopback request at once, without a retry. The ~250 tests that read MC-2 best-effort against fake hosts no longer depend on DNS or a library's retry policy; `@pytest.mark.live_network` opts a test out (#425).
+- `uv.lock` moves the supabase family to 2.34.1 (and `pyjwt` to 2.15.1), what CI and the Railway images already install.
+
 ## v0.134.1 — 2026-11-08
 
 **Meeting ingest now files what a client owes us as owed to us.** Patch: no new verbs, no MC-2 migration.
