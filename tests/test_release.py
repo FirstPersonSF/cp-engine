@@ -249,9 +249,12 @@ def test_run_pytest_counted_returns_pytests_own_exit_and_counts(tmp_path, capsys
     back non-zero with its counts, and the output must still stream."""
     t = tmp_path / "test_tiny.py"
     t.write_text("def test_ok():\n    pass\n\ndef test_bad():\n    assert False\n")
+    # `-p no:warnings`: the summary is asserted exactly, and a dependency's
+    # deprecation warning (langsmith's pytest plugin, on a fresh install —
+    # #425) appends ", N warnings" that says nothing about the counting.
     code, summary = release.run_pytest_counted(
         [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-         "-o", "addopts=", str(t)],
+         "-p", "no:warnings", "-o", "addopts=", str(t)],
     )
     assert code == 1
     assert summary == "1 failed, 1 passed"

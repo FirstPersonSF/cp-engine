@@ -1,7 +1,7 @@
 # Pinned floors matching what the spike verified against in the cp-engine venv.
 mcp>=2.0,<3
 PyJWT[crypto]>=2.12
-supabase>=2.30,<2.34
+supabase>=2.30
 httpx>=0.28
 # semantic_search embeds queries with Voyage (the ingest corpus is
 # voyage-3-large, 1024-dim — OpenAI vectors would be the wrong space).

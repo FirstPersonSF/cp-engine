@@ -1128,6 +1128,38 @@ def _install_connection_retry(client) -> None:
         )
 
 
+def _disable_postgrest_retry(client) -> None:
+    """Turn postgrest's own retry OFF on this client (cp-engine #425).
+
+    postgrest 2.34 retries a failed GET up to three times, sleeping 1, 2 and 4
+    seconds between attempts (`min(2**n, 30)`). Against an unreachable MC-2 that
+    is ~7s per query, and a sync makes dozens: a CLI run that should print the
+    #413 one-liner in a second sat in backoff for minutes instead, and the test
+    suite hit CI's 20-minute limit.
+
+    The retry worth having is already here: `_RetryingTransport` retries ONCE,
+    immediately, through a reaped connection, which is the transient failure
+    this engine actually sees. Turning postgrest's off restores the 2.33
+    behaviour underneath it.
+
+    Set on `options` (supabase-py rebuilds postgrest from it after an auth
+    event) and on an already-built postgrest client; `.schema()` sub-clients
+    copy the flag from their parent. Older supabase-py has neither attribute
+    and never retried. Done after construction rather than through
+    `create_client(..., options)` so a test that swaps in a two-argument fake
+    constructor still works.
+    """
+    try:
+        options = getattr(client, "options", None)
+        if options is not None and hasattr(options, "postgrest_client_retry"):
+            options.postgrest_client_retry = False
+        built = getattr(client, "_postgrest", None)
+        if built is not None and hasattr(built, "retry_enabled"):
+            built.retry_enabled = False
+    except Exception as exc:  # noqa: BLE001 — never fail construction over this
+        print(f"could not turn off the postgrest retry: {exc!r}", file=sys.stderr)
+
+
 _client_cache: dict[tuple[str, str], "Client"] = {}
 
 # ── Client-construction instrumentation (diagnostic; off unless asked) ──
@@ -1280,6 +1312,9 @@ def get_client(
         client.postgrest.session.headers["X-Spine-Writer"] = "cp-engine"
     except AttributeError:
         pass  # test stubs without a postgrest session; real clients have one
+    # Before anything touches `client.postgrest`: that property builds the
+    # postgrest client from `options` on first access.
+    _disable_postgrest_retry(client)
     # This client is about to be CACHED for the life of the process, which is
     # exactly what exposes it to Supabase's idle-connection reap.
     _install_connection_retry(client)
