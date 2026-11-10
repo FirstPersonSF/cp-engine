@@ -1667,6 +1667,19 @@ def _resolve_project_id(client, project_code: str) -> str | None:
             if slug_full_job_name(row.get("full_job_name")) == project_code:
                 return row["id"]
 
+    # The same dir-slug for a project whose `projects.code` lacks the company
+    # prefix (`storyos`, `first-person-operations`, `5136`; 15 rows on
+    # 2026-11-10). The scan above never sees those, so a meeting tagged
+    # `cnc-9004-storyos` logged "no resolvable project tag" and never linked.
+    # Read the company and number out of the slug instead, then confirm the
+    # whole slug so a number collision cannot match.
+    parts = project_code.split("-", 2)
+    if len(parts) == 3 and parts[1].isdigit():
+        hit = _project_by_company_number(client, parts[0], int(parts[1]),
+                                         columns="id, full_job_name")
+        if hit and slug_full_job_name(hit.get("full_job_name")) == project_code:
+            return hit["id"]
+
     # Fallback: <companyprefix>-<number> (the legacy number-last form). A
     # bare word (`mission-control`) has no trailing number and resolves to
     # nothing — every workstream carries a number (#301).
@@ -1700,6 +1713,114 @@ def _resolve_project_id(client, project_code: str) -> str | None:
         or []
     )
     return rows[0]["id"] if rows else None
+
+
+def _project_by_company_number(client, company_prefix: str, number: int, *,
+                               columns: str = "id") -> dict | None:
+    """The `projects` row for `<company code>` + `number`, or None."""
+    companies = (
+        client.table(Tables.COMPANIES)
+        .select("id")
+        .ilike("code", company_prefix)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if not companies:
+        return None
+    rows = (
+        client.table(Tables.PROJECTS)
+        .select(columns)
+        .eq("company_id", companies[0]["id"])
+        .eq("number", number)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    return rows[0] if rows else None
+
+
+def meeting_tag_spellings(client, project_id: str) -> list[str]:
+    """Every string a `fathom_meetings.project_tags` entry uses for this project.
+
+    Tags are written by the Fathom dashboard in whichever form it had at the
+    time: the dir-slug (`sap-5238-enablement`), the raw `full_job_name`
+    (`SAP 5198 2027 Ad Videos`), the short `<co>-<number>` form, or the MC-2
+    `projects.code`. All four name one project.
+    """
+    from cp_engine.state import slug_full_job_name
+
+    rows = (
+        client.table(Tables.PROJECTS)
+        .select("code, full_job_name, number, company_id")
+        .eq("id", project_id)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if not rows:
+        return []
+    row = rows[0]
+    out = [row.get("code"), row.get("full_job_name"),
+           slug_full_job_name(row.get("full_job_name"))]
+    if row.get("company_id") and row.get("number") is not None:
+        co = (
+            client.table(Tables.COMPANIES)
+            .select("code")
+            .eq("id", row["company_id"])
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        if co and co[0].get("code"):
+            out.append(f"{co[0]['code'].lower()}-{row['number']}")
+    seen: list[str] = []
+    for s in out:
+        if s and s not in seen:
+            seen.append(s)
+    return seen
+
+
+def project_meetings(client, project_id: str, columns: str) -> list[dict]:
+    """A project's Fathom meetings: linked by `project_id` OR tagged for it.
+
+    `project_id` is written only by the webhook's link step, which runs when
+    a meeting is ingested. A meeting tagged before its project existed, one
+    whose tag the resolver could not read, or one the dashboard never sent
+    for ingest carries the tag and no `project_id`: 108 such meetings on
+    2026-11-10, invisible to every project_id-only read. The tag is the
+    assignment, so read both and de-duplicate. `columns` must include `id`.
+    """
+    rows: list[dict] = []
+    seen: set = set()
+
+    def take(batch):
+        for r in batch or []:
+            if r.get("id") not in seen:
+                seen.add(r.get("id"))
+                rows.append(r)
+
+    take(
+        client.table(Tables.FATHOM_MEETINGS)
+        .select(columns)
+        .eq("project_id", project_id)
+        .execute()
+        .data
+    )
+    spellings = meeting_tag_spellings(client, project_id)
+    if spellings:
+        take(
+            client.table(Tables.FATHOM_MEETINGS)
+            .select(columns)
+            .overlaps("project_tags", spellings)
+            .execute()
+            .data
+        )
+    return rows
 
 
 def project_sprint_identity(client, project_code: str) -> dict | None:

@@ -1873,6 +1873,11 @@ _MEETING_LIST_COLUMNS = (
 )
 
 
+def _ensure_id(columns: str) -> str:
+    cols = [c.strip() for c in columns.split(",")]
+    return columns if "id" in cols else "id, " + columns
+
+
 def list_project_meetings(client, project_id: str) -> list[dict]:
     """List a project's linked Fathom meetings, newest first (index, not bodies).
 
@@ -1883,16 +1888,14 @@ def list_project_meetings(client, project_id: str) -> list[dict]:
     True iff its `*_at` field is non-null) — they tell a caller "is this meeting
     in RAG" without surfacing the timestamps or the heavy `transcript`/`summary`
     payloads. NEVER `select *` and NEVER the `transcript` column. Ordered by
-    `meeting_date` descending (most recent first).
+    `meeting_date` descending (most recent first). Includes meetings TAGGED for
+    the project that the webhook never linked.
     """
-    resp = (
-        client.table(Tables.FATHOM_MEETINGS)
-        .select(_MEETING_LIST_COLUMNS)
-        .eq("project_id", project_id)
-        .order("meeting_date", desc=True)
-        .execute()
-    )
-    rows = getattr(resp, "data", None) or []
+    # Linked OR tagged (see `mc2_db.project_meetings`): a meeting tagged for
+    # the project but never linked by the webhook is still the project's.
+    rows = mc2_db.project_meetings(
+        client, project_id, _ensure_id(_MEETING_LIST_COLUMNS))
+    rows.sort(key=lambda r: str(r.get("meeting_date") or ""), reverse=True)
     return [
         {
             "recording_id": row.get("recording_id"),

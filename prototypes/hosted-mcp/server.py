@@ -2728,6 +2728,8 @@ def _comment_count(row: dict[str, Any]) -> int:
 def list_project_meetings(project_code: str) -> dict[str, Any]:
     """List a project's Fathom meetings, under the caller's identity.
 
+    Includes meetings TAGGED for the project as well as those linked by
+    `project_id` (a re-tagged or never-ingested meeting has only the tag).
     Mirrors `cp_engine.mc2_db.FATHOM_LIST_COLUMNS`. `transcript` and `summary`
     are the large text columns on this table and are deliberately excluded —
     a meeting list must not drag every transcript across the wire.
@@ -2745,24 +2747,16 @@ def list_project_meetings(project_code: str) -> dict[str, Any]:
             "meetings": [],
         }
 
-    rows: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for column in _owner_columns(client):
-        try:
-            for row in (
-                client.table("fathom_meetings")
-                .select(FATHOM_LIST_COLUMNS)
-                .eq(column, project_id)
-                .order("meeting_date", desc=True)
-                .execute()
-                .data
-                or []
-            ):
-                if row.get("id") not in seen:
-                    seen.add(row.get("id"))
-                    rows.append(row)
-        except Exception:  # noqa: BLE001 — a failed read is an empty read, reported below
-            continue
+    # Linked by project_id OR tagged for the project: the link column is
+    # written only when the webhook ingests a meeting, so a re-tagged or
+    # never-ingested meeting carries only its tag. One engine helper, shared
+    # with `cxp wrap`, so the two cannot disagree about which meetings count.
+    from cp_engine.mc2_db import project_meetings
+
+    try:
+        rows = project_meetings(client, project_id, FATHOM_LIST_COLUMNS)
+    except Exception:  # noqa: BLE001 — a failed read is an empty read, reported below
+        rows = []
 
     meetings = [
         {

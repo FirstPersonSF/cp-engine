@@ -114,6 +114,8 @@ class _FakeClient:
 _SAP_ID = "11111111-2222-3333-4444-555555555555"
 _GGL_ID = "4e39be45-6ee4-4fcb-bc66-36c4d290996c"
 _INIT_ID = "99999999-8888-7777-6666-555555555555"
+_OPS_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+_GOSAFE_ID = "12121212-3434-5656-7878-909090909090"
 
 
 def _tenant(with_spine: bool = False):
@@ -142,11 +144,30 @@ def _tenant(with_spine: bool = False):
                 "company_id": "co-cnc",
                 "number": 9004,
             },
+            # `projects.code` WITHOUT the company prefix — 15 real rows on
+            # 2026-11-10 (`first-person-operations`, `5136`, `storyos`). The
+            # prefix scan never saw them, so their dir-slug resolved nowhere
+            # and meetings tagged with it never linked.
+            {
+                "id": _OPS_ID,
+                "code": "first-person-operations",
+                "full_job_name": "1PI 9006 First Person Operations",
+                "company_id": "co-1pi",
+                "number": 9006,
+            },
+            {
+                "id": _GOSAFE_ID,
+                "code": "5136",
+                "full_job_name": "GGL 5136 go/safety website",
+                "company_id": "co-ggl",
+                "number": 5136,
+            },
         ],
         "companies": [
             {"id": "co-sap", "code": "SAP"},
             {"id": "co-ggl", "code": "GGL"},
             {"id": "co-cnc", "code": "CNC"},
+            {"id": "co-1pi", "code": "1PI"},
         ],
         "spine_substance": (
             [{"project_code": "sap-5198-2027-ad-videos", "project_id": _SAP_ID}]
@@ -166,6 +187,9 @@ _CASES = [
     ("second project uuid", _GGL_ID, _GGL_ID),
     ("internal workstream dir-slug", "cnc-9004-storyos", _INIT_ID),
     ("internal workstream uuid", _INIT_ID, _INIT_ID),
+    ("dir-slug, code lacks company prefix", "1pi-9006-first-person-operations", _OPS_ID),
+    ("dir-slug, code is a bare number", "ggl-5136-go-safety-website", _GOSAFE_ID),
+    ("right number, wrong slug", "ggl-5136-something-else", None),
     ("bare word (no job number)", "storyos", None),
     ("unknown code", "nope-9999", None),
     ("unknown words", "not a project at all", None),
