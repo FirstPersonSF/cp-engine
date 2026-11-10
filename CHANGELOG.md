@@ -4,6 +4,13 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.135.1 — 2026-11-10
+
+**Meetings tagged for a workstream show up on it, and dir-slugs of 15 more workstreams resolve.** Patch: no new verbs, no MC-2 migration.
+
+- `list_project_meetings` (hosted), `project_sources.list_project_meetings` and the `cxp wrap` meeting count now return meetings linked by `project_id` OR tagged with any spelling of the workstream (`code`, `full_job_name`, dir-slug, `<co>-<number>`). Before, they read `project_id` only, which the webhook writes only on a successful link: 108 tagged meetings had none (sap-5238 0 → 1, 1pi-9006 0 → 20, cnc-9004 8 → 62) (#432).
+- The project resolver reads `<co>-<number>-<slug>` by company and number, confirming the full slug. Fifteen workstreams whose MC-2 `code` lacks the company prefix (`storyos`, `first-person-operations`, `5136`, …) had dir-slugs that resolved nowhere, so meetings tagged with them logged "no resolvable project tag" and never linked (#432).
+
 ## v0.135.0 — 2026-11-10
 
 **Tenants track PDFs up to 20 MB, and the spine checks run only on cp-hosted.** Minor: two `cxp` commands removed, and the generated `.gitignore` changes. No MC-2 migration.
