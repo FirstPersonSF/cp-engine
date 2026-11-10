@@ -831,13 +831,8 @@ def wrap_cmd(
     meetings = _wrap.MeetingLoad(tail_days=tail_days)
     if project_id:
         try:
-            mrows = (
-                client.table(Tables.FATHOM_MEETINGS)
-                .select("id, meeting_date, title, duration_minutes")
-                .eq("project_id", project_id)
-                .execute()
-                .data
-            ) or []
+            mrows = mc2_db.project_meetings(
+                client, project_id, "id, meeting_date, title, duration_minutes")
             meetings = _wrap.summarize_meetings(mrows, tail_days=tail_days)
         except Exception as exc:  # noqa: BLE001
             click.echo(f"(WARNING: meeting read failed: {exc})", err=True)

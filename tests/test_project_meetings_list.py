@@ -15,18 +15,36 @@ from cp_engine.project_sources import list_project_meetings
 
 
 class _FakeQuery:
-    """Records the select cols + eq filter, returns canned rows on execute()."""
+    """In-memory PostgREST subset: select/eq/overlaps/ilike/limit/order."""
 
-    def __init__(self, captured, rows):
+    def __init__(self, captured, rows, name):
         self._captured = captured
-        self._rows = rows
+        self._rows = list(rows)
+        self._name = name
+        self._limit = None
 
     def select(self, cols):
-        self._captured["select"] = cols
+        if self._name == "fathom_meetings":
+            self._captured["select"] = cols
         return self
 
     def eq(self, col, val):
-        self._captured.setdefault("eq", []).append((col, val))
+        if self._name == "fathom_meetings":
+            self._captured.setdefault("eq", []).append((col, val))
+        self._rows = [r for r in self._rows if r.get(col) == val]
+        return self
+
+    def ilike(self, col, val):
+        self._rows = [r for r in self._rows if str(r.get(col, "")).lower() == val.lower()]
+        return self
+
+    def overlaps(self, col, vals):
+        self._captured.setdefault("overlaps", []).append((col, list(vals)))
+        self._rows = [r for r in self._rows if set(r.get(col) or []) & set(vals)]
+        return self
+
+    def limit(self, n):
+        self._limit = n
         return self
 
     def order(self, col, desc=False):
@@ -34,17 +52,33 @@ class _FakeQuery:
         return self
 
     def execute(self):
-        return type("Resp", (), {"data": self._rows})()
+        rows = self._rows[: self._limit] if self._limit else self._rows
+        return type("Resp", (), {"data": rows})()
 
 
 class _FakeClient:
-    def __init__(self, rows, captured):
-        self._rows = rows
+    """`rows` are fathom_meetings rows, all linked to "pid" unless they say
+    otherwise; `projects`/`companies` default to one SAP project."""
+
+    def __init__(self, rows, captured, projects=None, companies=None):
+        self._tables = {
+            "fathom_meetings": [
+                {"id": f"m{i}", "project_id": "pid", "project_tags": [], **r}
+                for i, r in enumerate(rows)
+            ],
+            "projects": projects if projects is not None else [{
+                "id": "pid", "code": "SAP-enablement", "number": 5238,
+                "full_job_name": "SAP 5238 Enablement", "company_id": "c-sap",
+            }],
+            "companies": companies if companies is not None else [
+                {"id": "c-sap", "code": "SAP"}],
+        }
         self._captured = captured
 
     def table(self, name):
-        self._captured["table"] = name
-        return _FakeQuery(self._captured, self._rows)
+        if name == "fathom_meetings":
+            self._captured["table"] = name
+        return _FakeQuery(self._captured, self._tables.get(name, []), name)
 
 
 def test_derives_booleans_from_at_fields():
@@ -117,8 +151,41 @@ def test_filters_by_project_id():
     list_project_meetings(_FakeClient([], captured), "the-pid")
     assert ("project_id", "the-pid") in captured["eq"]
     assert captured["table"] == "fathom_meetings"
-    # Ordered by meeting_date, most recent first.
-    assert captured["order"] == ("meeting_date", True)
+
+
+def test_newest_first():
+    rows = [{"recording_id": "old", "meeting_date": "2026-01-01"},
+            {"recording_id": "new", "meeting_date": "2026-11-01"}]
+    out = list_project_meetings(_FakeClient(rows, {}), "pid")
+    assert [m["recording_id"] for m in out] == ["new", "old"]
+
+
+def test_a_meeting_tagged_but_never_linked_is_listed():
+    """sap-5238 on 2026-11-10: the 10-23 enablement meeting carried the tag
+    `sap-5238-enablement` and no project_id (the webhook's link step never
+    wrote one), so every project_id-only read said the project had no
+    meetings. The tag is the assignment."""
+    rows = [
+        {"recording_id": "linked", "meeting_date": "2026-10-01"},
+        {"recording_id": "slug-tag", "meeting_date": "2026-10-23",
+         "project_id": None, "project_tags": ["sap-5238-enablement"]},
+        {"recording_id": "display-tag", "meeting_date": "2026-10-24",
+         "project_id": None, "project_tags": ["SAP 5238 Enablement"]},
+        {"recording_id": "short-tag", "meeting_date": "2026-10-25",
+         "project_id": None, "project_tags": ["sap-5238"]},
+        {"recording_id": "someone-else", "meeting_date": "2026-10-26",
+         "project_id": None, "project_tags": ["sap-5198-2027-ad-videos"]},
+    ]
+    out = list_project_meetings(_FakeClient(rows, {}), "pid")
+    ids = {m["recording_id"] for m in out}
+    assert ids == {"linked", "slug-tag", "display-tag", "short-tag"}
+
+
+def test_a_meeting_both_linked_and_tagged_is_listed_once():
+    rows = [{"recording_id": "both", "meeting_date": "2026-10-01",
+             "project_tags": ["sap-5238-enablement"]}]
+    out = list_project_meetings(_FakeClient(rows, {}), "pid")
+    assert [m["recording_id"] for m in out] == ["both"]
 
 
 def test_missing_fields_default_safely():
