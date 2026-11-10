@@ -568,6 +568,42 @@ def hook_unregister(root: Path, claude_session: str) -> None:
         entries[:] = keep
 
 
+def current_session_start(root: Path) -> datetime | None:
+    """When the session running this command began, or None if unknown.
+
+    In a session worktree: that worktree's entry. In a shared checkout: the
+    hook entry registered by the Claude Code process this command runs
+    under (its pid). Used to tell an untracked file this session wrote from
+    one an earlier session left behind (#428).
+    """
+    here = toplevel(root) or root
+    entries = list_sessions(root, prune=False)
+    for e in entries:
+        if e.kind == "worktree" and _same_path(e.worktree, here):
+            return _parse_ts(e.started_at)
+    pid = _claude_pid()
+    if pid is not None:
+        for e in entries:
+            if e.kind == "hook" and e.pid == pid and _same_path(e.worktree, here):
+                return _parse_ts(e.started_at)
+    return None
+
+
+def untracked_paths(root: Path) -> set[str]:
+    out = _git(root, "ls-files", "--others", "--exclude-standard", "-z").stdout
+    return {p for p in out.split("\0") if p}
+
+
+def _touched_since(path: Path, since: datetime) -> bool:
+    """mtime OR ctime at/after `since`. ctime catches a file moved in from
+    elsewhere during the session: `mv` keeps the old mtime, not the ctime."""
+    try:
+        st = path.stat()
+    except OSError:
+        return True  # can't tell: don't hold it back
+    return max(st.st_mtime, st.st_ctime) >= since.timestamp()
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  2. Scoped commits
 # ──────────────────────────────────────────────────────────────────────
@@ -610,15 +646,32 @@ _SPRINT_FILE_RE = re.compile(r"^sprints/[^/]+/(?P<name>[^/]+)\.md$")
 
 
 def session_paths(
-    root: Path, codes: list[str], extra: tuple[str, ...] | list[str] = ()
+    root: Path, codes: list[str], extra: tuple[str, ...] | list[str] = (),
+    *, exclude: tuple[str, ...] | list[str] = (), since: datetime | None = None,
 ) -> tuple[list[str], list[str]]:
     """(paths this session owns, other changed paths left alone).
+    `session_paths_detail` also returns the files held back by `since`.
 
     Owned: each workstream's working dir — but not a nested workstream's
     dir inside it (a child has its own `cp.md`, and may have its own
     session) unless that child is named too; that workstream's sprint file
     in every `sprints/<week>/`; `improvements.md`; and each `extra` path
     (a file, or a directory prefix).
+    """
+    mine, others, _held = session_paths_detail(
+        root, codes, extra, exclude=exclude, since=since)
+    return mine, others
+
+
+def session_paths_detail(
+    root: Path, codes: list[str], extra: tuple[str, ...] | list[str] = (),
+    *, exclude: tuple[str, ...] | list[str] = (), since: datetime | None = None,
+) -> tuple[list[str], list[str], list[str]]:
+    """(mine, others, held). `held` ⊆ others: UNTRACKED files inside a named
+    workstream dir that nothing has touched since `since` (the session's
+    start) — an earlier session's leftovers, not this one's work (#428). An
+    explicit `--path` (`extra`) always wins; `exclude` (a file or directory
+    prefix) always leaves a path out. With `since=None` nothing is held.
     """
     root = root.resolve()
     dirs = _resolve_dirs(root, codes)
@@ -654,12 +707,26 @@ def session_paths(
 
     from cp_engine.tracked_files import too_large_to_track
 
+    excludes = [e.strip("/") for e in exclude if e.strip("/")]
+    untracked = untracked_paths(root) if since is not None else set()
+
+    def explicit(path: str) -> bool:
+        return any(path == e or path.startswith(e + "/") for e in extras)
+
     mine: list[str] = []
     others: list[str] = []
+    held: list[str] = []
     for p in changed_paths(root):
         keep = owned(p) and not too_large_to_track(root / p)
+        if keep and any(p == e or p.startswith(e + "/") for e in excludes):
+            keep = False
+        if (keep and p in untracked and not explicit(p)
+                and not _touched_since(root / p, since)):
+            keep = False
+            held.append(p)
         (mine if keep else others).append(p)
-    return sorted(set(mine)), sorted(set(others) - set(mine))
+    mine_s = sorted(set(mine))
+    return mine_s, sorted(set(others) - set(mine)), sorted(set(held))
 
 
 @dataclass
@@ -667,6 +734,7 @@ class CommitResult:
     sha: str | None
     committed: list[str]
     left_alone: list[str]
+    held: list[str] = field(default_factory=list)  # untracked, older than the session (#428)
 
 
 def commit_session(
@@ -674,13 +742,18 @@ def commit_session(
     codes: list[str],
     message: str,
     extra: tuple[str, ...] | list[str] = (),
+    *,
+    exclude: tuple[str, ...] | list[str] = (),
+    since: datetime | None = None,
 ) -> CommitResult:
     """Commit only the session's paths. `git commit -- <paths>` commits
     exactly those, leaving anything else that is staged (another session's
-    `git add`) staged and uncommitted."""
-    mine, others = session_paths(root, codes, extra)
+    `git add`) staged and uncommitted. Untracked files older than `since`
+    are held back (#428)."""
+    mine, others, held = session_paths_detail(
+        root, codes, extra, exclude=exclude, since=since)
     if not mine:
-        return CommitResult(None, [], others)
+        return CommitResult(None, [], others, held)
     present = [p for p in mine if (root / p).exists() or (root / p).is_symlink()]
     gone = [p for p in mine if p not in present]
     if present:
@@ -690,7 +763,7 @@ def commit_session(
              "--ignore-unmatch", "--", *gone)
     _git(root, "--literal-pathspecs", "commit", "-q", "-m", message, "--", *mine)
     sha = _git(root, "rev-parse", "--short", "HEAD").stdout.strip()
-    return CommitResult(sha, mine, others)
+    return CommitResult(sha, mine, others, held)
 
 
 # ──────────────────────────────────────────────────────────────────────

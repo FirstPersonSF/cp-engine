@@ -530,3 +530,90 @@ def test_scoped_commit_leaves_out_a_pdf_over_the_size_limit(env, monkeypatch):
     assert f"{GGL}/documents/big.pdf" not in result.committed
     assert f"{GGL}/documents/big.pdf" in result.left_alone
     assert f"{GGL}/documents/big.pdf" not in _files_in(tenant, "HEAD")
+
+
+def _future_start(seconds: int = 30):
+    """A session start after every file written so far. ctime cannot be set
+    backwards, so the test moves the START forward and pushes THIS session's
+    files' mtime past it instead."""
+    return datetime.now(timezone.utc) + timedelta(seconds=seconds)
+
+
+def _touch_after(path: Path, start) -> None:
+    t = start.timestamp() + 5
+    os.utime(path, (t, t))
+
+
+def test_untracked_leftovers_from_an_earlier_session_are_held_back(env):
+    """#428, the 2026-11-10 case: two DPA files an 11-09 session left
+    untracked in cnc-5237 `documents/` went into the 11-10 session's commit
+    under its message."""
+    _, tenant, _ = env
+    docs = tenant / GGL / "documents"
+    docs.mkdir()
+    (docs / "old-dpa.md").write_text("from yesterday's session\n")  # leftover
+    start = _future_start()
+    _append(tenant / GGL / "cp.md", "today's note\n")  # tracked: always mine
+    (docs / "pentest-email.md").write_text("today\n")
+    _touch_after(docs / "pentest-email.md", start)
+
+    result = commit_session(tenant, ["ggl-5168"], "[session] today", since=start)
+
+    assert f"{GGL}/documents/pentest-email.md" in result.committed
+    assert f"{GGL}/cp.md" in result.committed
+    assert f"{GGL}/documents/old-dpa.md" not in result.committed
+    assert result.held == [f"{GGL}/documents/old-dpa.md"]
+    assert f"{GGL}/documents/old-dpa.md" in result.left_alone
+
+
+def test_an_explicit_path_takes_a_held_file_in(env):
+    _, tenant, _ = env
+    (tenant / GGL / "old.md").write_text("leftover I do want\n")
+    start = _future_start()
+    result = commit_session(tenant, ["ggl-5168"], "m", extra=[f"{GGL}/old.md"],
+                            since=start)
+    assert f"{GGL}/old.md" in result.committed and result.held == []
+
+
+def test_exclude_leaves_a_path_out(env):
+    _, tenant, _ = env
+    _append(tenant / GGL / "cp.md", "note\n")
+    (tenant / GGL / "scratch").mkdir()
+    (tenant / GGL / "scratch" / "a.md").write_text("x\n")
+    result = commit_session(tenant, ["ggl-5168"], "m",
+                            exclude=[f"{GGL}/scratch"])
+    assert f"{GGL}/cp.md" in result.committed
+    assert f"{GGL}/scratch/a.md" not in result.committed
+
+
+def test_no_known_session_start_holds_nothing(env):
+    """Without a registered session the old behaviour stands: better to
+    commit a leftover (visible in the commit) than lose new work."""
+    _, tenant, _ = env
+    (tenant / GGL / "old.md").write_text("x\n")
+    result = commit_session(tenant, ["ggl-5168"], "m", since=None)
+    assert f"{GGL}/old.md" in result.committed and result.held == []
+
+
+def test_current_session_start_reads_a_worktree_entry(env):
+    from cp_engine.sessions import current_session_start
+
+    _, tenant, _ = env
+    register(tenant, SessionEntry(id="wt", worktree=str(tenant), kind="worktree",
+                                  project="ggl-5168-activation",
+                                  started_at="2026-11-10T09:00:00+00:00"))
+    got = current_session_start(tenant)
+    assert got == datetime(2026, 11, 10, 9, 0, tzinfo=timezone.utc)
+
+
+def test_cli_dry_run_names_held_files(env, monkeypatch):
+    _, tenant, _ = env
+    (tenant / GGL / "old.md").write_text("x\n")
+    _append(tenant / GGL / "cp.md", "note\n")
+    start = _future_start()
+    _touch_after(tenant / GGL / "cp.md", start)
+    monkeypatch.chdir(tenant)
+    monkeypatch.setattr(sessions, "current_session_start", lambda root: start)
+    out = CliRunner().invoke(main, ["session", "commit", "ggl-5168", "-m", "x",
+                                    "--dry-run"]).output
+    assert "Held back 1 untracked file(s)" in out and f"{GGL}/old.md" in out

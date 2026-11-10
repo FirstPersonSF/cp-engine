@@ -437,30 +437,42 @@ def session_list_cmd() -> None:
     "--path", "extra", multiple=True,
     help="Also commit this path (file or directory), e.g. master-cp.md. Repeatable.",
 )
+@click.option(
+    "--exclude", "exclude", multiple=True,
+    help="Leave this path (file or directory) out even if it is in a named "
+         "workstream. Repeatable.",
+)
 @click.option("--no-push", is_flag=True, help="Commit only.")
 @click.option("--dry-run", is_flag=True, help="List what would be committed and left.")
 def session_commit_cmd(
-    codes: tuple[str, ...], message: str, extra: tuple[str, ...], no_push: bool, dry_run: bool
+    codes: tuple[str, ...], message: str, extra: tuple[str, ...],
+    exclude: tuple[str, ...], no_push: bool, dry_run: bool,
 ) -> None:
     """Commit only this session's files, then merge origin and push.
 
     Commits each workstream's working dir, its sprint files and
     improvements.md (plus any --path) — never another session's edits.
+    Untracked files nothing has touched since this session started are an
+    earlier session's: they are held back and named (#428); --path takes
+    one in, --exclude leaves any path out.
     Pushing fetches, merges origin/main, runs merge-check, then pushes
     HEAD:main.
     """
     from cp_engine.sessions import (
         SessionError,
         commit_session,
+        current_session_start,
         others_line,
         push_session,
-        session_paths,
+        session_paths_detail,
     )
 
     root = _session_root()
+    since = current_session_start(root)
     try:
         if dry_run:
-            mine, others = session_paths(root, list(codes), extra)
+            mine, others, held = session_paths_detail(
+                root, list(codes), extra, exclude=exclude, since=since)
             click.echo(f"Would commit {len(mine)} file(s):")
             for p in mine:
                 click.echo(f"  {p}")
@@ -471,8 +483,15 @@ def session_commit_cmd(
             big = _too_large_line(root, others)
             if big:
                 click.echo(big)
+            if held:
+                click.echo(f"Would hold back {len(held)} untracked file(s) "
+                           "untouched since this session started:")
+                for p in held:
+                    click.echo(f"  {p}")
+            _echo_held(held, since)
             return
-        result = commit_session(root, list(codes), message, extra)
+        result = commit_session(root, list(codes), message, extra,
+                                exclude=exclude, since=since)
     except SessionError as exc:
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
@@ -493,6 +512,7 @@ def session_commit_cmd(
     big = _too_large_line(root, result.left_alone)
     if big:
         click.echo(big)
+    _echo_held(result.held, since)
     line = others_line(root, committed_only_mine=bool(result.sha))
     if line:
         click.echo(line)
@@ -563,3 +583,16 @@ def _too_large_line(root, paths) -> str | None:
         return None
     return (f"Left {len(big)} PDF(s) over {limit_label()} out of git: "
             + ", ".join(big) + ". Put them in the project's Dropbox instead.")
+
+
+def _echo_held(held, since) -> None:
+    """Name the untracked files held back as an earlier session's (#428)."""
+    if not held:
+        return
+    when = since.astimezone().strftime("%Y-%m-%d %H:%M") if since else "?"
+    click.echo(
+        f"Held back {len(held)} untracked file(s) untouched since this session "
+        f"started ({when}) — an earlier session's: " + ", ".join(held[:8])
+        + (f" (+{len(held) - 8} more; --dry-run lists them)" if len(held) > 8 else "")
+        + ". Commit one with --path <file>."
+    )
