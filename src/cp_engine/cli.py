@@ -49,8 +49,6 @@ def _key_rejected_line(reason: str) -> str:
 # the person can carry on through the hosted connector instead of stopping.
 HOSTED_FALLBACK = {
     "commitments-sweep": "commitments_sweep",
-    "spine-lint": "spine_lint",
-    "seal-sweep": "seal_sweep",
     "preflight": "preflight",
     "promote-uphill": "promote_uphill",
     "spine": "list_spine_elements",

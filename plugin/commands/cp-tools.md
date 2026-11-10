@@ -249,7 +249,7 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   clears the mark on the copy it carries forward; pull lists such links under
   `sources_for_next_version`, and `seal_sweep` reports them apart from what
   fed the shipped version. The verb that closes an Agreement's
-  "attach as source" loop, and what `cxp spine-lint` points you at. Re-attaching
+  "attach as source" loop, and what `spine_lint` points you at. Re-attaching
   is a no-op. Inverse: `remove_element_source(project_code, key, source_title)` — also
   hosted; it strips EVERY version (a wrong attach is wrong everywhere). Distinct from `add_element_provenance`, which attaches a spine ELEMENT.
 - `create_spine_relation(project_code, kind, from_key, to_key, note?)` — author a
@@ -264,7 +264,7 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   (derives_from / informs / responds_to): `from_key` is the INPUT, `to_key` is
   the thing built from it** — `source --serves--> activity
   --derives_from--> deliverable`. The verb accepts either direction silently;
-  a backwards edge shows up only as `seal-sweep` reporting the deliverable
+  a backwards edge shows up only as `seal_sweep` reporting the deliverable
   BLIND. Check with `list_spine_relations` after wiring.
 - `retire_spine_relation(project_code, kind, from_key, to_key)` — delete one edge
   (fix a mis-recorded relation). Tolerates a dead endpoint: pass raw est_item_ids
@@ -292,14 +292,15 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   `include_absorbed=true` (retrospective mode). Absorbed ≠ archived — one hop
   behind the deliverable, not gone. Idempotent per pair; one journal step on
   the deliverable.
-- `cxp seal-sweep <code> [--all] [--within DAYS]` — **CLI, read-only** (#175) —
+- `seal_sweep(project_code, all_deliverables?)` — **read-only** (#175) —
   the question that makes the verb above get used. For each deliverable that
   shipped a version in the last 14 days, lists the elements that fed it —
   `derives_from` (built from) / `informs` (shaped) / `responds_to` (feedback
   this version answered) — and prints the `seal_to_deliverable` call for
   copy-paste. Skips anything already absorbed, and anything still feeding a
   deliverable that has NOT shipped (that is live work for another round).
-  `--all` drops the date window for a project never swept before.
+  `all_deliverables=true` drops the date window for a project never swept
+  before. (The `cxp seal-sweep` CLI was retired; this is the one copy.)
 
   **Read the output carefully — two different states look alike.** A round
   with no candidates is reported as either *"already compressed"* (its inputs
@@ -313,13 +314,13 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   cards and where their provenance belongs. A card whose body is only the
   ingest's boilerplate (`Ingested document: **X** (doc)`) wraps a rag_asset
   already in its own `sources`. But most carry a `serves` binding — the routing
-  judgement `seal-sweep`'s chain walk reads — so the move is a TRANSFER:
+  judgement `seal_sweep`'s chain walk reads — so the move is a TRANSFER:
   `add_element_source` onto the element the stub served, THEN retire the card.
   Retiring first loses the routing.
 
   Two categories it deliberately leaves alone: stubs serving a bare estimate
   slot (nothing to attach to) and stubs whose target has `layer: null` (moving
-  provenance onto a card spine-lint calls unfilable buries it — fix the
+  provenance onto a card `spine_lint` calls unfilable buries it — fix the
   destination first). Not a wrap-up ritual; run it when curating a project.
 - `cxp feeds-sweep <code>` — **CLI, read-only** (#174) — the feeds edges the
   project's CURRENT routing implies, by the same rule routing now applies as it

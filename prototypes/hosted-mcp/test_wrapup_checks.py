@@ -60,23 +60,20 @@ def server(monkeypatch):
 
 
 def test_run_all_lints_is_the_single_assembly():
-    """THE POINT OF #280. The CLI must not carry its own copy.
+    """THE POINT OF #280: one copy of "which tables, which columns, which checks".
 
-    Two copies of "which tables, which columns, which checks" drift — that is
-    what #172 (`Output` vs `Deliverables`) and #178 cost. The CLI command body
-    should call `run_all_lints`, not rebuild the query.
+    Two copies drift — that is what #172 (`Output` vs `Deliverables`) and
+    #178 cost. The CLI copies (`cxp spine-lint`, `cxp seal-sweep`) were
+    retired outright; the hosted verbs are the only callers. Neither command
+    may come back as a second copy.
     """
     from pathlib import Path
 
     cli = Path(__file__).resolve().parents[2] / "src/cp_engine/cli_cmds/spine.py"
     src = cli.read_text(encoding="utf-8")
-    assert "run_all_lints(client, codes" in src, (
-        "the CLI should delegate to the shared assembly"
-    )
-    # The old inline query must be gone, or it is still a second copy.
-    assert src.count("SPINE_LINT_COLUMNS") == 0, (
-        "the CLI still builds its own spine-lint query"
-    )
+    for retired in ('"spine-lint"', '"seal-sweep"', "run_all_lints(", "build_rounds("):
+        assert retired not in src, f"the CLI grew a second copy again: {retired}"
+    assert src.count("SPINE_LINT_COLUMNS") == 0
 
 
 def test_the_lint_functions_touch_no_filesystem():

@@ -77,8 +77,6 @@ def _locked_op(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     ("command", "verb"),
     [
         ("commitments-sweep", "commitments_sweep"),
-        ("spine-lint", "spine_lint"),
-        ("seal-sweep", "seal_sweep"),
     ],
 )
 def test_locked_1password_is_one_line_naming_the_hosted_verb(

@@ -27,7 +27,7 @@ its newest line. It needs real history:
 
 None means "cannot tell". Callers fall back to the stamp, which is what
 they did before this module existed. It surfaces in the planning bundle,
-`cxp exec-lint`, `cxp spine-lint`, and master-cp.md (`⚠️ _partial refresh_`
+`cxp exec-lint`, hosted `spine_lint`, and master-cp.md (`⚠️ _partial refresh_`
 in the project's row, via `sync._derive_partial_refresh_days`). For
 master-cp.md, "cannot tell" renders the row exactly as it rendered before
 the marker existed, so a shallow sync never adds a false marker. It does
@@ -250,7 +250,7 @@ def partial_refresh(cp_md_path: Path) -> PartialRefresh | None:
 
 
 def partial_refresh_warning(cp_md_path: Path) -> str | None:
-    """The lint line for `cxp exec-lint` / `cxp spine-lint`, or None."""
+    """The lint line for `cxp exec-lint`, or None."""
     found = partial_refresh(cp_md_path)
     if found is None:
         return None
@@ -359,7 +359,7 @@ def unauthored_ingest(cp_md_path: Path, code: str | None = None) -> IngestedMeet
 
 
 def unauthored_ingest_warning(cp_md_path: Path, code: str | None = None) -> str | None:
-    """The lint line for `cxp exec-lint` / `cxp spine-lint`, or None."""
+    """The lint line for `cxp exec-lint`, or None."""
     found = unauthored_ingest(cp_md_path, code)
     if found is None:
         return None
