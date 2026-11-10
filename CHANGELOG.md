@@ -11,6 +11,7 @@ Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automat
 - PDFs are tracked. The generated `.gitignore` no longer lists `*.pdf`, so a document someone shares reaches every clone even when its workstream has no Dropbox folder. A `.gitignore` can't filter by size: `cxp session commit` and `cxp capture-session` leave any PDF over 20 MB out of the commit and name it (`tracked_files.MAX_TRACKED_PDF_BYTES`). `*.pdf` is a retired pattern, so an old marker-less `.gitignore` doesn't keep it (#430).
 - **After upgrading:** the first `cxp sync` rewrites `.gitignore`. Existing PDFs then appear as untracked, and the next session commit in each workstream adds them.
 - `cxp spine-lint` and `cxp seal-sweep` are retired; use the cp-hosted `spine_lint` and `seal_sweep`, which run the same engine code with no local credentials. The CLI copies failed whenever the 1Password CLI was locked. The two git-history checks that only the CLI ran (overstated stamp #251, unauthored ingest #353) stay in `cxp exec-lint`. Lost: `seal-sweep --within/--today`. `cp-wrapup` and `/cp-tools` point at the hosted verbs. `cxp_commands` ceiling 62 → 60 (#429).
+- `scripts/post_release.py` reads mc-2's one-line `run: pytest tests/ -q` step (mc-2 #202 dropped the multi-line block and every `--ignore`); the gate parser had raised, failing a test on main and aborting this release's first attempt (#431).
 
 ## v0.134.2 — 2026-11-08
 
