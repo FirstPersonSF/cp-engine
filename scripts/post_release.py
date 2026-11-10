@@ -632,6 +632,10 @@ def parse_gate(workflow_text: str) -> tuple[list[str], str, str | None]:
     py = re.search(r'python-version:\s*"?([\d.]+)"?', workflow_text)
     for i, line in enumerate(lines):
         s = line.strip()
+        # Both shapes: a `run: |` block with `pytest` on its own line, and
+        # the one-line `run: pytest tests/ -q` mc-2 moved to in its #202.
+        if s.startswith("run:"):
+            s = s[len("run:"):].strip()
         if not (s == "pytest" or s.startswith("pytest ")):
             continue
         parts = [s]
