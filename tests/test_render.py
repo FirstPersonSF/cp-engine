@@ -1193,10 +1193,13 @@ def test_migration_bullet_re_matches_syncs_output():
     assert len(matches) == 1
 
 
-def test_gitignore_tracks_spreadsheets_but_not_office_binaries() -> None:
-    """Client trackers (.xlsx/.xls) are versioned in the tenant; decks and docs
-    stay in Dropbox. A spreadsheet pattern creeping back would leave v01 of a
-    client tracker on one laptop with nothing to diff v02 against."""
+def test_gitignore_tracks_spreadsheets_and_pdfs_but_not_office_binaries() -> None:
+    """Client trackers (.xlsx/.xls) and PDFs are versioned in the tenant; decks
+    and Word docs stay in Dropbox. A spreadsheet pattern creeping back would
+    leave v01 of a client tracker on one laptop with nothing to diff v02
+    against; a PDF pattern creeping back would leave a shared document on one
+    laptop when its workstream has no Dropbox folder (2026-11-10). Over-size
+    PDFs are kept out at commit time, not here (`tracked_files`)."""
     from cp_engine.render import render_gitignore
 
     patterns = {
@@ -1206,4 +1209,17 @@ def test_gitignore_tracks_spreadsheets_but_not_office_binaries() -> None:
     }
     assert "*.xlsx" not in patterns
     assert "*.xls" not in patterns
-    assert {"*.pptx", "*.docx", "*.pdf"} <= patterns
+    assert "*.pdf" not in patterns
+    assert {"*.pptx", "*.docx"} <= patterns
+
+
+def test_markerless_gitignore_does_not_resurrect_the_pdf_pattern() -> None:
+    """An old tenant .gitignore (no hand-written marker) still lists `*.pdf`.
+    Migration must read it as the old template's line, not a hand-added one,
+    or every existing tenant keeps ignoring PDFs."""
+    from cp_engine.render import merge_gitignore
+
+    merged = merge_gitignore("*.mp4\n*.pdf\n*.pptx\nmy-own-pattern/\n")
+    lines = {ln.strip() for ln in merged.splitlines()}
+    assert "*.pdf" not in lines
+    assert "my-own-pattern/" in lines

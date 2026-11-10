@@ -652,10 +652,13 @@ def session_paths(
                 return True
         return False
 
+    from cp_engine.tracked_files import too_large_to_track
+
     mine: list[str] = []
     others: list[str] = []
     for p in changed_paths(root):
-        (mine if owned(p) else others).append(p)
+        keep = owned(p) and not too_large_to_track(root / p)
+        (mine if keep else others).append(p)
     return sorted(set(mine)), sorted(set(others) - set(mine))
 
 
