@@ -293,7 +293,16 @@ def _write_to_working_dir(
 
     extras: list[Path] = []
     if include_working_dir_contents:
+        from cp_engine.tracked_files import limit_label, too_large_to_track
+
         all_extras = _trackable_paths_under(working_dir, cp_tenant_root)
+        too_large = [p for p in all_extras if too_large_to_track(p)]
+        if too_large:
+            all_extras = [p for p in all_extras if p not in too_large]
+            print(
+                f"Left {len(too_large)} PDF(s) over {limit_label()} uncommitted: "
+                + ", ".join(p.name for p in too_large)
+            )
         # De-dupe vs the session file + cp.md already in the list.
         already = {p.resolve() for p in paths_to_commit}
         for p in all_extras:

@@ -1022,6 +1022,40 @@ def test_working_dir_mode_respects_gitignore_for_binaries(tmp_path: Path) -> Non
     assert not any(".DS_Store" in c for c in committed)
 
 
+def test_working_dir_mode_leaves_out_a_pdf_over_the_size_limit(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """PDFs are tracked since 2026-11-10, but the content-only sweep must not
+    commit an over-size one, and must say it left it out."""
+    from cp_engine import tracked_files
+
+    monkeypatch.setattr(tracked_files, "MAX_TRACKED_PDF_BYTES", 1000)
+    tenant = make_cp_tenant(
+        tmp_path, working_dirs=[("1p", "ibx-5153-ai-campaign", "noop")]
+    )
+    wd = tenant / "1p" / "projects" / "ibx-5153-ai-campaign"
+    (wd / "documents").mkdir()
+    (wd / "documents" / "faq.pdf").write_bytes(b"%PDF-1.4 " + b"x" * 500)
+    (wd / "documents" / "huge.pdf").write_bytes(b"%PDF-1.4 " + b"x" * 5000)
+
+    result = capture_session_in_working_dir(
+        working_dir=wd,
+        summary_text=SAMPLE_SUMMARY,
+        user="Drew",
+        when=datetime(2026, 5, 9, 14, 30),
+        commit=True,
+        push=False,
+    )
+
+    committed = subprocess.run(
+        ["git", "show", "--name-only", "--format=", result.commit_sha],
+        cwd=tenant, check=True, capture_output=True, text=True,
+    ).stdout.strip().splitlines()
+    assert any(c.endswith("faq.pdf") for c in committed)
+    assert not any(c.endswith("huge.pdf") for c in committed)
+    assert "huge.pdf" in capsys.readouterr().out
+
+
 def test_working_dir_mode_does_not_sweep_other_projects(tmp_path: Path) -> None:
     """Sweep is scoped to the working dir; dirty state in OTHER projects
     must not get pulled in."""

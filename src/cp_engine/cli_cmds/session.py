@@ -468,6 +468,9 @@ def session_commit_cmd(
                 click.echo(f"Would leave {len(others)} other changed file(s):")
                 for p in others:
                     click.echo(f"  {p}")
+            big = _too_large_line(root, others)
+            if big:
+                click.echo(big)
             return
         result = commit_session(root, list(codes), message, extra)
     except SessionError as exc:
@@ -487,6 +490,9 @@ def session_commit_cmd(
             f"Left {len(result.left_alone)} other changed file(s) uncommitted: "
             f"{shown}{more}"
         )
+    big = _too_large_line(root, result.left_alone)
+    if big:
+        click.echo(big)
     line = others_line(root, committed_only_mine=bool(result.sha))
     if line:
         click.echo(line)
@@ -546,3 +552,14 @@ def session_register_cmd(remove: bool) -> None:
 # subcommands above belong to the `session` group only.
 del session_start_cmd, session_end_cmd, session_list_cmd
 del session_commit_cmd, session_register_cmd
+
+
+def _too_large_line(root, paths) -> str | None:
+    """Name the PDFs left out for size, so a skipped file is never silent."""
+    from cp_engine.tracked_files import limit_label, too_large_to_track
+
+    big = [p for p in paths if too_large_to_track(root / p)]
+    if not big:
+        return None
+    return (f"Left {len(big)} PDF(s) over {limit_label()} out of git: "
+            + ", ".join(big) + ". Put them in the project's Dropbox instead.")

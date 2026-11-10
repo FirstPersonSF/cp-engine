@@ -799,7 +799,6 @@ _GITIGNORE_BODY = """\
 *.gif
 *.heic
 *.tiff
-*.pdf
 *.pptx
 *.ppt
 *.docx
@@ -810,6 +809,9 @@ _GITIGNORE_BODY = """\
 
 # Spreadsheets (.xlsx/.xls) are tracked: a client tracker needs its v01
 # committed so v02 has something to diff against (2026-10-12).
+
+# PDFs are tracked up to 20 MB (2026-11-10): `cxp session commit` and
+# `cxp capture-session` leave larger ones out and say so.
 
 # OS
 .DS_Store
@@ -845,6 +847,7 @@ __pycache__/
 _RETIRED_GITIGNORE_PATTERNS = frozenset({
     "*.xlsx",                       # spreadsheets tracked since 2026-10-12
     "*.xls",
+    "*.pdf",                        # tracked under 20 MB since 2026-11-10
     ".cp-engine/",                  # narrowed to `.cp-engine/*` (#302)
     ".claude/hooks/__pycache__/",   # widened to `__pycache__/` (#359)
 })

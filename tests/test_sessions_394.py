@@ -506,3 +506,27 @@ def test_session_cli_end_to_end(env, monkeypatch):
     r = CliRunner().invoke(main, ["session", "end"])
     assert r.exit_code == 0, r.output + (r.stderr or "")
     assert not wt.exists()
+
+
+def test_scoped_commit_leaves_out_a_pdf_over_the_size_limit(env, monkeypatch):
+    """PDFs are tracked, but a commit that sweeps a workstream dir must not
+    carry an over-size one into git history (2026-11-10). The limit is shrunk
+    so the test needs no 20 MB file."""
+    from cp_engine import tracked_files
+
+    monkeypatch.setattr(tracked_files, "MAX_TRACKED_PDF_BYTES", 1000)
+    _, tenant, _ = env
+    _append(tenant / GGL / "cp.md", "A's note\n")
+    docs = tenant / GGL / "documents"
+    docs.mkdir()
+    (docs / "small.pdf").write_bytes(b"%PDF-1.4 " + b"x" * 500)
+    (docs / "big.pdf").write_bytes(b"%PDF-1.4 " + b"x" * 5000)
+    (docs / "big-notes.md").write_text("x" * 5000)  # size limit is PDFs only
+
+    result = commit_session(tenant, ["ggl-5168"], "[session] ggl-5168: pdfs")
+
+    assert f"{GGL}/documents/small.pdf" in result.committed
+    assert f"{GGL}/documents/big-notes.md" in result.committed
+    assert f"{GGL}/documents/big.pdf" not in result.committed
+    assert f"{GGL}/documents/big.pdf" in result.left_alone
+    assert f"{GGL}/documents/big.pdf" not in _files_in(tenant, "HEAD")

@@ -891,7 +891,8 @@ def test_gitignore_written_at_root(tmp_path: Path) -> None:
     )
     gitignore = (tmp_path / ".gitignore").read_text()
     assert "*.mp4" in gitignore
-    assert "*.pdf" in gitignore
+    # PDFs are tracked under 20 MB since 2026-11-10 (size kept out at commit).
+    assert "*.pdf" not in gitignore.splitlines()
     assert ".DS_Store" in gitignore
     assert ".cp-engine.local.toml" in gitignore
 
