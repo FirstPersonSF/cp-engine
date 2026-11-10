@@ -6144,7 +6144,7 @@ def add_element_source(
 
     Use it to close attach-as-source loops — an Agreement whose body says
     "attach the signed SOW" with no attached source is exactly what
-    `cp spine-lint` flags.
+    `spine_lint` flags.
 
     Args:
         project_code: engagement, initiative, or standalone-repo code.
@@ -10924,7 +10924,7 @@ def wrap_status(project_code: str) -> dict[str, Any]:
 def spine_lint(project_code: str) -> dict[str, Any]:
     """Run the spine health checks for one project — the `wrap up` pass.
 
-    WARN-ONLY, and the same checks `cxp spine-lint` runs: important-yet-unbound
+    WARN-ONLY: important-yet-unbound
     elements, dead-end activities, stale canon members, archived-but-still-
     referenced documents, partial archives, and the Exec Summary field budgets.
 
@@ -11131,7 +11131,7 @@ def commitments_sweep(project_code: str = "", undated_only: bool = False) -> dic
 def seal_sweep(project_code: str, all_deliverables: bool = False) -> dict[str, Any]:
     """For each shipped deliverable, what fed it — and what to seal.
 
-    The same sweep as `cxp seal-sweep`. A shipped deliverable is a COMPRESSION
+    A shipped deliverable is a COMPRESSION
     event: it absorbs the elements it was synthesized from, and absorbing a
     round's inputs is what keeps the spine distilled rather than accreting.
 

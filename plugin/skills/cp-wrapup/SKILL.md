@@ -135,13 +135,15 @@ who]` bullet under `### Open asks` that the next sync imports.
 
 ## 4 — Spine checks
 
-For each project touched:
+For each project touched, on `cp-hosted` (the CLI copies were retired;
+these need no local credentials):
 
-- **`cxp spine-lint <code>`** — WARN-ONLY: important-yet-unbound elements,
-  Agreements missing their source (close via `add_element_source` on
-  `cp-hosted`), scaffold placeholders in `cp.md`. Surface findings; fix
-  only what the user confirms.
-- **`cxp seal-sweep <code>`** — for each deliverable that shipped a version,
+- **`spine_lint <code>`** — WARN-ONLY: important-yet-unbound elements,
+  Agreements missing their source (close via `add_element_source`),
+  scaffold placeholders in `cp.md`. Surface findings; fix only what the
+  user confirms. The git-history checks (a stamp that overstates the
+  summary, ingested meetings never authored) stay in `cxp exec-lint`.
+- **`seal_sweep <code>`** — for each deliverable that shipped a version,
   what fed it plus the `seal_to_deliverable` call. Absorbing a round's
   inputs keeps the spine distilled. Read its output carefully: `/cp-tools`.
 

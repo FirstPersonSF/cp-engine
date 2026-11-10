@@ -70,7 +70,7 @@ def capture_session_cmd(
     Three ways to say where:
 
     \b
-    <code>  (positional, like exec-lint / spine-lint)
+    <code>  (positional, like exec-lint)
         Any workstream code (`ggl-5168`, `1pi-9005-mission-control`).
         Resolved to its working dir in the tenant found from cwd (or
         --cp-tenant), then captured as --working-dir would.

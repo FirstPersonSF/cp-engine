@@ -12,7 +12,7 @@ scans for them (all three were found in one sap-5174 read-through):
 
 Pure functions: rows/text in, display-ready warning strings out. WARN ONLY —
 callers echo the lines and always exit 0; the lint never auto-fixes and never
-blocks a wrap-up. Surfaced by `cp spine-lint` (run per touched project at
+blocks a wrap-up. Surfaced by hosted `spine_lint` (run per touched project at
 `wrap up`, alongside word-count discipline).
 """
 

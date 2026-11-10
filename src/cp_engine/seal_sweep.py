@@ -1,4 +1,4 @@
-"""``cp seal-sweep`` — ask what a shipped round consumed (#175).
+"""Seal sweep (hosted `seal_sweep`) — ask what a shipped round consumed (#175).
 
 `absorbed_by` had fired TWICE in the tenant's history when this was written.
 That is not a discipline failure: nothing ever asked the question. `wrap up`

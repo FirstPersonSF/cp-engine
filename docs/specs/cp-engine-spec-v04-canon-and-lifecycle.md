@@ -77,7 +77,7 @@ the pinned strategic elements linked to it:
 
 - **Membership edge:** `canon_of` (member element → brief element),
   status `active`.
-- **Small by construction:** target ≤7 active members. `cp spine-lint` warns
+- **Small by construction:** target ≤7 active members. `spine_lint` (cp-hosted) warns
   beyond that (warn-only, like all lint).
 - **Promotion is deliberate and displacing:** new hosted verb
   `promote_to_canon(code, item_id, replaces_item_id?)` — writes the

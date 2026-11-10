@@ -48,7 +48,7 @@ threshold in three days, three different guesses were made before anyone
 measured, and one guess was written into a CP file as fact and was wrong.
 
 WARN ONLY. Callers echo the lines and always exit 0 — consistent with
-`spine-lint`, `exec-lint`, and `commitments-sweep`, none of which block.
+hosted `spine_lint`, `exec-lint`, and `commitments-sweep`, none of which block.
 Note that `CLAUDE.md` says rotation is "forced before commit"; nothing here
 forces anything, and the template wording is corrected to match (see #204).
 

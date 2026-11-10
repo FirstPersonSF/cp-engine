@@ -15,7 +15,7 @@ file. This lint budgets the fields individually:
 Pure functions: cp.md text in, display-ready warning strings out. WARN ONLY —
 callers echo the lines and always exit 0; the lint never blocks a wrap-up and
 never edits. Surfaced standalone by `cp exec-lint`, folded into
-`cp spine-lint`'s cp.md pass, and echoed after `cp render` (the word-count
+hosted `spine_lint`'s cp.md pass, and echoed after `cp render` (the word-count
 discipline path). An absent or unauthored exec-summary region is silent —
 scaffolds aren't over budget.
 """
