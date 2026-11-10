@@ -509,13 +509,34 @@ def test_parse_gate_reads_the_ignore_list_and_working_directory():
     assert wd == "backend" and py == "3.13"
 
 
+def test_parse_gate_reads_a_one_line_run_step():
+    """mc-2 #202 moved the step to `run: pytest tests/ -q` on one line, with
+    comments between `working-directory` and `run`. The parser found no
+    `pytest` line at all and aborted v0.135.0's release."""
+    wf = """\
+jobs:
+  pytest:
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Run tests
+        working-directory: backend
+        # nothing is deselected
+        run: pytest tests/ -q
+"""
+    argv, wd, py = pr.parse_gate(wf)
+    assert argv == ["pytest", "tests/", "-q"]
+    assert wd == "backend" and py == "3.13"
+
+
 def test_parse_gate_against_mc2s_real_workflow():
     wf = REPO_ROOT.parent / "mc-2" / pr.MC2_WORKFLOW
     if not wf.is_file():
         pytest.skip("no mc-2 checkout beside cp-engine")
     argv, wd, py = pr.parse_gate(wf.read_text())
+    # No --ignore count: mc-2 #202 deselects nothing on purpose.
     assert argv[:2] == ["pytest", "tests/"] and wd == "backend"
-    assert sum(a.startswith("--ignore=") for a in argv) >= 10
 
 
 def _venv(root: Path, rel: str, version: str):
