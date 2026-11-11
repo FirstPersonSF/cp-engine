@@ -176,3 +176,74 @@ def test_search_passes_client_scope_to_the_rpc():
     assert name == "match_lessons"
     assert params["p_company_id"] == "ibx" and params["match_count"] == 50
     assert params["p_moments"] == ["travel"] and params["p_project_types"] is None
+
+
+# ── Phase 2: meeting ingest queues candidates ─────────────────────────
+
+
+def _meeting_client(existing=()):
+    c = _Client()
+    c.responses[("projects", "select")] = [
+        {"id": "p-ibx", "company_id": "ibx", "project_types": ["campaign"]}]
+    c.responses[("lessons", "select")] = [{"text": t} for t in existing]
+    return c
+
+
+def test_meeting_lessons_are_candidates_tied_to_the_meeting():
+    c = _meeting_client()
+    out = L.record_meeting_candidates(
+        c, [{"text": "Infoblox legal adds a full review round; plan for it.", "scope": "client",
+             "moments": ["invoicing", "legal-review-ish"], "evidence": "Krupa, 11-10"},
+            {"text": "Lock the review calendar at kickoff on campaigns.", "scope": "type"}],
+        project_code="ibx-5153-ai-campaign", meeting_id="m-1")
+    rows = [w[2] for w in _writes(c, "insert")]
+    assert len(out["queued"]) == 2 and not out["skipped"]
+    assert all(r["status"] == "candidate" and r["source_kind"] == "meeting"
+               and r["source_ref"] == "m-1" and r["source_project_id"] == "p-ibx" for r in rows)
+    assert rows[0]["company_id"] == "ibx" and rows[0]["moments"] == ["invoicing"]
+    assert rows[0]["other_moment"] == "legal-review-ish"  # unlisted moment kept, not lost
+    assert rows[1]["project_types"] == ["campaign"] and rows[1]["company_id"] is None
+
+
+def test_a_rerun_of_the_same_meeting_queues_nothing_new():
+    c = _meeting_client(existing=["Lock the review calendar at kickoff on campaigns."])
+    out = L.record_meeting_candidates(
+        c, [{"text": "Lock the review calendar at kickoff on campaigns.", "scope": "type"}],
+        project_code="ibx-5153", meeting_id="m-1")
+    assert not out["queued"] and "already queued" in out["skipped"][0]
+    assert not _writes(c, "insert")
+
+
+def test_a_bad_item_is_skipped_not_fatal():
+    c = _meeting_client()
+    out = L.record_meeting_candidates(
+        c, [{"text": "short", "scope": "practice"}, "Expenses in before the final invoice.", 7],
+        project_code="ibx-5153", meeting_id="m-2")
+    assert len(out["queued"]) == 1 and len(out["skipped"]) == 2
+
+
+def test_execute_plan_queues_lessons_and_warns_without_a_client(tmp_path, monkeypatch):
+    from cp_engine.ingest import execute_plan
+
+    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)  # never a live embed in tests
+
+    plan = {"projects": {}, "lessons": [{"text": "Expenses in before the final invoice.",
+                                         "scope": "practice"}]}
+    res = execute_plan(plan, tenant_root=tmp_path, today=date(2026, 11, 11))
+    assert any("not queued" in w for w in res.warnings) and not res.errors
+
+    c = _meeting_client()
+    res = execute_plan({"projects": {}, "lessons": plan["lessons"]}, tenant_root=tmp_path,
+                       today=date(2026, 11, 11), supabase=c, meeting_id="m-3")
+    assert res.lesson_candidates and not res.errors
+
+
+def test_both_meeting_prompts_ask_for_lessons_sparingly():
+    from cp_engine import plan_from_transcript as P
+
+    for template in (P._PROMPT_TEMPLATE, P._INITIATIVE_PROMPT_TEMPLATE):
+        rendered = template.format(cotag_block="", today="2026-11-11", project_code="x",
+                                   transcript_relpath="t.md", project_context="",
+                                   transcript="", team_block="", roster_block="")
+        assert "\nlessons:\n" in rendered and "Lessons are rare" in rendered
+        assert "Person and client lessons are internal" in rendered

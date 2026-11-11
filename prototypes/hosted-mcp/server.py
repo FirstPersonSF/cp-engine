@@ -616,10 +616,10 @@ mcp_server = MCPServer(
         "sequence for a session like this one, which has no `cxp` and no file "
         "editing. Read `master-cp.md` for the project index; get each "
         "project's path from there rather than constructing it.\n\n"
-        "MOST TOOLS READ; 33 OF THEM WRITE. The writers are the `create_*`, `set_*`, "
+        "MOST TOOLS READ; 35 OF THEM WRITE. The writers are the `create_*`, `set_*`, "
         "`add_*`, `remove_*`, `promote_*`, `retire_*`, `resolve_*`, "
         "`route_*`, `rotate_*`, `seal_to_*` and `capture_*` verbs, plus "
-        "`log_improvement`, `push_to_dropbox` and `ingest_url` — a name that "
+        "`log_improvement`, `log_lesson`, `push_to_dropbox` and `ingest_url` — a name that "
         "sounds like a mutation is one (a read-only endpoint, `/mcp/read`, "
         "carries none of them). Every tenant write is delegated upstream under "
         "YOUR identity; the server holds no MC-2 write key, which is why "
@@ -1435,6 +1435,16 @@ def embed_query(text: str) -> list[float]:
         _embedder_cache.append(voyageai.Client(api_key=os.environ["VOYAGE_API_KEY"]))
     client = _embedder_cache[0]
     result = client.embed([text], model=EMBED_MODEL, input_type="query")
+    return result.embeddings[0]
+
+
+def embed_document(text: str) -> list[float]:
+    """Embed text to STORE (a lesson), same model, `document` input type."""
+    if not _embedder_cache:
+        import voyageai
+
+        _embedder_cache.append(voyageai.Client(api_key=os.environ["VOYAGE_API_KEY"]))
+    result = _embedder_cache[0].embed([text], model=EMBED_MODEL, input_type="document")
     return result.embeddings[0]
 
 
@@ -11456,6 +11466,7 @@ READ_ONLY_TOOLS: dict[str, str] = {
     "preflight": "tree reads + SELECT spine/sources; pure report",
     "list_vendors": "SELECT vendors (team-gated: its policy admits any authenticated user)",
     "list_rfp_respondents": "SELECT rfp_respondents + vendors (team-gated)",
+    "list_lessons": "SELECT lessons / rpc match_lessons (team-gated)",
 }
 
 # name -> what it writes (the reason it is NOT on `/mcp/read`).
@@ -11497,6 +11508,9 @@ MAIN_ONLY_TOOLS: dict[str, str] = {
     # #412: the registry and pipeline writers, under the caller's identity
     "create_vendor": "INSERT vendors",
     "add_rfp_respondent": "INSERT rfp_respondents",
+    # learning from projects: lessons, under the caller's identity
+    "log_lesson": "INSERT lessons (+ UPDATE its embedding)",
+    "set_lesson": "UPDATE lessons",
 }
 
 READ_INSTRUCTIONS = (

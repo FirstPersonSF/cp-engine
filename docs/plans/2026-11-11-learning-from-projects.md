@@ -224,7 +224,7 @@ Run it over the 38 Closed and Archived projects:
 |---|---|---|
 | 0 | Types + moments | `project_types` and `lesson_moments` lookup tables; `projects.project_types`; a picker in MC-2; types drafted for all 70 projects for Drew to confirm |
 | 1 | Lesson store | `lessons` table, RLS, grants, embedding, `mc2_db` helpers, `review_due` (12 months) |
-| 2 | Capture | `log_lesson`, `list_lessons`, `confirm_lesson`, `edit_lesson`, `retire_lesson` (hosted + `cxp`); `remember this` trigger in the CLAUDE.md template; meeting-ingest candidate queue |
+| 2 | Capture | `log_lesson`, `list_lessons`, `set_lesson` on cp-hosted (three verbs, not five: `set_lesson` confirms, retires and edits; `list_lessons` covers lookouts, search and the review queue; no `cxp` copy, since CLI sessions reach cp-hosted too); `remember this` trigger and a Lessons section in the CLAUDE.md template; meeting ingest queues candidates |
 | 3 | Surfacing | Lookouts block in `get_project_state` / `cxp brief`; moment matching in `/cp-prep`; proposal / preflight / RFP read type and practice lessons; client-facing guardrail and tests; 12-month review prompts |
 | 4 | Close + Archive | Close: final ingest → report draft → lesson drafts → freelancer reviews. Archive: close tools; ingest reads `archive_path`; archived projects out of default search; delete `archive_project_assets` |
 | 5 | Freelancers | `freelancer_reviews`; agreed hours per contractor per project; planned vs actual tracking; "who should we use" recommendation |

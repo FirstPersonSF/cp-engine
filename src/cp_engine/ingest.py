@@ -22,6 +22,8 @@ See cp/docs/plans/2026-05-12-tier-1-design.md for full design.
 
 from __future__ import annotations
 
+import os
+
 from cp_engine.clock import tenant_now, tenant_today
 from cp_engine.aggregators import ASSET_MARKER_FMT
 import copy
@@ -265,9 +267,12 @@ class IngestPlanResult:
     commitments_already_closed: list[str] = field(default_factory=list)
     # Step 4b: stakeholder cards written (`created|updated <code>/<eid>`).
     stakeholder_cards: list[str] = field(default_factory=list)
+    # Learning phase 2: MC-2 lesson ids queued as candidates by this plan.
+    lesson_candidates: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
+            "lesson_candidates": self.lesson_candidates,
             "commitments_resolved": self.commitments_resolved,
             "commitments_already_closed": self.commitments_already_closed,
             "stakeholder_cards": self.stakeholder_cards,
@@ -600,7 +605,41 @@ def execute_plan(
             except Exception as exc:
                 result.errors.append(f"account-summary: {exc}")
 
+    # Learning from projects (phase 2): lessons the meeting named are queued
+    # in MC-2 as `candidate`s for the project owner to confirm. Never fails
+    # the ingest — a skip is a warning, not an error.
+    lessons = plan.get("lessons")
+    if lessons:
+        _queue_lessons(plan, lessons, supabase=supabase, meeting_id=meeting_id, result=result)
+
     return result
+
+
+def _queue_lessons(plan: dict, items: list, *, supabase: Any, meeting_id: str | None,
+                   result: IngestPlanResult) -> None:
+    if supabase is None:
+        result.warnings.append(f"lessons: {len(items)} candidate(s) not queued (no MC-2 client)")
+        return
+    codes = list((plan.get("projects") or {}).keys())
+    by_code: dict[str | None, list] = {}
+    for item in items:
+        code = (item.get("code") if isinstance(item, dict) else None) or (codes[0] if codes else None)
+        by_code.setdefault(code, []).append(item)
+    embed = None
+    if os.environ.get("VOYAGE_API_KEY"):
+        try:
+            from cp_engine.lessons import voyage_embedder
+
+            embed = voyage_embedder("document")
+        except Exception:  # noqa: BLE001 — candidates embed later (embed_missing)
+            embed = None
+    from cp_engine.lessons import record_meeting_candidates
+
+    for code, group in by_code.items():
+        out = record_meeting_candidates(supabase, group, project_code=code,
+                                        meeting_id=meeting_id, embed=embed)
+        result.lesson_candidates.extend(out["queued"])
+        result.warnings.extend(f"lessons: {s}" for s in out["skipped"])
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -701,6 +740,10 @@ def _validate_plan(plan: dict) -> None:
                 raise IngestPlanError(
                     f"plan.account_decisions[{i}] must be a mapping"
                 )
+
+    lessons = plan.get("lessons")
+    if lessons is not None and not isinstance(lessons, list):
+        raise IngestPlanError("plan.lessons must be a list of {text, scope, moments, evidence}")
 
     _warn_on_broadcast(plan)
 

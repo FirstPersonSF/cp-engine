@@ -136,8 +136,7 @@ def _embed_row(client, lesson_id: str, text: str, embed: Embedder | None) -> dic
         return {"embedded": False, "embed_reason": str(exc)[:200]}
 
 
-def add_lesson(
-    client,
+def lesson_row(
     *,
     text: str,
     scope: str,
@@ -153,25 +152,21 @@ def add_lesson(
     evidence: str | None = None,
     status: str = "candidate",
     owner_name: str | None = None,
-    embed: Embedder | None = None,
-    validate_lists: bool = True,
+    known_types: Iterable[str] | None = None,
+    known_moments: Iterable[str] | None = None,
 ) -> dict:
-    """Write one lesson; embed it if an embedder is given. Returns the row
-    (read shape) plus `embedded` / `embed_reason`."""
+    """The row to INSERT, checked. Pure: the caller does the write, so the
+    hosted server's writes stay visible in its own code (its read/write
+    classification is derived from the code)."""
     types = _clean_list(project_types)
     moms = _clean_list(moments)
     if status not in STATUSES:
         raise LessonError(f"status must be one of {', '.join(STATUSES)}")
     if source_kind not in SOURCE_KINDS:
         raise LessonError(f"source_kind must be one of {', '.join(SOURCE_KINDS)}")
-    known_types = known_moments = None
-    if validate_lists and (types or moms):
-        known_types = [t["slug"] for t in list_project_types(client, include_inactive=True)]
-        known_moments = [m["slug"] for m in list_moments(client, include_inactive=True)]
     check_draft(text=text, scope=scope, company_id=company_id,
                 stakeholder_name=stakeholder_name, project_types=types, moments=moms,
                 known_types=known_types, known_moments=known_moments)
-
     row = {
         "text": text.strip(),
         "scope": scope,
@@ -190,12 +185,32 @@ def add_lesson(
     }
     if status == "confirmed":
         row["confirmed_at"] = _now()  # the trigger also sets it; the check needs it on insert
-    inserted = (
-        client.table(Tables.LESSONS).insert(row).execute().data or []
-    )
+    return row
+
+
+def known_lists(client) -> tuple[list[str], list[str]]:
+    """Every type and moment slug, retired ones included (they stay valid)."""
+    return ([t["slug"] for t in list_project_types(client, include_inactive=True)],
+            [m["slug"] for m in list_moments(client, include_inactive=True)])
+
+
+def read_shape(row: dict) -> dict:
+    """A written row in the read shape (never the embedding)."""
+    return {k: row.get(k) for k in LESSON_COLUMNS.split(", ") if k in row}
+
+
+def add_lesson(client, *, embed: Embedder | None = None, validate_lists: bool = True,
+               **fields) -> dict:
+    """Write one lesson (fields as `lesson_row`); embed it if an embedder is
+    given. Returns the read shape plus `embedded` / `embed_reason`."""
+    known_types = known_moments = None
+    if validate_lists and (fields.get("project_types") or fields.get("moments")):
+        known_types, known_moments = known_lists(client)
+    row = lesson_row(known_types=known_types, known_moments=known_moments, **fields)
+    inserted = client.table(Tables.LESSONS).insert(row).execute().data or []
     if not inserted:
         raise LessonError("the lesson was not saved (no row returned)")
-    saved = {k: inserted[0].get(k) for k in LESSON_COLUMNS.split(", ") if k in inserted[0]}
+    saved = read_shape(inserted[0])
     saved.update(_embed_row(client, saved["id"], saved.get("text") or row["text"], embed))
     return saved
 
@@ -240,10 +255,10 @@ def due_for_review(client, *, today: date | None = None, owner_name: str | None 
                         review_due_by=today or date.today(), limit=200)
 
 
-def set_status(client, lesson_id: str, status: str, *, reason: str | None = None,
-               keep_review: bool = False) -> dict:
-    """confirm / retire / back to candidate. Confirming a lesson that came up
-    for review restarts its 12 months unless `keep_review`."""
+def status_patch(status: str, *, reason: str | None = None,
+                 keep_review: bool = False, today: date | None = None) -> dict:
+    """The UPDATE for confirm / retire / back to candidate. Confirming
+    restarts the 12-month review unless `keep_review`."""
     if status not in STATUSES:
         raise LessonError(f"status must be one of {', '.join(STATUSES)}")
     patch: dict[str, Any] = {"status": status}
@@ -253,23 +268,20 @@ def set_status(client, lesson_id: str, status: str, *, reason: str | None = None
             # Set here, not left to the trigger: it only dates a lesson on its
             # FIRST confirmation, and a re-confirm after review must restart
             # the clock too.
-            patch["review_due"] = _a_year_on(date.today()).isoformat()
+            patch["review_due"] = _a_year_on(today or date.today()).isoformat()
     if status == "retired":
         patch["retired_reason"] = (reason or "").strip() or None
-    rows = (
-        client.table(Tables.LESSONS).update(patch).eq("id", lesson_id).execute().data or []
-    )
-    if not rows:
-        raise LessonError(f"no lesson {lesson_id}")
-    return {k: rows[0].get(k) for k in LESSON_COLUMNS.split(", ") if k in rows[0]}
+    return patch
 
 
-def edit_lesson(client, lesson_id: str, *, embed: Embedder | None = None, **fields) -> dict:
-    """Change a lesson's text or tags. A text change re-embeds (the trigger
-    has already cleared the stale vector)."""
-    allowed = {"text", "scope", "company_id", "stakeholder_name", "stakeholder_item_id",
-               "project_types", "moments", "other_moment", "evidence", "owner_name"}
-    bad = set(fields) - allowed
+EDITABLE = frozenset({"text", "scope", "company_id", "stakeholder_name", "stakeholder_item_id",
+                      "project_types", "moments", "other_moment", "evidence", "owner_name"})
+
+
+def edit_patch(known_types: Iterable[str] | None = None,
+               known_moments: Iterable[str] | None = None, **fields) -> dict:
+    """The UPDATE for an edit, checked. Empty fields are left out."""
+    bad = set(fields) - EDITABLE
     if bad:
         raise LessonError(f"cannot edit {', '.join(sorted(bad))}")
     patch = dict(fields)
@@ -280,10 +292,37 @@ def edit_lesson(client, lesson_id: str, *, embed: Embedder | None = None, **fiel
         patch["text"] = (patch["text"] or "").strip()
         if not 10 <= len(patch["text"]) <= 1200:
             raise LessonError("a lesson is 10–1,200 characters")
+    if "scope" in patch and patch["scope"] not in SCOPES:
+        raise LessonError(f"scope must be one of {', '.join(SCOPES)}")
+    if known_types is not None and patch.get("project_types"):
+        unknown = [t for t in patch["project_types"] if t not in set(known_types)]
+        if unknown:
+            raise LessonError(f"unknown project type(s): {', '.join(unknown)}")
+    if known_moments is not None and patch.get("moments"):
+        unknown = [m for m in patch["moments"] if m not in set(known_moments)]
+        if unknown:
+            raise LessonError(f"unknown moment(s): {', '.join(unknown)} — put a moment "
+                              "that is not on the list in other_moment")
+    return patch
+
+
+def set_status(client, lesson_id: str, status: str, *, reason: str | None = None,
+               keep_review: bool = False) -> dict:
+    patch = status_patch(status, reason=reason, keep_review=keep_review)
     rows = client.table(Tables.LESSONS).update(patch).eq("id", lesson_id).execute().data or []
     if not rows:
         raise LessonError(f"no lesson {lesson_id}")
-    out = {k: rows[0].get(k) for k in LESSON_COLUMNS.split(", ") if k in rows[0]}
+    return read_shape(rows[0])
+
+
+def edit_lesson(client, lesson_id: str, *, embed: Embedder | None = None, **fields) -> dict:
+    """Change a lesson's text or tags. A text change re-embeds (the trigger
+    has already cleared the stale vector)."""
+    patch = edit_patch(**fields)
+    rows = client.table(Tables.LESSONS).update(patch).eq("id", lesson_id).execute().data or []
+    if not rows:
+        raise LessonError(f"no lesson {lesson_id}")
+    out = read_shape(rows[0])
     if "text" in patch:
         out.update(_embed_row(client, lesson_id, patch["text"], embed))
     return out
@@ -338,3 +377,82 @@ def voyage_embedder(input_type: str = "document") -> Embedder:
         return vc.embed([text], model=EMBED_MODEL, input_type=input_type).embeddings[0]
 
     return _embed
+
+
+def record_meeting_candidates(
+    client,
+    items: Sequence[Any],
+    *,
+    project_code: str | None,
+    meeting_id: str | None,
+    embed: Embedder | None = None,
+) -> dict:
+    """Queue lessons a meeting ingest proposed, as `candidate`s for the
+    project owner to confirm (Drew, 2026-11-11: the owner reviews).
+
+    Never raises and never fails the ingest: a bad item is skipped with a
+    reason. Idempotent per meeting: an item whose text this meeting already
+    queued is skipped, so a re-run adds nothing.
+    """
+    out: dict[str, Any] = {"queued": [], "skipped": []}
+    if not items:
+        return out
+    pid = cid = None
+    ptypes: list[str] = []
+    try:
+        from cp_engine.clickup_routing import engagement_number
+
+        number = engagement_number(project_code or "") if project_code else None
+        if number is not None:
+            rows = (client.table(Tables.PROJECTS)
+                    .select("id, company_id, project_types").eq("number", number)
+                    .limit(1).execute().data or [])
+            if rows:
+                pid, cid = rows[0]["id"], rows[0].get("company_id")
+                ptypes = list(rows[0].get("project_types") or [])
+        known_types, known_moments = known_lists(client)
+        already = set()
+        if meeting_id:
+            already = {
+                (r.get("text") or "").strip().lower()
+                for r in (client.table(Tables.LESSONS).select("text")
+                          .eq("source_ref", str(meeting_id)).execute().data or [])
+            }
+    except Exception as exc:  # noqa: BLE001 — a lesson queue never fails an ingest
+        out["skipped"].append(f"lookup failed: {str(exc)[:200]}")
+        return out
+
+    for raw in items:
+        item = {"text": raw} if isinstance(raw, str) else raw
+        if not isinstance(item, dict):
+            out["skipped"].append("not a mapping")
+            continue
+        text = str(item.get("text") or "").strip()
+        if text.lower() in already:
+            out["skipped"].append(f"already queued: {text[:60]}")
+            continue
+        scope = str(item.get("scope") or "practice").strip().lower()
+        moments = [m for m in _clean_list(item.get("moments")) if m in known_moments]
+        unlisted = [m for m in _clean_list(item.get("moments")) if m not in known_moments]
+        try:
+            row = lesson_row(
+                text=text, scope=scope,
+                company_id=cid if scope in ("client", "person") else None,
+                stakeholder_name=item.get("person"),
+                project_types=ptypes if scope == "type" else [],
+                moments=moments, other_moment=", ".join(unlisted) or None,
+                source_project_id=pid, source_kind="meeting",
+                source_ref=str(meeting_id) if meeting_id else None,
+                evidence=item.get("evidence"), status="candidate",
+                known_types=known_types, known_moments=known_moments,
+            )
+            saved = client.table(Tables.LESSONS).insert(row).execute().data or []
+        except Exception as exc:  # noqa: BLE001
+            out["skipped"].append(f"{text[:60]!r}: {str(exc)[:160]}")
+            continue
+        if saved:
+            already.add(text.lower())
+            out["queued"].append(saved[0].get("id"))
+            if embed is not None:
+                _embed_row(client, saved[0]["id"], row["text"], embed)
+    return out
