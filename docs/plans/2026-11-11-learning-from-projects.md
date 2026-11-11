@@ -107,8 +107,10 @@ worked on what already exists. What's missing:
 - **Agreed hours:** the hours agreed with a contractor for a project, recorded
   before they start, so planned and actual hours can be compared during the
   work. Actual hours come from invoices for contractors who invoice, and from
-  Gusto timesheets for those paid through Gusto (`entities.payment_method`
-  says which). Today's allocations are planned hours only.
+  Gusto timesheets for those paid through Gusto. `entities.payment_method`
+  should say which, but on 2026-11-11 it was empty for 58 of 60 active
+  external people (2 were `ach`), and the enum may need a Gusto value. Fill
+  it in during phase 5. Today's allocations are planned hours only.
 - **Recommendation:** "who should we use for X?" ranks freelancers by
   capability, past project types, ratings and recency, with the evidence
   shown. It is internal only, like client lookouts.
