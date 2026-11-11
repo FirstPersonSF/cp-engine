@@ -152,7 +152,7 @@ log = logging.getLogger("hosted-mcp")
 #  Config
 # ──────────────────────────────────────────────────────────────────────
 
-SERVER_VERSION = "hosted-cp/0.135.3"
+SERVER_VERSION = "hosted-cp/0.135.4"
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
