@@ -42,9 +42,9 @@ PEOPLE = [
     {"id": "geoff", "name": "Geoff Ahmann", "kind": "freelancer", "is_external": True,
      "roles": "art director", "notes": "", "default_hourly_rate": 100, "payment_method": None},
     {"id": "maya", "name": "Maya Ruiz", "kind": "freelancer", "is_external": True,
-     "roles": "motion designer", "notes": "", "default_hourly_rate": 90, "payment_method": "gusto"},
+     "roles": "motion designer", "notes": "", "default_hourly_rate": 90, "payment_method": "gusto", "paid_by": "payroll"},
     {"id": "sam", "name": "Sam Lee", "kind": "freelancer", "is_external": True,
-     "roles": "motion designer", "notes": "", "default_hourly_rate": 80, "payment_method": "ach"},
+     "roles": "motion designer", "notes": "", "default_hourly_rate": 80, "payment_method": "ach", "paid_by": "invoice"},
     {"id": "drew", "name": "Drew Fiero", "kind": "staff", "is_external": False},
 ]
 
@@ -108,7 +108,7 @@ def test_with_no_actuals_payables_give_a_labelled_estimate():
                 payables=[{"entity_id": "geoff", "project_id": "p-camp", "amount": 3500}])
     (row,) = F.hours_status(c, project_id="p-camp")
     assert row["actual"] == 35.0 and row["estimated"] is True and row["state"] == "near"
-    assert "unknown" in row["actuals_from"]  # how Geoff is paid isn't set yet
+    assert "set Paid by" in row["actuals_from"]  # how Geoff is paid isn't set yet
 
 
 def test_recommend_ranks_with_evidence_and_never_hides_a_no():
@@ -127,3 +127,10 @@ def test_find_person_exact_then_unique_substring():
     assert F.find_person(c, "maya ruiz")["id"] == "maya"
     assert F.find_person(c, "Geoff")["id"] == "geoff"
     assert F.find_person(c, "a") is None  # ambiguous
+
+
+def test_actuals_follow_paid_by():
+    assert F._actuals_from({"paid_by": "payroll"}) == "Gusto timesheets"
+    assert F._actuals_from({"paid_by": "invoice", "payment_method": "ach"}) == "invoices"
+    assert F._actuals_from({"paid_by": None, "payment_method": "gusto"}) == "Gusto timesheets"
+    assert "set Paid by" in F._actuals_from({"paid_by": None, "payment_method": "ach"})
