@@ -1,6 +1,6 @@
 ---
 Project: cp-engine — Learning from projects (archive rethink)
-Provenance: Version 01 | 2026-11-11
+Provenance: Version 02 | 2026-11-11
 Filename: docs/plans/2026-11-11-learning-from-projects.md
 Author: Claude (with Drew)
 ---
@@ -58,6 +58,68 @@ is mostly Video).
 `category` (Production / Strategy) stays as it is. It is a finance grouping,
 not a learning one.
 
+## Built to grow
+
+Drew, 2026-11-11: *"This is going to continuously grow and change."* So:
+
+- **Project types and moments are rows in MC-2 tables, not check
+  constraints or code enums.** Adding one is an insert from MC-2 or a verb,
+  with no migration and no release.
+- **A lesson can carry any number of types and moments.** Adding a new moment
+  later never invalidates an old lesson.
+- **Free text is accepted** when no listed moment fits. Free-text moments are
+  surfaced for promotion into the list in the review queue.
+- **Lessons are reviewed every 12 months.** A confirmed lesson older than 12
+  months comes back to its owner: keep, edit, or retire.
+
+## Moments
+
+The moments when a lesson bites. This is the starter list, and it will grow.
+
+| Moment | Example lesson shape |
+|---|---|
+| Kickoff | What to settle before work starts |
+| Estimating | What took longer than estimated; what to price differently |
+| Process order | Which steps can't be skipped; if one is, what approval replaces it, and when |
+| Booking resources | Anticipate who and what is needed, and book it early |
+| Hiring freelancers | Agree the hours before they start |
+| Contractor hours | Track progress against the agreed hours during the work |
+| Scope change | When to tell the client they are out of scope, and when we charge |
+| Travel | Expenses in early when people travel |
+| Shoot | Production-day lookouts |
+| Client review round | Who can actually close a round |
+| Legal review | What adds a round, and how long it takes |
+| Workload | Someone's plate is too full; what to move |
+| Final delivery | What to lock before handing over |
+| Invoicing | What has to be in before the final invoice |
+
+## Freelancers
+
+Freelancers are already `entities` rows (`is_external`) with weekly
+`sprint_allocations` per project: 426 rows across 12 people. Production
+companies are `vendors` (4 rows, with `watch_outs`). So the record of who
+worked on what already exists. What's missing:
+
+- **Evaluation:** a `freelancer_reviews` table (entity, project, role, rating
+  1–5, recommendation level, strengths, watch-outs, reviewer, date). One review
+  per freelancer per project, written at Close. The owner is prompted for it
+  alongside the lessons.
+- **Agreed hours:** the hours agreed with a contractor for a project, recorded
+  before they start, so planned and actual hours can be compared during the
+  work. *Open:* where do actual hours come from? Today allocations are planned
+  hours only.
+- **Recommendation:** "who should we use for X?" ranks freelancers by
+  capability, past project types, ratings and recency, with the evidence
+  shown. It is internal only, like client lookouts.
+
+## Workload lookahead
+
+cp's sprint prep has started noticing overloaded people. Make it deliberate.
+Per person, look ahead 2–4 weeks across allocations, open commitments by due
+date, deliverable dates and meetings, and flag anyone over capacity with a
+suggestion of what could move. The `workload` moment ties lessons to it ("the
+last time Drew carried three launches at once…").
+
 ## Design
 
 ### The lesson: one item, tagged
@@ -70,7 +132,7 @@ A lesson is one short statement, not a document. Each one carries:
 | `scope` | `person` (a stakeholder) · `client` (a company) · `type` (one or more project types) · `practice` (all our work). |
 | `company_id` / `stakeholder` | Set for `client` / `person` scope. |
 | `project_types` | Set for `type` scope; optional tags on the others. |
-| `when` | The moment it bites, from a short starter vocabulary: kickoff, estimating, hiring freelancers, travel, shoot, client review round, legal review, final delivery, invoicing. Free text is allowed. |
+| `when` | One or more moments when it bites, from a list that grows (see "Moments"). |
 | `source` | Where it came from: project, meeting, session, wrap report. Every lesson cites its evidence. |
 | `status` | `candidate` → `confirmed` → `retired`. Only confirmed lessons are shown. |
 | `owner` / `confirmed_by` | Who reviews it, and who confirmed it. |
@@ -115,20 +177,32 @@ boundary), not just in prompt instructions.
 
 ### Archive becomes a four-step close
 
-MC-2's Archive (and Close) runs in this order:
+Decided 2026-11-11: **Close distils, Archive closes the tools.**
+
+**Close** (status → Closed):
 
 1. **Final ingest:** pull in the project's remaining Dropbox files and
-   meetings *before* the folder moves. Ingest also has to keep working
-   against `archive_path` after the move.
+   meetings.
 2. **Draft the close-out report:** written automatically from the
    `wrap_report` facts, stored as a spine element, with the owner to confirm
    it. This uses the same "drafted by cp" pattern as Exec Summaries.
 3. **Draft lessons:** each axis of the report becomes candidate lessons,
-   scoped and tagged. The owner confirms, edits or drops them.
-4. **Close the tools:** as today (#208/#212).
+   scoped and tagged. The **project owner** confirms, edits or drops them.
+4. **Review freelancers:** one review per freelancer who worked on the
+   project.
 
-The project leaves the active views (master-cp, agendas, planning). Its
-sources, meetings, spine, report and lessons stay readable and searchable.
+**Archive** (status → Archived): close the tools, as today (#208/#212).
+Ingest has to keep reading the moved folder (`archive_path`), so a later
+backfill still works.
+
+**An archived project leaves context.** It drops out of active views
+(already true) **and out of default search**. Today the `match_chunks*` RPCs
+ignore project status, so that has to change. An archived project's
+sources and meetings are searched only when asked explicitly ("look in
+archived projects", an `include_archived` flag). **Its confirmed lessons
+and freelancer reviews stay live.** They are the distilled part, and they
+are what keeps it useful.
+
 Delete `archive_project_assets` and its CLI command.
 
 ### Backfill
@@ -144,26 +218,37 @@ Run it over the 38 Closed and Archived projects:
 
 | # | Phase | Ships |
 |---|---|---|
-| 0 | Project types | `projects.project_types text[]` with a check constraint; a picker in MC-2; types drafted for all 70 projects for Drew to confirm |
-| 1 | Lesson store | `lessons` table, RLS, grants, embedding, `mc2_db` helpers |
+| 0 | Types + moments | `project_types` and `lesson_moments` lookup tables; `projects.project_types`; a picker in MC-2; types drafted for all 70 projects for Drew to confirm |
+| 1 | Lesson store | `lessons` table, RLS, grants, embedding, `mc2_db` helpers, `review_due` (12 months) |
 | 2 | Capture | `log_lesson`, `list_lessons`, `confirm_lesson`, `edit_lesson`, `retire_lesson` (hosted + `cxp`); `remember this` trigger in the CLAUDE.md template; meeting-ingest candidate queue |
-| 3 | Surfacing | Lookouts block in `get_project_state` / `cxp brief`; `when` matching in `/cp-prep`; proposal / preflight / RFP read type and practice lessons; client-facing guardrail and tests |
-| 4 | Archive close | MC-2 close runs final ingest → report draft → lesson drafts → close tools; ingest reads `archive_path`; delete `archive_project_assets` |
-| 5 | Backfill | 38 projects: ingest archive folders, set types, draft reports and lessons; seed from stakeholder dossiers |
-| 6 | Lessons page | MC-2 page: review queue, filter by client / type / `when` |
+| 3 | Surfacing | Lookouts block in `get_project_state` / `cxp brief`; moment matching in `/cp-prep`; proposal / preflight / RFP read type and practice lessons; client-facing guardrail and tests; 12-month review prompts |
+| 4 | Close + Archive | Close: final ingest → report draft → lesson drafts → freelancer reviews. Archive: close tools; ingest reads `archive_path`; archived projects out of default search; delete `archive_project_assets` |
+| 5 | Freelancers | `freelancer_reviews`; agreed hours per contractor per project; planned vs actual tracking; "who should we use" recommendation |
+| 6 | Workload lookahead | Per-person 2–4 week load from allocations, commitments, deliverables and meetings; flags in sprint prep |
+| 7 | Backfill | 38 projects: ingest archive folders, set types, draft reports and lessons; seed from stakeholder dossiers; reviews for past freelancers |
+| 8 | Lessons page | MC-2 page: review queue, filter by client / type / moment, add types and moments |
 
 Build order: phases 0–3 first (usable the same day lessons start being
-recorded), then 4–6.
+recorded), then 4 onwards.
+
+## Decisions (2026-11-11)
+
+- **Project types:** Drew's 12, listed above. The list grows.
+- **Moments:** the starter list is good, plus booking resources, contractor
+  hours, scope change, process order and workload. The list grows.
+- **Reviewer:** the project owner, by default.
+- **Close vs Archive:** Close runs the report, lessons and freelancer
+  reviews. Archive only closes the tools.
+- **Archived context:** archived projects are out of default search, and
+  searched only on request. Their lessons stay live.
+- **Stale lessons:** reviewed every 12 months.
 
 ## Open questions
 
-- **`when` vocabulary:** is the starter list right? It is meant to grow.
-- **Reviewer:** the project owner by default, with Drew for `practice`
-  lessons. Confirm.
-- **Close vs Archive:** should a Closed project also run steps 1–3, or only
-  Archive? Proposed: Close runs 1–3, and Archive only closes the tools.
-- **Lessons that go stale:** retire by hand only, or prompt a review after
-  12 months?
+- **Actual hours:** where do a contractor's actual hours come from:
+  timesheets, invoices, or ClickUp time? (Phase 5.)
+- **Practice-wide lessons:** do they need a second reviewer beyond the
+  project owner?
 
 ## Tracker
 
