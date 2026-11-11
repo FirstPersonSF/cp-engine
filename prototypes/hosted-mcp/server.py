@@ -616,10 +616,10 @@ mcp_server = MCPServer(
         "sequence for a session like this one, which has no `cxp` and no file "
         "editing. Read `master-cp.md` for the project index; get each "
         "project's path from there rather than constructing it.\n\n"
-        "MOST TOOLS READ; 35 OF THEM WRITE. The writers are the `create_*`, `set_*`, "
+        "MOST TOOLS READ; 37 OF THEM WRITE. The writers are the `create_*`, `set_*`, "
         "`add_*`, `remove_*`, `promote_*`, `retire_*`, `resolve_*`, "
         "`route_*`, `rotate_*`, `seal_to_*` and `capture_*` verbs, plus "
-        "`log_improvement`, `log_lesson`, `push_to_dropbox` and `ingest_url` — a name that "
+        "`log_improvement`, `log_lesson`, `review_freelancer`, `push_to_dropbox` and `ingest_url` — a name that "
         "sounds like a mutation is one (a read-only endpoint, `/mcp/read`, "
         "carries none of them). Every tenant write is delegated upstream under "
         "YOUR identity; the server holds no MC-2 write key, which is why "
@@ -11559,6 +11559,7 @@ READ_ONLY_TOOLS: dict[str, str] = {
     "list_vendors": "SELECT vendors (team-gated: its policy admits any authenticated user)",
     "list_rfp_respondents": "SELECT rfp_respondents + vendors (team-gated)",
     "list_lessons": "SELECT lessons / rpc match_lessons (team-gated)",
+    "list_freelancers": "SELECT entities, freelancer_reviews, contractor_hours (team-gated)",
 }
 
 # name -> what it writes (the reason it is NOT on `/mcp/read`).
@@ -11603,6 +11604,9 @@ MAIN_ONLY_TOOLS: dict[str, str] = {
     # learning from projects: lessons, under the caller's identity
     "log_lesson": "INSERT lessons (+ UPDATE its embedding)",
     "set_lesson": "UPDATE lessons",
+    # learning phase 5: freelancer reviews and contractor hours
+    "review_freelancer": "INSERT/UPDATE freelancer_reviews",
+    "set_contractor_hours": "INSERT contractor_hours",
 }
 
 READ_INSTRUCTIONS = (

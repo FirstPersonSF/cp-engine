@@ -165,12 +165,12 @@ def test_master_cp_lists_lessons_to_review_by_owner(tmp_path):
     from cp_engine.render import render_master_cp
     from tests.test_sync import make_config
 
-    queue = [{"owner": "Drew Fiero", "candidates": 2, "due": 1},
+    queue = [{"owner": "Drew Fiero", "candidates": 2, "due": 1, "reviews": 2},
              {"owner": "Marcello Grande", "candidates": 0, "due": 3}]
     out = render_master_cp(make_config(tmp_path), (), datetime(2026, 11, 11, tzinfo=timezone.utc),
                            lessons_to_review=queue)
-    assert "**Lessons to review** (6)" in out
-    assert "- Drew Fiero: 2 to confirm, 1 due for yearly review" in out
+    assert "**Lessons to review** (8)" in out
+    assert "- Drew Fiero: 2 to confirm, 1 due for yearly review, 2 freelancer reviews to write" in out
     assert "- Marcello Grande: 3 due for yearly review" in out
     assert "Lessons to review" not in render_master_cp(
         make_config(tmp_path), (), datetime(2026, 11, 11, tzinfo=timezone.utc))

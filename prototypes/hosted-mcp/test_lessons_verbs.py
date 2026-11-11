@@ -310,3 +310,60 @@ def test_create_spine_element_runs_the_guard_before_writing(server, monkeypatch)
 
 def test_get_project_state_documents_lookouts_as_internal(server):
     assert "INTERNAL" in server.get_project_state.__doc__
+
+
+# ── Phase 5: freelancer verbs ─────────────────────────────────────────
+
+
+@pytest.fixture
+def fenv(server, monkeypatch):
+    store = _Store({
+        "entities": [{"id": "maya", "name": "Maya Ruiz", "kind": "freelancer", "is_external": True,
+                      "default_hourly_rate": 90, "payment_method": "gusto", "roles": "motion"}],
+        "freelancer_reviews": [], "contractor_hours": [], "sprint_allocations": [],
+        "projects": [{"id": "p-ibx", "code": "IBX-ai-campaign", "project_types": ["campaign"],
+                      "account_manager": "Drew Fiero"}],
+    })
+    monkeypatch.setattr(server, "user_client", lambda: store)
+    monkeypatch.setattr(server, "caller_is_team_member", lambda: (True, ""))
+    monkeypatch.setattr(server, "caller_email", lambda: "drew@example.com")
+    monkeypatch.setattr(server, "resolve_project_id", lambda c, code: "p-ibx")
+    monkeypatch.setattr(server, "resolve_company_id", lambda c, pid: "ibx")
+    monkeypatch.setattr(server, "audit", lambda *a, **k: None)
+    return store
+
+
+def test_freelancer_verbs_are_classified(server):
+    read = {t.name for t in server.read_server._tool_manager.list_tools()}
+    for verb in ("review_freelancer", "set_contractor_hours"):
+        assert verb in server.MAIN_ONLY_TOOLS and verb not in read
+    assert "list_freelancers" in read
+
+
+def test_review_then_replace(pt, fenv):
+    out = pt.review_freelancer("ibx-5153", "maya", 5, "yes", strengths="fast")
+    assert out["replaced"] is False
+    ins = [w for w in fenv.writes if w[:2] == ("freelancer_reviews", "insert")][0][2]
+    assert ins["status"] == "done" and ins["rating"] == 5 and ins["entity_id"] == "maya"
+    out = pt.review_freelancer("ibx-5153", "Maya Ruiz", 4, "with-reservations")
+    assert out["replaced"] is True
+    assert "1–5" in pt.review_freelancer("ibx-5153", "maya", 9, "yes")["error"]
+    assert "no single person" in pt.review_freelancer("ibx-5153", "nobody", 3, "yes")["error"]
+
+
+def test_hours_are_recorded_and_refused_plainly(pt, fenv):
+    out = pt.set_contractor_hours("ibx-5153", "maya", "agreed", 40)
+    assert out["recorded"]["source"] == "agreement"
+    out = pt.set_contractor_hours("ibx-5153", "maya", "actual", 12, source="gusto",
+                                  period_start="2026-11-02", period_end="2026-11-08")
+    assert out["recorded"]["kind"] == "actual"
+    assert "actual hours come from" in pt.set_contractor_hours(
+        "ibx-5153", "maya", "actual", 3, source="agreement")["error"]
+
+
+def test_list_freelancers_reads_ranks_hours_and_reviews_to_write(pt, fenv):
+    out = pt.list_freelancers(need="motion", project_code="ibx-5153")
+    assert "error" not in out, out
+    assert out["ranked"][0]["name"] == "Maya Ruiz"
+    assert out["hours"] == [] and out["reviews_to_write"] == []
+    assert "internal" in out["note"]

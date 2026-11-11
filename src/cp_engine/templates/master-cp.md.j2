@@ -37,9 +37,13 @@ Author: cp-engine (sync)
 {%- endfor %}
 {% endif %}
 {%- if lessons_to_review %}
-**Lessons to review** ({{ lessons_to_review | map(attribute="candidates") | sum + lessons_to_review | map(attribute="due") | sum }})
+**Lessons to review** ({{ lessons_to_review | map(attribute="candidates") | sum + lessons_to_review | map(attribute="due") | sum + lessons_to_review | selectattr("reviews", "defined") | map(attribute="reviews") | sum }})
 {%- for l in lessons_to_review %}
-- {{ l.owner }}:{% if l.candidates %} {{ l.candidates }} to confirm{% endif %}{% if l.candidates and l.due %},{% endif %}{% if l.due %} {{ l.due }} due for yearly review{% endif %}
+{%- set parts = [] %}
+{%- if l.candidates %}{% set _ = parts.append(l.candidates ~ " to confirm") %}{% endif %}
+{%- if l.due %}{% set _ = parts.append(l.due ~ " due for yearly review") %}{% endif %}
+{%- if l.reviews %}{% set _ = parts.append(l.reviews ~ " freelancer review" ~ ("s" if l.reviews != 1 else "") ~ " to write") %}{% endif %}
+- {{ l.owner }}: {{ parts | join(", ") }}
 {%- endfor %}
 {% endif %}
 {%- if agenda %}

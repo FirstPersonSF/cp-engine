@@ -91,6 +91,9 @@ class Tables:
     # project (requested at Close), and agreed vs actual contractor hours.
     FREELANCER_REVIEWS = "freelancer_reviews"
     CONTRACTOR_HOURS = "contractor_hours"
+    # Read-only here: a contractor's billed amounts, the fallback ESTIMATE of
+    # actual hours (amount ÷ rate) when no invoice/Gusto hours are recorded.
+    PAYABLES = "payables"
 
     # public — spine
     SPINE_SUBSTANCE = "spine_substance"

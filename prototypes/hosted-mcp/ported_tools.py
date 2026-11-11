@@ -1839,3 +1839,179 @@ def set_lesson(
                               "fields": sorted(fields)}, 1)
     out["caller"] = _srv.caller_email() or _srv.caller_subject()
     return out
+
+
+# ── Freelancers (learning phase 5; mc-2 mig 218) ─────────────────────
+#
+# Drew, 2026-11-11: evaluate freelancers with a record of their projects and
+# a rating, recommend the right person from history, and agree contractor
+# hours before they start and track them. Internal: never client-facing.
+
+
+def _person_or_error(client, tool: str, person: str) -> tuple[dict | None, dict | None]:
+    from cp_engine.freelancers import find_person
+
+    found = find_person(client, person)
+    if found is None:
+        _srv.audit(client, tool, {"person": person, "result": "error"}, 0)
+        return None, {"error": f"no single person matches {person!r} in MC-2 (People)"}
+    return found, None
+
+
+@hosted_tool
+def review_freelancer(
+    project_code: str,
+    person: str,
+    rating: int,
+    recommend: str,
+    strengths: str = "",
+    watch_outs: str = "",
+    role: str = "",
+) -> dict[str, Any]:
+    """Record how a freelancer worked out on one project.
+
+    `rating` 1–5; `recommend` yes | with-reservations | no; `strengths`
+    and `watch_outs` in a sentence each ("fast; needs a written brief").
+    Completes the review Close requested, or adds one. One review per
+    freelancer per project: a second call replaces the first. Internal.
+    Team members only.
+    """
+    tool = "review_freelancer"
+    refused = _team_gate(tool, project_code)
+    if refused:
+        return refused
+    from cp_engine.freelancers import FreelancerError, review_patch
+
+    client = _srv.user_client()
+    found = _resolve(client, project_code)
+    if found is None:
+        return _not_found(client, tool, project_code)
+    pid, _cid = found
+    who, err = _person_or_error(client, tool, person)
+    if err:
+        return {"project_code": project_code, **err}
+    try:
+        patch = review_patch(rating=rating, recommend=recommend, strengths=strengths,
+                             watch_outs=watch_outs, role=role,
+                             reviewer=_srv.caller_email() or "", now_iso=_now_iso())
+    except FreelancerError as exc:
+        _srv.audit(client, tool, {"project_code": project_code, "result": "error"}, 0)
+        return {"project_code": project_code, "error": str(exc)}
+    try:
+        existing = (client.table("freelancer_reviews").select("id")
+                    .eq("entity_id", who["id"]).eq("project_id", pid).limit(1).execute().data or [])
+        if existing:
+            client.table("freelancer_reviews").update(patch).eq("id", existing[0]["id"]).execute()
+        else:
+            client.table("freelancer_reviews").insert(
+                {"entity_id": who["id"], "project_id": pid, **patch}).execute()
+    except Exception as exc:  # noqa: BLE001 — MCP boundary
+        _srv.audit(client, tool, {"project_code": project_code, "result": "error"}, 0)
+        return {"project_code": project_code, "error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+    _srv.audit(client, tool, {"project_code": project_code, "person": who.get("name"),
+                              "rating": rating, "recommend": recommend}, 1)
+    return {"project_code": project_code, "person": who.get("name"), "rating": rating,
+            "recommend": recommend, "replaced": bool(existing),
+            "caller": _srv.caller_email() or _srv.caller_subject()}
+
+
+@hosted_tool
+def set_contractor_hours(
+    project_code: str,
+    person: str,
+    kind: str,
+    hours: float,
+    source: str = "",
+    period_start: str = "",
+    period_end: str = "",
+    source_ref: str = "",
+    note: str = "",
+) -> dict[str, Any]:
+    """Record a contractor's AGREED hours (before they start) or ACTUAL hours.
+
+    `kind` agreed | actual. Agreed: the newest one counts. Actual: one row per
+    invoice or Gusto timesheet period — `source` invoice | gusto | manual,
+    `source_ref` the invoice number, `period_start`/`period_end` ISO dates.
+    Returns where the person now stands against the agreement. Internal.
+    Team members only.
+    """
+    tool = "set_contractor_hours"
+    refused = _team_gate(tool, project_code)
+    if refused:
+        return refused
+    from cp_engine.freelancers import FreelancerError, hours_row, hours_status
+
+    client = _srv.user_client()
+    found = _resolve(client, project_code)
+    if found is None:
+        return _not_found(client, tool, project_code)
+    pid, _cid = found
+    who, err = _person_or_error(client, tool, person)
+    if err:
+        return {"project_code": project_code, **err}
+    try:
+        row = hours_row(entity_id=who["id"], project_id=pid, kind=kind, hours=hours,
+                        source=source, period_start=period_start or None,
+                        period_end=period_end or None, source_ref=source_ref, note=note)
+        client.table("contractor_hours").insert(row).execute()
+    except FreelancerError as exc:
+        _srv.audit(client, tool, {"project_code": project_code, "result": "error"}, 0)
+        return {"project_code": project_code, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001 — MCP boundary
+        _srv.audit(client, tool, {"project_code": project_code, "result": "error"}, 0)
+        return {"project_code": project_code, "error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+    _srv.audit(client, tool, {"project_code": project_code, "person": who.get("name"),
+                              "kind": kind, "hours": row["hours"]}, 1)
+    standing = None
+    with contextlib.suppress(Exception):
+        standing = (hours_status(client, project_id=pid, entity_id=who["id"]) or [None])[0]
+    return {"project_code": project_code, "person": who.get("name"), "recorded": row,
+            "standing": standing, "caller": _srv.caller_email() or _srv.caller_subject()}
+
+
+@hosted_tool
+def list_freelancers(
+    need: str = "",
+    project_code: str = "",
+    limit: int = 8,
+) -> dict[str, Any]:
+    """Who should we use, and how are contractors tracking.
+
+    - `need` ("motion designer", "director who travels") — freelancers
+      ranked with the evidence: their ratings and recommendations, past
+      projects and those projects' types, how recently, watch-outs.
+    - `project_code` — that project's contractors against their agreed
+      hours (over / near / ok / no agreement / no actuals; an ESTIMATE from
+      payables is labelled), and ranks for that project's types.
+    Also returns reviews Close requested that are still to write. Internal.
+    Team members only.
+    """
+    tool = "list_freelancers"
+    refused = _team_gate(tool, project_code or None)
+    if refused:
+        return refused
+    from cp_engine.freelancers import hours_status, pending_reviews, recommend
+
+    client = _srv.user_client()
+    out: dict[str, Any] = {"need": need or None, "project_code": project_code or None}
+    pid = None
+    ptypes: list[str] = []
+    if project_code:
+        found = _resolve(client, project_code)
+        if found is None:
+            return _not_found(client, tool, project_code)
+        pid, _cid = found
+        ptypes = _project_types_of(client, pid)
+    try:
+        out["ranked"] = recommend(client, need=need, project_types=ptypes or None,
+                                  limit=max(1, min(int(limit or 8), 25)))
+        if pid:
+            out["hours"] = hours_status(client, project_id=pid)
+        out["reviews_to_write"] = pending_reviews(client)
+    except Exception as exc:  # noqa: BLE001 — MCP boundary
+        _srv.audit(client, tool, {"project_code": project_code, "result": "error"}, 0)
+        return {**out, "error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+    out["note"] = "internal: ratings and watch-outs about people never reach a client"
+    _srv.audit(client, tool, {"project_code": project_code, "need": need},
+               len(out.get("ranked") or []))
+    return out

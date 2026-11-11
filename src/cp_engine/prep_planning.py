@@ -229,6 +229,9 @@ class ProjectPlanningBlock:
     # project (an invoice due, a shoot, a review round) — `{text, moment,
     # scope, person}`. Internal: they inform planning, never client output.
     watch_for: tuple[dict, ...] = ()
+    # Learning phase 5: contractors over or near their agreed hours, or
+    # working with no agreement. One line each; internal.
+    hours_alerts: tuple[str, ...] = ()
     # ``fetch_error`` carries ONE sentinel since the ClickUp fallback was
     # removed (commitments consolidation, cp-engine #38):
     #   "no_schedule_milestones" — the MC-2 estimator schedule has no undone
@@ -1586,6 +1589,22 @@ def build_project_block(
         watch = tuple(_watch_for(supabase_client, getattr(project, "mc2_id", None), upcoming))
     except Exception as exc:  # noqa: BLE001 — advisory
         log.warning("watch-for read failed for %s: %s", getattr(project, "code", "?"), exc)
+    hours_alerts: tuple[str, ...] = ()
+    try:
+        from cp_engine.freelancers import hours_status as _hours_status
+
+        if supabase_client is not None and getattr(project, "mc2_id", None):
+            lines = []
+            for h in _hours_status(supabase_client, project_id=project.mc2_id):
+                if h["state"] in ("over", "near"):
+                    est = " (estimated from payables)" if h["estimated"] else ""
+                    lines.append(f"{h['name']}: {h['actual']} of {h['agreed']} agreed hours"
+                                 f" — {h['state']}{est}")
+                elif h["state"] == "no agreement":
+                    lines.append(f"{h['name']}: hours logged with no agreed total")
+            hours_alerts = tuple(lines)
+    except Exception as exc:  # noqa: BLE001 — advisory
+        log.warning("contractor-hours read failed for %s: %s", getattr(project, "code", "?"), exc)
     return ProjectPlanningBlock(
         project=project,
         exec_summary=exec_summary,
@@ -1607,6 +1626,7 @@ def build_project_block(
         exec_summary_partial_refresh=partial,
         exec_summary_unauthored_ingest=unauthored_fed,
         watch_for=watch,
+        hours_alerts=hours_alerts,
     )
 
 
@@ -2267,6 +2287,11 @@ def _render_project_block(block: ProjectPlanningBlock) -> list[str]:
             out.append(f"- [{w.get('moment') or 'lesson'}] {who}{w['text']}")
         out.append("")
 
+    if block.hours_alerts:
+        out.append("**Contractor hours:**")
+        out.extend(f"- {line}" for line in block.hours_alerts)
+        out.append("")
+
     if block.drift:
         out.append("**⚠ Estimate drift:**")
         out.extend(f"- {w}" for w in block.drift)
@@ -2382,6 +2407,11 @@ def _render_bundle_project_block(block: ProjectPlanningBlock) -> list[str]:
         for w in block.watch_for:
             who = f"{w['person']}: " if w.get("person") else ""
             out.append(f"- [{w.get('moment') or 'lesson'}] {who}{w['text']}")
+        out.append("")
+
+    if block.hours_alerts:
+        out.append("**Contractor hours:**")
+        out.extend(f"- {line}" for line in block.hours_alerts)
         out.append("")
 
     if block.drift:
