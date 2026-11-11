@@ -4,6 +4,35 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.136.0 — 2026-11-11
+
+**cp learns from projects: lessons, client lookouts, a Close run that distils a finished project, freelancer reviews and hours, and a workload lookahead.** Minor: six new cp-hosted verbs, a new webhook route, MC-2 migrations 215–218b (already applied). Plan: `docs/plans/2026-11-11-learning-from-projects.md` (#438; MC-2 side mc-2 #459).
+
+- **Lessons.** MC-2 `lessons` holds one short lesson per row. Each has a scope (`person`, `client`, `type` of work or `practice`), project types and moments from lists that grow, a status (candidate → confirmed → retired) and a 12-month review. Person and client lessons are always internal.
+- **New verbs on cp-hosted:**
+  - `log_lesson`: what `remember this: …` calls.
+  - `list_lessons`: a project's lookouts, search by meaning, the review queue, and lessons due for review.
+  - `set_lesson`: confirm, retire or edit.
+- **Meeting ingest proposes lessons.** Lessons the meeting itself names arrive as candidates for the owner to confirm.
+- **Lookouts where they help:**
+  - `get_project_state` returns `lookouts`, and `cxp brief` shows them.
+  - The sprint-prep bundle adds "Watch for" when a lesson's moment is near.
+  - `preflight` and `cxp preflight` return scoping lessons, with client lookouts kept apart; the proposal and RFP skills read them.
+  - master-cp lists "Lessons to review" by owner.
+- **Guardrail.** `create_spine_element` and `add_spine_version` refuse a client-facing document (proposal, RFP, SOW…) that quotes a person or client lesson. A name alone is fine.
+- **Close distils, Archive closes the tools.**
+  - When MC-2 sets a workstream to Closed, or archives one straight from active, webhook `POST /api/close-out` runs four steps: a final ingest, a close-out report drafted from the `/cp-wrap` facts (`wrap-report-<code>-<date>-vNN.md`, marked DRAFTED for the owner), lesson candidates from the report, and freelancer review requests.
+  - `semantic_search` leaves Archived projects out by default; `include_archived` brings them back.
+  - `cxp archive-project-assets` is retired, because closing a project keeps its sources.
+- **Freelancers.** New cp-hosted verbs `review_freelancer`, `set_contractor_hours` and `list_freelancers`:
+  - **Ratings:** each review records a rating, a recommendation, strengths and watch-outs.
+  - **Hours:** agreed hours, then actuals from invoices or Gusto timesheets. Where no actuals are recorded, a payables estimate stands in, labelled as one.
+  - **"Who should we use?":** freelancers are ranked from that history.
+  - Sprint prep flags contractors near or over their agreed hours.
+- **Workload lookahead.** The planning doc flags anyone over 40h, or with a pile of commitments due, in the next three weeks, and names who has room.
+- **Backfill.** `scripts/backfill_learning.py` (dry run by default) handles past projects: ingest bound folders, run Close distillation, and draft person lookouts from stakeholder dossiers.
+- **Surface ceilings:** `hosted_tools` 62→68, `mc2_tables` 34→40.
+
 ## v0.135.4 — 2026-11-11
 
 **cp writes into `Spine/` in an initiative's Dropbox folder.** Patch: no new verbs, no MC-2 migration.
