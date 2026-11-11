@@ -263,6 +263,9 @@ class PlanningResult:
     capacity_binding: CapacityBinding = field(
         default_factory=lambda: {"basis": "owner_of_record", "owners": []}
     )
+    # Learning phase 6: people flagged in the next weeks (hours past
+    # capacity, or due commitments piling up), with a suggestion each.
+    workload_lookahead: tuple[str, ...] = ()
     cross_cutting_decisions: tuple[WeeklyDecision, ...] = ()
     # Window-filter accounting for the decisions surface: how many entries
     # were dropped as stale (older than the 28-day lookback) and how many
@@ -2026,9 +2029,14 @@ def _render_cross_cutting(
 
     week_qs = result.week_open_questions
     week_qs_stale = result.week_open_questions_stale
-    if not binding and not decisions and not week_qs and not week_qs_stale:
+    lookahead = result.workload_lookahead
+    if not binding and not decisions and not week_qs and not week_qs_stale and not lookahead:
         out.append("_(no cross-cutting signals this sprint)_")
         return out
+
+    if lookahead:
+        out.extend(lookahead)
+        out.append("")
 
     if binding:
         out.append("**Capacity binding constraints:**")
@@ -2798,6 +2806,14 @@ def build_planning_result(
         except Exception as exc:  # noqa: BLE001 — a review list must not cost prep
             errors.append(f"alias candidates unreadable: {type(exc).__name__}: {exc}")
 
+    lookahead_lines: tuple[str, ...] = ()
+    try:
+        from cp_engine import workload as _workload
+
+        lookahead_lines = tuple(_workload.render(_workload.lookahead(supabase_client, today=today)))
+    except Exception as exc:  # noqa: BLE001 — advisory
+        errors.append(f"workload lookahead unreadable: {type(exc).__name__}: {exc}")
+
     return PlanningResult(
         week_iso=week_iso,
         week_dates=week_dates_label,
@@ -2813,6 +2829,7 @@ def build_planning_result(
         },
         urgent_counts=urgent_counts,
         capacity_binding=capacity_binding,
+        workload_lookahead=lookahead_lines,
         cross_cutting_decisions=cross_cutting_decisions,
         cross_cutting_decisions_stale_count=stale_count,
         cross_cutting_decisions_undated_count=undated_count,
