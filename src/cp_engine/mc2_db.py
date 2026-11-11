@@ -82,6 +82,11 @@ class Tables:
     # rows (a trigger raises and auto-resolves them); cp-engine only reads
     # the open ones for the `envelope-strip` region (#303).
     WORKSTREAM_FLAGS = "workstream_flags"
+    # Learning from projects (mc-2 migs 215-216). Types and moments are lists
+    # that grow by insert; lessons are one short lesson per row, never deleted.
+    PROJECT_TYPES = "project_types"
+    LESSON_MOMENTS = "lesson_moments"
+    LESSONS = "lessons"
 
     # public — spine
     SPINE_SUBSTANCE = "spine_substance"

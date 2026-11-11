@@ -323,6 +323,9 @@ def test_registry_covers_known_tables() -> None:
         # Accept-and-flag envelope breaches (mig 193, plan D7); cp-engine
         # reads the open rows for the `envelope-strip` region (#303).
         "workstream_flags",
+        # Learning from projects (mc-2 migs 215-216): the type and moment
+        # lists, and the lessons themselves.
+        "project_types", "lesson_moments", "lessons",
     }
     names = {
         v
