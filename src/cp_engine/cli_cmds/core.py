@@ -252,7 +252,9 @@ def brief_cmd(code: str) -> None:
     `⚠ NOT settled` question it carries; the gist is what lets you check a
     document against canon, since a title only tells you a ruling exists) ·
     the standing Inputs & Briefing spine element's live body (MC-2) · open
-    commitments · the Last-session pointer. Every section degrades to a one-line absence note
+    commitments · the Last-session pointer. A "Since the summary" section
+    follows the Exec Summary when meetings, sources, commitments or
+    decisions arrived after its stamp (#251). Every section degrades to a one-line absence note
     on its own — a standalone repo (no spine, no commitments store) or an
     offline session still gets the pack. Exits non-zero only when the code
     resolves to no working dir AND MC-2 can't see it either.
@@ -308,6 +310,22 @@ def brief_cmd(code: str) -> None:
     except Exception as exc:  # noqa: BLE001 — section degrades, pack survives
         canon, canon_note = None, f"Canon read failed: {exc}"
 
+    # What arrived after the summary's stamp (#251). Advisory: any failure
+    # leaves the section out rather than failing the pack.
+    since_block = None
+    try:
+        from cp_engine.since_summary import since_summary, summary_stamp
+
+        stamp = summary_stamp(cp_md_text)
+        if stamp is not None:
+            pid = mc2_db._resolve_project_id(client, code) if client else None
+            since_block = since_summary(
+                client, pid, since=stamp, tenant_root=config.root,
+                dir_slug=working_dir.name if working_dir is not None else None,
+            )
+    except Exception as exc:  # noqa: BLE001
+        click.echo(f"(WARNING: since-summary read failed: {exc})", err=True)
+
     if working_dir is None and briefing_body is None and commitments is None:
         click.echo(
             f"'{code}' resolves to no working dir, and MC-2 has no spine or "
@@ -327,6 +345,7 @@ def brief_cmd(code: str) -> None:
             newest_session_capture(working_dir),
             canon=canon,
             canon_note=canon_note,
+            since=since_block,
         ),
         nl=False,
     )

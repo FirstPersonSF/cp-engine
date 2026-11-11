@@ -362,6 +362,17 @@ def render_master_cp(
         else None
     )
 
+    # Unreviewed machine drafts, by owner (#251, Drew 2026-11-10: the
+    # workstream's owner reviews its draft). Sorted so the render is stable.
+    drafts_by_owner: dict[str, list[str]] = {}
+    for p in active:
+        if getattr(p, "summary_drafted", False):
+            drafts_by_owner.setdefault(p.owner or "No owner", []).append(p.code)
+    drafts_to_review = [
+        {"owner": o, "codes": sorted(c)}
+        for o, c in sorted(drafts_by_owner.items())
+    ]
+
     grouped = group(active)
     active_tree = tree(active)
     section_summaries = {
@@ -389,6 +400,7 @@ def render_master_cp(
         agenda=agenda,
         sprint_facts=sprint_facts,
         slack_rollup=slack_rollup,
+        drafts_to_review=drafts_to_review,
     )
 
 
