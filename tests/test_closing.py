@@ -181,3 +181,34 @@ def test_close_out_route_is_signed_and_runs_in_the_background(monkeypatch):
     monkeypatch.setattr(route, "_close_sync", lambda code, pid: {"steps": {"report": {"ok": False}}})
     asyncio.run(route._run_close("ibx-5192", "p1"))
     assert rows[0]["route"] == "/api/close-out" and rows[0]["status"] == "partial"
+
+
+def test_publish_uploads_to_the_spine_folder_and_ingests_that_file(tmp_path, monkeypatch):
+    from cp_engine import project_sources as ps
+
+    report = tmp_path / "wrap-report-ibx-5192-2026-11-11-v01.md"
+    report.write_text("# Report")
+    monkeypatch.setattr(C, "project_dropbox_folder", lambda c, pid: "/1P Active Projects/IBX 5192")
+    monkeypatch.setattr(ps, "dropbox_destination", lambda conn, folder, name: f"{folder}/{name}")
+    pushed = []
+    monkeypatch.setattr(ps, "push_to_dropbox", lambda conn, folder, f, dest_name, overwrite:
+                        pushed.append(dest_name) or {"dropbox_path": f"{folder}/{dest_name}"})
+    missing = SimpleNamespace(dbx=SimpleNamespace(files_get_metadata=lambda p: (_ for _ in ()).throw(
+        RuntimeError("not_found"))))
+    ingested = []
+    out = C.publish_report(None, missing, project_id="p1", code="ibx-5192", report_file=report,
+                           ingest=lambda f: ingested.append(f.name) or {"ingested": True})
+    assert pushed == ["03 Assets/06 Spine/wrap-report-ibx-5192-2026-11-11-v01.md"]
+    assert ingested == ["wrap-report-ibx-5192-2026-11-11-v01.md"]  # the local report, not a folder scan
+    assert out["ingested"] is True
+
+    # An initiative's folder has a bare Spine/ — the report goes there.
+    has_spine = SimpleNamespace(dbx=SimpleNamespace(files_get_metadata=lambda p: SimpleNamespace(size=None)))
+    pushed.clear()
+    C.publish_report(None, has_spine, project_id="p1", code="cnc-5237", report_file=report)
+    assert pushed == ["Spine/wrap-report-ibx-5192-2026-11-11-v01.md"]
+
+    monkeypatch.setattr(C, "project_dropbox_folder", lambda c, pid: None)
+    out = C.publish_report(None, missing, project_id="p1", code="x", report_file=report,
+                           ingest=lambda f: {"ingested": True})
+    assert out["dropbox_path"] is None and out["ingested"] is True  # still a source in MC-2

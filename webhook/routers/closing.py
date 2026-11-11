@@ -69,10 +69,25 @@ def _close_sync(code: str, project_id: str) -> dict:
     except Exception as exc:  # noqa: BLE001
         ingest_result = {"ok": False, "error": str(exc)[:300]}
 
+    def _publish(report_file):
+        # The drafted report goes to the project's Dropbox spine folder and is
+        # ingested, so MC-2's job page shows it and search finds it.
+        from cp_engine.closing import publish_report
+
+        def _ingest_one(report_file):
+            from cp_engine.spine_promote import ingest_single_file
+
+            res = ingest_single_file(str(report_file), project_id, report_file.name,
+                                     supabase_url=url, supabase_key=key)
+            return {"ingested": bool(res)}
+
+        return publish_report(client, asset_ingest._dropbox_connector(), project_id=project_id,
+                              code=code, report_file=report_file, ingest=_ingest_one)
+
     with git_ops._cloned_tenant() as tenant_root:
         out = run_close(client, code=code, project_id=project_id, tenant_root=tenant_root,
                         llm=_llm, ingest=lambda: ingest_result, embed=embed,
-                        engine_version=ENGINE_VERSION)
+                        engine_version=ENGINE_VERSION, publish=_publish)
         if out.get("report_path"):
             out["commit"] = git_ops._commit_with_message_and_push(
                 tenant_root, f"[close-out] {code}: draft close-out report (owner to confirm)")
