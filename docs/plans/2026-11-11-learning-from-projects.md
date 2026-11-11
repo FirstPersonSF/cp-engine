@@ -1,6 +1,6 @@
 ---
 Project: cp-engine — Learning from projects (archive rethink)
-Provenance: Version 02 | 2026-11-11
+Provenance: Version 03 | 2026-11-11
 Filename: docs/plans/2026-11-11-learning-from-projects.md
 Author: Claude (with Drew)
 ---
@@ -106,8 +106,9 @@ worked on what already exists. What's missing:
   alongside the lessons.
 - **Agreed hours:** the hours agreed with a contractor for a project, recorded
   before they start, so planned and actual hours can be compared during the
-  work. *Open:* where do actual hours come from? Today allocations are planned
-  hours only.
+  work. Actual hours come from invoices for contractors who invoice, and from
+  Gusto timesheets for those paid through Gusto (`entities.payment_method`
+  says which). Today's allocations are planned hours only.
 - **Recommendation:** "who should we use for X?" ranks freelancers by
   capability, past project types, ratings and recency, with the evidence
   shown. It is internal only, like client lookouts.
@@ -243,12 +244,15 @@ recorded), then 4 onwards.
   searched only on request. Their lessons stay live.
 - **Stale lessons:** reviewed every 12 months.
 
+- **Actual hours:** they come from the contractor's invoice, or from
+  timesheets for anyone paid through Gusto. Which one depends on how each
+  contractor is paid.
+- **Practice-wide lessons:** no second reviewer. The project owner confirms
+  them, and readers decide whether to act on them.
+
 ## Open questions
 
-- **Actual hours:** where do a contractor's actual hours come from:
-  timesheets, invoices, or ClickUp time? (Phase 5.)
-- **Practice-wide lessons:** do they need a second reviewer beyond the
-  project owner?
+None yet.
 
 ## Tracker
 
