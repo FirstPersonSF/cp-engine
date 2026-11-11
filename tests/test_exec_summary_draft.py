@@ -396,7 +396,8 @@ def test_master_cp_marks_a_drafted_row_only(tmp_path):
     _git(root, "commit", "-q", "-m", "x", when="2026-10-05T06:00:00-07:00")
 
     master = sync()
-    rows = {c: next(ln for ln in master.splitlines() if f"`{c}`" in ln) for c in (CODE, other)}
+    rows = {c: next(ln for ln in master.splitlines()
+                    if ln.startswith("|") and f"`{c}`" in ln) for c in (CODE, other)}
     assert "🤖 _drafted_" in rows[CODE]
     assert "🤖 _drafted_" not in rows[other]
     assert master.count("🤖 _drafted_") == 1

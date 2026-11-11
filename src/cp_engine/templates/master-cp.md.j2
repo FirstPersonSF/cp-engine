@@ -28,8 +28,15 @@ Author: cp-engine (sync)
 <!-- cp-engine:end sprint-facts-strip -->
 
 <!-- cp-engine:start agenda -->
-{%- if agenda %}
+{%- if agenda or drafts_to_review %}
 ## Agenda — what needs attention this week
+{%- if drafts_to_review %}
+**Drafts to review** ({{ drafts_to_review | map(attribute="codes") | map("length") | sum }})
+{%- for d in drafts_to_review %}
+- {{ d.owner }}: {% for c in d.codes %}`{{ c }}`{% if not loop.last %}, {% endif %}{% endfor %}
+{%- endfor %}
+{% endif %}
+{%- if agenda %}
 **Risks needing decision** ({{ agenda.escalated_risks | length }})
 {%- for r in agenda.escalated_risks %}
 - `{{ r.project_code }}` {{ r.text }}
@@ -44,6 +51,7 @@ Author: cp-engine (sync)
 {%- for d in agenda.decisions_due %}
 - `{{ d.project_code }}` {{ d.text }} — {{ d.target_date }}
 {%- endfor %}
+{%- endif %}
 {%- endif %}
 <!-- cp-engine:end agenda -->
 

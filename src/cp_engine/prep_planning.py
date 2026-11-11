@@ -982,6 +982,13 @@ _EXEC_SUMMARY_STAMP_RE = re.compile(
 _EXEC_SUMMARY_STALE_DAYS = 14
 
 
+def _is_drafted(exec_summary_text: str | None) -> bool:
+    from cp_engine.exec_summary_draft import DRAFTED_MARKER
+
+    head = (exec_summary_text or "").split("\n", 3)[:3]
+    return any(DRAFTED_MARKER in line for line in head)
+
+
 def _exec_summary_updated(exec_summary: str | None) -> str | None:
     """The ISO date from the region's `· updated <date>` heading stamp,
     or None when the region is absent/unstamped (pre-stamp summaries)."""
@@ -2379,6 +2386,14 @@ def _render_bundle_project_block(block: ProjectPlanningBlock) -> list[str]:
             line += (
                 f" ⚠ **PARTIAL REFRESH — {partial.describe()}. That state"
                 f" is {state_age}d old, not {age}d; confirm it verbally.**"
+            )
+        # An unreviewed machine draft (#251): the owner confirms or rewrites
+        # it. A human write through capture_project_state / wrap up clears
+        # the marker.
+        if _is_drafted(block.exec_summary):
+            owner = getattr(block.project, "owner", None) or "the owner"
+            line += (
+                f" 🤖 **DRAFTED by cp — {owner} to confirm or rewrite.**"
             )
         out.append(line)
     elif block.exec_summary:

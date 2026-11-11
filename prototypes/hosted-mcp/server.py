@@ -8163,6 +8163,11 @@ def get_project_state(project_code: str) -> dict[str, Any]:
     file, the most recent week that does is returned instead and `sprint_note`
     says so.
 
+    `since_summary` (#251) lists what arrived AFTER the summary's `· updated`
+    stamp — meetings, sources ingested, commitments opened, sprint-file
+    decisions — each `{count, items}`, so a summary that is behind shows its
+    gap here instead of reading as current.
+
     Served from a shallow clone of TENANT_REPO, pulled on read with a debounce.
     With no TENANT_REPO configured the tool still EXISTS and returns a clean
     "tree access unavailable" rather than erroring.
@@ -8226,6 +8231,20 @@ def get_project_state(project_code: str) -> dict[str, Any]:
         status_project_id = resolve_project_id(client, project_code)
     except Exception:  # noqa: BLE001 — an annotation never fails the read
         status_project_id = None
+    # What arrived after the summary's stamp (#251): the orientation call
+    # should show the gap, not leave the reader to rebuild it from git log.
+    since_block = None
+    try:
+        from cp_engine.since_summary import since_summary, summary_stamp
+
+        stamp = summary_stamp(exec_summary)
+        if stamp is not None:
+            since_block = since_summary(
+                client, status_project_id, since=stamp,
+                tenant_root=root, dir_slug=dir_slug,
+            )
+    except Exception as exc:  # noqa: BLE001 — advisory; say it failed
+        since_block = {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
     return _with_project_status({
         "project_code": project_code,
         "available": True,
@@ -8240,6 +8259,7 @@ def get_project_state(project_code: str) -> dict[str, Any]:
         "cp_md": str((project_dir / "cp.md").relative_to(root)),
         "exec_summary": exec_summary,
         **({"exec_summary_note": exec_note} if exec_note else {}),
+        **({"since_summary": since_block} if since_block else {}),
         "sprint_week": week,
         "sprint_file": str(sprint_path.relative_to(root)) if sprint_path else None,
         "sprint_text": sprint_text,
