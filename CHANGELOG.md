@@ -4,6 +4,13 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.136.2 — 2026-11-11
+
+**Close-out reports reach MC-2 and Dropbox, and ingest stops dropping a document's last short section.** Patch: no new verbs, no MC-2 migration.
+
+- **Publishing reports:** the Close run now uploads the drafted report to the project's Dropbox spine folder and ingests it. MC-2's job Overview shows it in a Close-out card (mc-2 #461), and search finds it. `backfill_learning --publish` did the same for past reports (#441).
+- **Ingest fix:** `TextChunker` no longer drops a remainder under 300 characters. Before, a document's closing section disappeared on ingest, and a whole document under 300 characters produced no chunks (library #26, pinned @031f76a).
+
 ## v0.136.1 — 2026-11-11
 
 **Contractor hours follow Paid by, and slide OCR stops dropping slides.** Patch: no new verbs; MC-2 mig 219 (already applied).
