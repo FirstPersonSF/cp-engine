@@ -4,6 +4,13 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.136.1 — 2026-11-11
+
+**Contractor hours follow Paid by, and slide OCR stops dropping slides.** Patch: no new verbs; MC-2 mig 219 (already applied).
+
+- Contractor actual hours follow each person's **Paid by** (Invoice or Payroll, MC-2 People, mc-2 #460). Payroll reads Gusto timesheets; Invoice reads invoices. A person not yet set says to set Paid by (#439).
+- Slide and page OCR reads the model's text past a leading thinking block. Taking only the first block failed every such page; the learning backfill lost 66 slides to it (library #25, pinned @70c9945, #440).
+
 ## v0.136.0 — 2026-11-11
 
 **cp learns from projects: lessons, client lookouts, a Close run that distils a finished project, freelancer reviews and hours, and a workload lookahead.** Minor: six new cp-hosted verbs, a new webhook route, MC-2 migrations 215–218b (already applied). Plan: `docs/plans/2026-11-11-learning-from-projects.md` (#438; MC-2 side mc-2 #459).
