@@ -4,6 +4,12 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.135.4 — 2026-11-11
+
+**cp writes into `Spine/` in an initiative's Dropbox folder.** Patch: no new verbs, no MC-2 migration.
+
+- MC-2 now gives an initiative a bare `<company root>/<name>/Spine` folder (no 1P template; mc-2 #455). Hosted `push_to_dropbox` and `add_project_link` default to `Spine/` when the bound folder has one, else the job template's `03 Assets/06 Spine`; a failed check keeps the job default (#435).
+
 ## v0.135.3 — 2026-11-11
 
 **Opening a workstream shows what arrived since its summary, and owners are asked to review machine drafts.** Patch: no new verbs, no MC-2 migration.
