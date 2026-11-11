@@ -47,6 +47,11 @@ class _FakeQuery:
         self._limit = n
         return self
 
+    def is_(self, col, val):
+        assert val == "null"
+        self._rows = [r for r in self._rows if r.get(col) is None]
+        return self
+
     def order(self, col, desc=False):
         self._captured["order"] = (col, desc)
         return self
@@ -196,3 +201,20 @@ def test_missing_fields_default_safely():
     assert out[0]["title"] is None
     assert out[0]["summary_embedded"] is False
     assert out[0]["transcript_promoted"] is False
+
+
+def test_a_duplicate_recording_is_never_listed():
+    """Two people recorded one call: fathom marks the second `duplicate_of`
+    the first, ingest skips it, and the original carries the content
+    (2026-11-10: four sap-5198/5200 duplicates surfaced beside their
+    originals once tags were read)."""
+    rows = [
+        {"recording_id": "orig", "meeting_date": "2026-11-02",
+         "project_tags": ["sap-5238-enablement"]},
+        {"recording_id": "dup", "meeting_date": "2026-11-02", "project_id": None,
+         "project_tags": ["sap-5238-enablement"], "duplicate_of": "m0"},
+        {"recording_id": "dup-linked", "meeting_date": "2026-11-03",
+         "duplicate_of": "m0"},
+    ]
+    out = list_project_meetings(_FakeClient(rows, {}), "pid")
+    assert [m["recording_id"] for m in out] == ["orig"]

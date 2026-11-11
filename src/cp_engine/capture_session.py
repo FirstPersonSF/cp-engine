@@ -296,6 +296,27 @@ def _write_to_working_dir(
         from cp_engine.tracked_files import limit_label, too_large_to_track
 
         all_extras = _trackable_paths_under(working_dir, cp_tenant_root)
+        # #428: an untracked file nothing touched since this session began is
+        # an earlier session's — hold it back, the same rule as
+        # `cxp session commit`.
+        from cp_engine.sessions import (
+            _touched_since,
+            current_session_start,
+            untracked_paths,
+        )
+
+        since = current_session_start(cp_tenant_root)
+        if since is not None:
+            untracked = {cp_tenant_root / u for u in untracked_paths(cp_tenant_root)}
+            held = [p for p in all_extras
+                    if p in untracked and not _touched_since(p, since)]
+            if held:
+                all_extras = [p for p in all_extras if p not in held]
+                print(
+                    f"Held back {len(held)} untracked file(s) untouched since this "
+                    "session started (an earlier session's): "
+                    + ", ".join(p.name for p in held)
+                )
         too_large = [p for p in all_extras if too_large_to_track(p)]
         if too_large:
             all_extras = [p for p in all_extras if p not in too_large]

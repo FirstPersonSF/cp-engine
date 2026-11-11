@@ -663,3 +663,66 @@ def test_object_pairs_are_shown_but_never_proposed_for_resolution() -> None:
     assert "same object: vector platform graphic" in text
     assert "9284616d ↔ 4e978e2c" in text
     assert "the 8-character ids work as keys" in text
+
+
+# 2026-11-10: the three Thoropass pentest rows, verbatim. Each names the
+# kickoff or a fee date as a REFERENCE; none is drift.
+_PENTEST = [
+    ("74a7e722", "Confirm the Thoropass pentest (CanonicInc_2027-02-03, kickoff "
+     "2027-02-03) holds, or reschedule it, before the fee window opens: 15% "
+     "from 2027-01-04, 30% from 2027-01-19. Settle the test environment first "
+     "(staging vs dev vs production; WorkOS SSO/SCIM is in scope).",
+     "2027-01-03", "internal"),
+    ("dc042b6f", "Thoropass to send the pentest pre-work request (test accounts, "
+     "URLs, environments, sample data) and the private Google Drive upload "
+     "invite, three weeks before the 2027-02-03 kickoff.", "2027-01-13", "them_to_us"),
+    ("aad2c8e2", "Return the Thoropass pentest pre-work (written authorization, "
+     "point of contact, test user accounts incl. WorkOS SSO/SCIM, environment "
+     "URLs, MCP server access, Supabase access) to the shared Drive folder; due "
+     "three business days before the 2027-02-03 kickoff.", "2027-01-29", "us_to_them"),
+]
+
+
+def _pentest_rows() -> list:
+    rows = []
+    for i, d, due, direction in _PENTEST:
+        c = _c(i, d, due=due, created="2026-11-10", source_kind="session")
+        c["direction"] = direction
+        rows.append(_row(c, date(2026, 11, 10)))
+    return rows
+
+
+def test_reference_dates_are_not_drift() -> None:
+    for r in _pentest_rows():
+        assert r.date_drift is None, (r.id, r.text_dates)
+
+
+def test_deadline_words_still_drift() -> None:
+    created = "2026-10-26"
+    for text in ("Send the deck before 10/30", "Deck due Oct 30", "Deck by 10/30",
+                 "Review on 2026-10-30"):
+        r = _row(_c("x", text, due="2026-11-02", created=created), _TODAY)
+        assert r.date_drift == "mismatch", text
+    # A reference date beside a real deadline: only the deadline is checked.
+    r = _row(_c("y", "Pre-work due 2027-01-29, three days before the 02-03 kickoff",
+                due="2027-01-29", created="2026-11-10"), _TODAY)
+    assert r.date_drift is None
+
+
+def test_text_dates_still_reads_every_date_by_default() -> None:
+    from cp_engine.commitments_sweep import text_dates
+
+    got = text_dates("15% from 2027-01-04, 30% from 2027-01-19", date(2026, 11, 10))
+    assert got == (date(2027, 1, 4), date(2027, 1, 19))
+    assert text_dates("15% from 2027-01-04", date(2026, 11, 10), deadlines_only=True) == ()
+
+
+def test_opposite_directions_are_never_paired() -> None:
+    """2026-11-10: 'Thoropass sends the pre-work request' (them_to_us) and
+    'we return the pre-work' (us_to_them) shared the object 'pentest pre work'
+    and were paired. Opposite directions are two obligations, always."""
+    from cp_engine.commitments_sweep import likely_duplicates
+
+    pairs = likely_duplicates(_pentest_rows())
+    ids = {frozenset((p.a.id, p.b.id)) for p in pairs}
+    assert frozenset(("dc042b6f", "aad2c8e2")) not in ids

@@ -1794,6 +1794,10 @@ def project_meetings(client, project_id: str, columns: str) -> list[dict]:
     for ingest carries the tag and no `project_id`: 108 such meetings on
     2026-11-10, invisible to every project_id-only read. The tag is the
     assignment, so read both and de-duplicate. `columns` must include `id`.
+
+    A duplicate recording (`duplicate_of` set: two people recorded one call)
+    is not a meeting of its own: ingest skips it and the original carries
+    the content, so it is never listed.
     """
     rows: list[dict] = []
     seen: set = set()
@@ -1808,6 +1812,7 @@ def project_meetings(client, project_id: str, columns: str) -> list[dict]:
         client.table(Tables.FATHOM_MEETINGS)
         .select(columns)
         .eq("project_id", project_id)
+        .is_("duplicate_of", "null")
         .execute()
         .data
     )
@@ -1817,6 +1822,7 @@ def project_meetings(client, project_id: str, columns: str) -> list[dict]:
             client.table(Tables.FATHOM_MEETINGS)
             .select(columns)
             .overlaps("project_tags", spellings)
+            .is_("duplicate_of", "null")
             .execute()
             .data
         )

@@ -203,7 +203,8 @@ def _row(c: dict, today: date) -> SweepRow:
         age_days=(today - created).days if created else 0,
         ttl=_ttl_bucket(c, today),
         source_meeting_id=c.get("source_meeting_id"),
-        text_dates=text_dates(c.get("description") or "", created or today),
+        text_dates=text_dates(c.get("description") or "", created or today,
+                              deadlines_only=True),
         direction=c.get("direction"),
     )
 
@@ -256,10 +257,30 @@ def _dated(year: int | None, month: int, day: int, ref: date) -> date | None:
         return None
 
 
-def text_dates(text: str, ref: date) -> tuple[date, ...]:
+# A date the text names as a point of REFERENCE, not as when the row is due:
+# "15% from 2027-01-04", "kickoff 2027-02-03", "three weeks before the 02-03
+# kickoff". Such a date never matches the due date by design, so counting it
+# made every carefully written row read as drifted (2026-11-10: all three
+# pentest rows). "by", "due" and a bare "before 10/30" still mark a deadline.
+_REFERENCE_BEFORE = re.compile(
+    r"(?:\bfrom|\bsince|\bafter|\bstarting|\bkick-?off"
+    r"|\b(?:weeks?|days?|business\s+days?|months?)\s+"
+    r"(?:before|after|ahead\s+of|prior\s+to)(?:\s+the)?)\s*[:(]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _is_reference(text: str, start: int) -> bool:
+    if start and (text[start - 1].isalnum() or text[start - 1] == "_"):
+        return True  # inside an identifier: `CanonicInc_2027-02-03`
+    return bool(_REFERENCE_BEFORE.search(text[max(0, start - 40):start]))
+
+
+def text_dates(text: str, ref: date, *, deadlines_only: bool = False) -> tuple[date, ...]:
     """The calendar dates a commitment's text names, in order, deduplicated.
     A yearless date takes the year nearest `ref` (the row's creation day).
-    Exposed for tests."""
+    `deadlines_only` drops reference dates (`_REFERENCE_BEFORE`): the set
+    the due date is checked against. Exposed for tests."""
     text = _ANNOTATION.sub(" ", text)
     found: list[tuple[int, date]] = []
     taken: list[tuple[int, int]] = []
@@ -268,6 +289,8 @@ def text_dates(text: str, ref: date) -> tuple[date, ...]:
         if d is None or any(a < m.end() and m.start() < b for a, b in taken):
             return
         taken.append((m.start(), m.end()))
+        if deadlines_only and _is_reference(text, m.start()):
+            return
         found.append((m.start(), d))
 
     for m in _ISO_DATE.finditer(text):
@@ -587,6 +610,10 @@ def shared_object(a: str, b: str, df: dict[str, int]) -> str | None:
     return _phrase(sa, anchors)
 
 
+def _opposite_directions(a: SweepRow, b: SweepRow) -> bool:
+    return {a.direction, b.direction} == {"us_to_them", "them_to_us"}
+
+
 def likely_duplicates(rows: list[SweepRow]) -> list[DuplicatePair]:
     """Pairs within ONE project's rows that read as the same obligation:
     the wording pass (#311) most similar first, then the shared-object pass
@@ -597,6 +624,8 @@ def likely_duplicates(rows: list[SweepRow]) -> list[DuplicatePair]:
     df = document_frequency([r.description for r in rows])
     for i, a in enumerate(rows):
         for b in rows[i + 1 :]:
+            if _opposite_directions(a, b):
+                continue  # what we owe and what is owed to us are never one row
             sim = similarity(a.description, b.description)
             if sim is None:
                 continue
