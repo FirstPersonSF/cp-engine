@@ -22,6 +22,7 @@ failed embed never loses the lesson: the row is written, the result says
 from __future__ import annotations
 
 import os
+import re as _re
 from collections.abc import Callable, Iterable, Sequence
 from datetime import date, datetime, timezone
 from typing import Any
@@ -379,20 +380,30 @@ def voyage_embedder(input_type: str = "document") -> Embedder:
     return _embed
 
 
-def record_meeting_candidates(
+def record_meeting_candidates(client, items, *, project_code, meeting_id, embed=None) -> dict:
+    """Meeting ingest's lesson queue (phase 2) — `record_candidates` keyed
+    on the meeting."""
+    return record_candidates(client, items, project_code=project_code,
+                             source_kind="meeting", source_ref=meeting_id, embed=embed)
+
+
+def record_candidates(
     client,
     items: Sequence[Any],
     *,
     project_code: str | None,
-    meeting_id: str | None,
+    source_kind: str,
+    source_ref: str | None,
     embed: Embedder | None = None,
+    project_id: str | None = None,
 ) -> dict:
     """Queue lessons a meeting ingest proposed, as `candidate`s for the
     project owner to confirm (Drew, 2026-11-11: the owner reviews).
 
-    Never raises and never fails the ingest: a bad item is skipped with a
-    reason. Idempotent per meeting: an item whose text this meeting already
-    queued is skipped, so a re-run adds nothing.
+    Never raises and never fails the caller: a bad item is skipped with a
+    reason. Idempotent per source (`source_ref`: a meeting, a close-out
+    report): an item whose text that source already queued is skipped, so a
+    re-run adds nothing. `project_id` wins over resolving `project_code`.
     """
     out: dict[str, Any] = {"queued": [], "skipped": []}
     if not items:
@@ -403,20 +414,25 @@ def record_meeting_candidates(
         from cp_engine.clickup_routing import engagement_number
 
         number = engagement_number(project_code or "") if project_code else None
-        if number is not None:
+        rows = []
+        if project_id:
+            rows = (client.table(Tables.PROJECTS)
+                    .select("id, company_id, project_types").eq("id", project_id)
+                    .limit(1).execute().data or [])
+        elif number is not None:
             rows = (client.table(Tables.PROJECTS)
                     .select("id, company_id, project_types").eq("number", number)
                     .limit(1).execute().data or [])
-            if rows:
-                pid, cid = rows[0]["id"], rows[0].get("company_id")
-                ptypes = list(rows[0].get("project_types") or [])
+        if rows:
+            pid, cid = rows[0]["id"], rows[0].get("company_id")
+            ptypes = list(rows[0].get("project_types") or [])
         known_types, known_moments = known_lists(client)
         already = set()
-        if meeting_id:
+        if source_ref:
             already = {
                 (r.get("text") or "").strip().lower()
                 for r in (client.table(Tables.LESSONS).select("text")
-                          .eq("source_ref", str(meeting_id)).execute().data or [])
+                          .eq("source_ref", str(source_ref)).execute().data or [])
             }
     except Exception as exc:  # noqa: BLE001 — a lesson queue never fails an ingest
         out["skipped"].append(f"lookup failed: {str(exc)[:200]}")
@@ -441,8 +457,8 @@ def record_meeting_candidates(
                 stakeholder_name=item.get("person"),
                 project_types=ptypes if scope == "type" else [],
                 moments=moments, other_moment=", ".join(unlisted) or None,
-                source_project_id=pid, source_kind="meeting",
-                source_ref=str(meeting_id) if meeting_id else None,
+                source_project_id=pid, source_kind=source_kind,
+                source_ref=str(source_ref) if source_ref else None,
                 evidence=item.get("evidence"), status="candidate",
                 known_types=known_types, known_moments=known_moments,
             )
@@ -649,7 +665,6 @@ def scoping_lessons(client, project_id: str | None, *, limit: int = 8) -> dict:
 
 # ── Guardrail: internal lessons never reach client-facing work ─────────
 
-import re as _re
 
 #: Framings of documents a client or partner reads. Proposals and RFPs are
 #: saved as spine elements with these framings (the proposal-architect and
@@ -680,7 +695,7 @@ def leaks(text: str, lessons: Iterable[dict], *, n: int = LEAK_SHINGLE) -> list[
     doc = _shingles(text, n)
     if not doc:
         return []
-    return [l for l in lessons if _shingles(l.get("text") or "", n) & doc]
+    return [les for les in lessons if _shingles(les.get("text") or "", n) & doc]
 
 
 def internal_leaks(client, project_id: str | None, text: str) -> list[dict]:

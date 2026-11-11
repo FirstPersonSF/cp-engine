@@ -283,3 +283,177 @@ def unanswerable_fields(bundle: WrapBundle) -> list[str]:
         # We can at least frame profitability, so it stops being a pure blank.
         missing = [f for f in missing if not f.startswith("Actual profitability")]
     return missing
+
+
+def build_wrap(client, code: str, workdir, *, tail_days: int = 14,
+               today=None, warn=None) -> tuple[WrapBundle, dict]:
+    """The wrap bundle as a dict — the facts `/cp-wrap` and the Close run
+    (learning phase 4) write the close-out report from. Facts only; reads
+    only. `warn` receives degradation notes (a failed read is said)."""
+    from cp_engine import close_out as _close
+    from cp_engine import mc2_db
+    from cp_engine.clock import tenant_today
+    from cp_engine.mc2_db import Tables
+
+    warn = warn or (lambda _m: None)
+
+    # ── Project facts ────────────────────────────────────────────────
+    row: dict = {}
+    try:
+        rows = (
+            client.table(Tables.PROJECTS)
+            .select(
+                "id, code, name, number, mc_status, start_date, budget, "
+                "target_profit_pct, account_manager"
+            )
+            .eq("code", workdir.name)
+            .execute()
+            .data
+        ) or []
+        if not rows:
+            # `projects.code` is the SHORT code, not the dir slug (the known
+            # code-vs-slug bridge). Fall back to the numeric suffix.
+            digits = "".join(ch for ch in code if ch.isdigit())
+            if digits:
+                rows = (
+                    client.table(Tables.PROJECTS)
+                    .select(
+                        "id, code, name, number, mc_status, start_date, "
+                        "budget, target_profit_pct, account_manager"
+                    )
+                    .eq("number", int(digits))
+                    .execute()
+                    .data
+                ) or []
+        row = rows[0] if rows else {}
+    except Exception as exc:  # noqa: BLE001 — degrade loudly, keep going
+        warn(f"(WARNING: project row read failed: {exc})")
+
+    project_id = row.get("id")
+
+    # ── Meetings ─────────────────────────────────────────────────────
+    meetings = MeetingLoad(tail_days=tail_days)
+    if project_id:
+        try:
+            mrows = mc2_db.project_meetings(
+                client, project_id, "id, meeting_date, title, duration_minutes")
+            meetings = summarize_meetings(mrows, tail_days=tail_days)
+        except Exception as exc:  # noqa: BLE001
+            warn(f"(WARNING: meeting read failed: {exc})")
+
+    # ── Effort (allocated hours, NOT timesheet actuals) ───────────────
+    effort = EffortSummary(verified=False)
+    if project_id:
+        try:
+            arows = (
+                client.table(Tables.SPRINT_ALLOCATIONS)
+                .select("entity_id, hours, week_start")
+                .eq("project_id", project_id)
+                .execute()
+                .data
+            ) or []
+            names = {
+                str(e["id"]): e.get("name") or "unattributed"
+                for e in (
+                    client.table(Tables.ENTITIES)
+                    .select("id, name")
+                    .execute()
+                    .data
+                    or []
+                )
+            }
+            effort = summarize_effort(arows, names)
+        except Exception as exc:  # noqa: BLE001
+            warn(f"(WARNING: allocation read failed: {exc})")
+
+    # ── Spine: deliverables + what each round absorbed ────────────────
+    elements: list = []
+    spine_ok = True
+    try:
+        elements = [
+            _close.element_from_row(r)
+            for r in _close.fetch_live_spine_rows(client, workdir.name)
+        ]
+    except Exception as exc:  # noqa: BLE001
+        warn(f"(WARNING: spine read failed: {exc})")
+        spine_ok = False
+
+    deliverables = [e.title for e in elements if (e.layer or "") == "Deliverables"]
+
+    commitments = None
+    try:
+        commitments = _close.fetch_open_commitments(client, code)
+    except Exception as exc:  # noqa: BLE001
+        warn(f"(WARNING: commitments read failed: {exc})")
+
+    feedback = sorted(
+        p.name
+        for p in (workdir / "feedback-on-deck").glob("*.md")
+    ) if (workdir / "feedback-on-deck").is_dir() else []
+
+    b = WrapBundle(
+        code=code,
+        name=str(row.get("name") or ""),
+        status=str(row.get("mc_status") or ""),
+        start_date=_as_date(row.get("start_date")),
+        budget=float(row["budget"]) if row.get("budget") else None,
+        target_profit_pct=(
+            float(row["target_profit_pct"]) if row.get("target_profit_pct") else None
+        ),
+        account_manager=str(row.get("account_manager") or ""),
+        meetings=meetings,
+        effort=effort,
+        deliverables=deliverables,
+        open_commitments=commitments,
+        feedback_artifacts=feedback,
+        spine_verified=spine_ok,
+    )
+
+    payload = {
+        "code": b.code,
+        "name": b.name,
+        "status": b.status,
+        "account_manager": b.account_manager,
+        "start_date": b.start_date.isoformat() if b.start_date else None,
+        "duration_days": b.duration_days,
+        "duration_weeks": b.duration_weeks,
+        "budget": b.budget,
+        "target_profit_pct": b.target_profit_pct,
+        "effort": {
+            "verified": b.effort.verified,
+            "note": (
+                "ALLOCATED hours from sprint_allocations — MC-2's planning "
+                "record, NOT timesheet actuals. Say so in the report; "
+                "presenting an allocation as an actual overstates precision."
+            ),
+            "total_hours": b.effort.total_hours,
+            "weeks": b.effort.weeks,
+            "by_person": [{"name": n, "hours": h} for n, h in b.effort.by_person],
+        },
+        "budget_per_hour": b.budget_per_hour,
+        "meetings": {
+            "count": b.meetings.count,
+            "total_hours": b.meetings.total_hours,
+            "first": b.meetings.first.isoformat() if b.meetings.first else None,
+            "last": b.meetings.last.isoformat() if b.meetings.last else None,
+            "tail_days": b.meetings.tail_days,
+            "tail_share": round(b.meetings.tail_share, 3),
+            "tail_hours": round(b.meetings.tail_minutes / 60.0, 1),
+            "head_hours": round(b.meetings.head_minutes / 60.0, 1),
+            "heaviest_days": [
+                {"date": d, "meetings": c, "minutes": m}
+                for d, c, m in b.meetings.heaviest_days
+            ],
+        },
+        "deliverables": b.deliverables,
+        "feedback_artifacts": b.feedback_artifacts,
+        "open_commitments": b.open_commitments,
+        "spine_verified": b.spine_verified,
+        "learning_axes": [{"key": k, "prompt": p} for k, p in LEARNING_AXES],
+        "human_entry_fields": list(HUMAN_ENTRY_FIELDS),
+        "not_assessable_from_data": unanswerable_fields(b),
+        "generated": (today or tenant_today()).isoformat(),
+        "project_id": project_id,
+    }
+
+    return b, payload

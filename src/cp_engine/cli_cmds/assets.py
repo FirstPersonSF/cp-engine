@@ -1,4 +1,4 @@
-"""1P asset-ingest verbs: ingest-assets, archive-project-assets.
+"""1P asset-ingest verbs: ingest-assets (archive-project-assets retired 2026-11-11).
 
 Split from cli.py (arch-phase-4, #33). Shared helpers stay in
 cp_engine.cli and are called via the module attribute so test
@@ -192,23 +192,6 @@ def _resolve_project_id_or_die(client, code: str) -> str:
         click.echo(f"Error: no MC-2 project resolved for '{code}'.", err=True)
         sys.exit(1)
     return folders.project_id
-
-
-@click.command(name="archive-project-assets")
-@click.argument("code")
-def archive_project_assets_cmd(code: str) -> None:
-    """Archive a project's un-promoted assets (on project close)."""
-    from cp_engine import asset_ingest
-
-    client = _cli.build_mc2_client()
-    project_id = _resolve_project_id_or_die(client, code)
-    n = asset_ingest.archive_project_assets(client, project_id)
-    click.echo(
-        f"Archived {n} project-scoped assets for {code} "
-        "(account assets unaffected)"
-    )
-
-
 
 
 @click.command(name="folders")

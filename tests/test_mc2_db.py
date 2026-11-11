@@ -326,6 +326,8 @@ def test_registry_covers_known_tables() -> None:
         # Learning from projects (mc-2 migs 215-216): the type and moment
         # lists, and the lessons themselves.
         "project_types", "lesson_moments", "lessons",
+        # Phase 5 (mc-2 mig 218): freelancer reviews and contractor hours.
+        "freelancer_reviews", "contractor_hours",
     }
     names = {
         v

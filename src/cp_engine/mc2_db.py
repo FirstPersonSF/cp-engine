@@ -87,6 +87,10 @@ class Tables:
     PROJECT_TYPES = "project_types"
     LESSON_MOMENTS = "lesson_moments"
     LESSONS = "lessons"
+    # Learning phase 5 (mc-2 mig 218): how a freelancer worked out per
+    # project (requested at Close), and agreed vs actual contractor hours.
+    FREELANCER_REVIEWS = "freelancer_reviews"
+    CONTRACTOR_HOURS = "contractor_hours"
 
     # public — spine
     SPINE_SUBSTANCE = "spine_substance"

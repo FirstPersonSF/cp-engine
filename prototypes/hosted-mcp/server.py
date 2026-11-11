@@ -2890,9 +2890,19 @@ def _hit_project_statuses(
     )
 
 
+def _project_is_archived(client, project_id: str) -> bool:
+    try:
+        rows = (client.table("projects").select("mc_status").eq("id", project_id)
+                .limit(1).execute().data or [])
+        return bool(rows) and rows[0].get("mc_status") == "Archived"
+    except Exception:  # noqa: BLE001 — unknown status: treat as not archived
+        return False
+
+
 @mcp_server.tool()
 def semantic_search(
-    query: str, project_code: str | None = None, limit: int = 10
+    query: str, project_code: str | None = None, limit: int = 10,
+    include_archived: bool = False,
 ) -> dict[str, Any]:
     """Search the project's memory: distilled spine context, then raw chunks.
 
@@ -2933,10 +2943,18 @@ def semantic_search(
       * With no embedding key configured the tool still EXISTS and returns a
         clear unavailable message rather than crashing the server.
 
+    ARCHIVED PROJECTS ARE LEFT OUT by default (Drew, 2026-11-11: an
+    archived project should not occupy search unless you go looking). Their
+    lessons stay live (`list_lessons`); their sources and spine come back with
+    `include_archived=true`, or by naming the archived project as
+    `project_code`. `archived_hidden` says how many hits were left out.
+    Closed projects stay in, labelled with their status (#279).
+
     Args:
         query: natural-language search text.
         project_code: optional project scope, applied server-side.
         limit: maximum chunks to return.
+        include_archived: also return hits from Archived projects.
     """
     usable, reason = embedding_available()
     if not usable:
@@ -3046,7 +3064,9 @@ def semantic_search(
                     # `query_embedding text` param takes the pgvector literal.
                     "query_embedding": "[" + ",".join(str(f) for f in vector) + "]",
                     "match_threshold": 0.0,
-                    "match_count": limit,
+                    # Over-fetch corpus-wide so dropping archived hits still
+                    # leaves `limit` (trimmed below).
+                    "match_count": limit if (project_id or include_archived) else min(limit * 2, 100),
                     "filter_project_id": project_id,
                 },
             )
@@ -3095,6 +3115,19 @@ def semantic_search(
 
     spine_status, asset_status = _hit_project_statuses(client, spine, rows)
 
+    # Archived projects leave default search (2026-11-11). Naming one as
+    # project_code is explicit, so its own hits stay.
+    archived_hidden = 0
+    if not include_archived:
+        named_archived = bool(project_id) and _project_is_archived(client, project_id)
+        if not named_archived:
+            kept = [r for r in rows if asset_status.get(str(r.get("asset_id"))) != "Archived"]
+            kept_spine = [row for row in spine
+                          if spine_status.get(str(row.get("id"))) != "Archived"]
+            archived_hidden = (len(rows) - len(kept)) + (len(spine) - len(kept_spine))
+            rows, spine = kept, kept_spine
+    rows = rows[:limit]
+
     results = [
         {
             "chunk_id": r.get("chunk_id"),
@@ -3126,6 +3159,9 @@ def semantic_search(
         "available": True,
         "embed_model": EMBED_MODEL,
         "scope": "project" if project_id else "corpus-wide",
+        **({"archived_hidden": archived_hidden,
+            "note_on_archived": "hits from archived projects were left out; "
+            "pass include_archived=true to see them"} if archived_hidden else {}),
         **(
             {"account_search_error": account_error,
              "note_on_account": "the company's account-scoped documents could "
