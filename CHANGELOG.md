@@ -4,6 +4,13 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.135.3 — 2026-11-11
+
+**Opening a workstream shows what arrived since its summary, and owners are asked to review machine drafts.** Patch: no new verbs, no MC-2 migration.
+
+- New `since_summary()`: meetings (tag-aware, duplicates excluded), sources ingested (meeting summaries excluded), open commitments created and dated sprint-file decisions after the Exec Summary's `· updated` stamp. Hosted `get_project_state` returns it as `since_summary`; `cxp brief` adds a "Since the summary" section after the Exec Summary when anything arrived. Read-only; a failed read is reported, never shown as nothing (#251, #434).
+- Machine drafts get an owner: `master-cp.md`'s agenda lists **Drafts to review** grouped by MC-2 owner, and the planning bundle's Exec Summary line says `🤖 DRAFTED by cp — <owner> to confirm or rewrite`. A human write still clears the marker (#251, #434).
+
 ## v0.135.2 — 2026-11-10
 
 **A session commit no longer takes an earlier session's files, and the commitments sweep stops two false alarms.** Patch: one new `--exclude` option, no MC-2 migration.
