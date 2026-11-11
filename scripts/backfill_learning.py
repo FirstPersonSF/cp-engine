@@ -10,6 +10,9 @@ with no step flag it only reports what it would do (a dry run).
               against the LOCAL tenant checkout (--tenant): drafted report
               where there is material, lesson candidates, freelancer review
               requests. Commit the written reports afterwards.
+  --publish   upload each drafted close-out report (wrap-report-*.md in the
+              local tenant) to its project's Dropbox spine folder and ingest
+              it, so MC-2 shows it on the job page.
   --dossiers  draft person lookouts (candidates) from the account-scoped
               stakeholder dossiers, Janet's first.
 
@@ -148,6 +151,40 @@ def step_close(client, projects, tenant: Path, apply: bool) -> None:
         print(f"  {p['cp_code']}: report={out['report_path']} {summary}")
 
 
+def step_publish(client, url, key, projects, tenant: Path, apply: bool) -> None:
+    from cp_engine import asset_ingest
+    from cp_engine.close_out import find_close_workdir
+    from cp_engine.closing import publish_report
+
+    connector = asset_ingest._dropbox_connector() if apply else None
+    for p in projects:
+        if not p["cp_code"]:
+            continue
+        try:
+            workdir, _ = find_close_workdir(tenant, p["cp_code"])
+        except Exception:  # noqa: BLE001 — no tenant dir, no report
+            continue
+        reports = sorted(workdir.glob(f"wrap-report-{p['cp_code']}-*.md"))
+        if not reports:
+            continue
+        latest = reports[-1]
+        if not apply:
+            print(f"  would publish {p['cp_code']}: {latest.name}")
+            continue
+
+        def _ingest(report_file, p=p):
+            from cp_engine.spine_promote import ingest_single_file
+
+            res = ingest_single_file(str(report_file), p["id"], report_file.name,
+                                     supabase_url=url, supabase_key=key)
+            return {"ingested": bool(res)}
+
+        out = publish_report(client, connector, project_id=p["id"], code=p["cp_code"],
+                             report_file=latest, ingest=_ingest)
+        print(f"  {p['cp_code']}: {out.get('dropbox_path') or out.get('note') or out.get('error')}"
+              f" ingest={out.get('ingest') or out.get('ingest_error')}")
+
+
 def step_dossiers(client, apply: bool) -> None:
     from cp_engine.lessons import known_lists, record_candidates
 
@@ -187,6 +224,7 @@ def main() -> None:
     ap.add_argument("--ingest", action="store_true")
     ap.add_argument("--close", action="store_true")
     ap.add_argument("--dossiers", action="store_true")
+    ap.add_argument("--publish", action="store_true")
     ap.add_argument("--apply", action="store_true", help="write; otherwise a dry run")
     ap.add_argument("--only", default="", help="comma-separated cp codes (e.g. ibx-5192)")
     ap.add_argument("--tenant", default=str(Path.home() / "Documents/Python/cp"))
@@ -208,6 +246,9 @@ def main() -> None:
     if args.close:
         print("close:")
         step_close(client, projects, Path(args.tenant), args.apply)
+    if args.publish:
+        print("publish:")
+        step_publish(client, url, key, projects, Path(args.tenant), args.apply)
     if args.dossiers:
         print("dossiers:")
         step_dossiers(client, args.apply)

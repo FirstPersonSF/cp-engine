@@ -10,6 +10,8 @@ MC-2 asks the webhook to run this, in order:
    (`wrap_report.build_wrap`) against the same nine-section contract, written
    to the working dir as `wrap-report-<code>-<date>-v01.md`, marked
    DRAFTED by cp for the project owner to confirm or rewrite.
+   The report is then uploaded to the project's Dropbox spine folder and
+   ingested, so it is a source in MC-2 (the job page shows it) and searchable.
 3. **Lesson candidates** — what the report's learning axes teach, queued in
    MC-2 as `candidate`s (source `wrap_report`) for the owner.
 4. **Freelancer reviews** — one `requested` review per freelancer who
@@ -162,6 +164,7 @@ def run_close(
     embed=None,
     today: date | None = None,
     engine_version: str = "",
+    publish: Callable[[Path], dict] | None = None,
 ) -> dict:
     """Run the Close steps. Returns `{steps: {...}, report_path, lesson_ids}`
     with each step `ok` or its `error`. The caller commits any written file."""
@@ -207,6 +210,9 @@ def run_close(
                                 str(draft.get("report_markdown") or ""), today, engine_version)
             out["report_path"] = str(path.relative_to(tenant_root))
             steps["report"] = {"ok": True, "path": out["report_path"], "warnings": notes}
+            if publish is not None:
+                pub = publish(path)
+                steps["publish"] = {"ok": not pub.get("error"), **pub}
             queued = L.record_candidates(
                 client, list(draft.get("lessons") or []), project_code=code,
                 project_id=project_id, source_kind="wrap_report",
@@ -224,3 +230,67 @@ def run_close(
     except Exception as exc:  # noqa: BLE001
         steps["freelancer_reviews"] = {"ok": False, "error": str(exc)[:300]}
     return out
+
+
+# ── Publish: the report where people work (Drew, 2026-11-11: "both") ───
+
+#: Where generated work lands in a project's Dropbox: an initiative's bare
+#: `Spine/` when the folder has one, else the job template's spine folder.
+SPINE_DIRS = ("Spine", "03 Assets/06 Spine")
+
+
+def project_dropbox_folder(client, project_id: str) -> str | None:
+    """The project's bound Dropbox folder (path or shared link), or None —
+    read through the bindings like every other folder read."""
+    from cp_engine.mc2_bindings import fetch_binding_rows, hydrate_project_row
+
+    grouped = fetch_binding_rows(client, project_ids=[project_id])
+    row = hydrate_project_row({"id": project_id}, grouped.get(project_id, []))
+    return row.get("mc_dropbox_folder_id") or None
+
+
+def publish_report(client, connector, *, project_id: str, code: str, report_file: Path,
+                   ingest: Callable[[Path], dict] | None = None) -> dict:
+    """Upload the drafted report to the project's Dropbox spine folder, and
+    ingest it so it is a source in MC-2 (the job page shows it) and
+    searchable. `ingest` takes the LOCAL report: cp's own output is embedded
+    directly (as meeting summaries are), so a project's curated
+    `asset_ingest_folders` list — which may not include the spine folder,
+    and is never widened — cannot leave it out. Never raises."""
+    from cp_engine import project_sources as ps
+
+    try:
+        folder = project_dropbox_folder(client, project_id)
+        if not folder:
+            # Still a source in MC-2: ingest the local report.
+            out = {"dropbox_path": None, "ingested": False,
+                   "note": "no Dropbox folder bound in MC-2; not uploaded"}
+            if ingest is not None:
+                try:
+                    out["ingest"], out["ingested"] = ingest(report_file), True
+                except Exception as exc:  # noqa: BLE001
+                    out["ingest_error"] = str(exc)[:300]
+            return out
+        subdir = SPINE_DIRS[1]
+        try:
+            probe = ps.dropbox_destination(connector, folder, SPINE_DIRS[0])
+            if isinstance(probe, str):
+                meta = connector.dbx.files_get_metadata(probe)
+                if getattr(meta, "size", None) is None:
+                    subdir = SPINE_DIRS[0]
+        except Exception:  # noqa: BLE001 — no Spine/: the job layout
+            pass
+        pushed = ps.push_to_dropbox(connector, folder, report_file,
+                                    dest_name=f"{subdir}/{report_file.name}", overwrite=True)
+        if pushed.get("error"):
+            return {"error": pushed["error"]}
+        out = {"dropbox_path": pushed.get("dropbox_path"), "ingested": False}
+        if ingest is not None:
+            try:
+                out["ingest"] = ingest(report_file)
+                out["ingested"] = True
+            except Exception as exc:  # noqa: BLE001
+                out["ingest_error"] = str(exc)[:300]
+        return out
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)[:300]}
