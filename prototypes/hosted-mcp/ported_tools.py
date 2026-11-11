@@ -84,6 +84,22 @@ def register(server_module) -> None:
 
 # Where generated work belongs in a project's Dropbox (Drew, 2026-08-03).
 SPINE_OUTPUT_DIR = "03 Assets/06 Spine"
+# An initiative's folder is `<root>/<name>/Spine` and nothing else (mc-2,
+# 2026-11-11): no template, so no `03 Assets/`. Generated work lands there.
+INITIATIVE_SPINE_DIR = "Spine"
+
+
+def _spine_dir(engine, connector, folder_id: str) -> str:
+    """`Spine` when the bound folder has one (an initiative's layout), else
+    the job template's `03 Assets/06 Spine`. A failed check keeps the job
+    default rather than failing the upload."""
+    try:
+        target = engine.dropbox_destination(connector, folder_id, INITIATIVE_SPINE_DIR)
+        if isinstance(target, str) and _dropbox_file_state(connector, target) == "folder":
+            return INITIATIVE_SPINE_DIR
+    except Exception:  # noqa: BLE001 — advisory; fall back to the job layout
+        pass
+    return SPINE_OUTPUT_DIR
 # Where a web page a client pointed us at lands (#350): it is client-supplied
 # material, not our output.
 URL_SOURCE_DIR = "03 Assets/01 Client Assets"
@@ -509,7 +525,8 @@ def push_to_dropbox(
       again with the same `filename`/`dest_name`/`dest_path`, no content
       and `ingest=True`.
 
-    **`dest_name` DEFAULTS TO `03 Assets/06 Spine/<filename>`** — the
+    **`dest_name` DEFAULTS TO `03 Assets/06 Spine/<filename>`** (or
+    `Spine/<filename>` in an initiative's folder, which has no template) — the
     tenant's home for generated work. Pass a bare name for the project root.
     **To correct a document where it came FROM**, pass `dest_path`: the
     absolute folder from `fetch_project_source`'s `source_path`; `dest_name`
@@ -569,8 +586,6 @@ def push_to_dropbox(
         return _fail(_no_dropbox_folder(project_code, resolved_folder.reason))
     folder_id = resolved_folder.folder or ""
     inherited = resolved_folder.describe()
-    if dest_name is None:
-        dest_name = name if dest_path else f"{SPINE_OUTPUT_DIR}/{name}"
 
     try:
         connector = _connector(resolved_folder)
@@ -578,6 +593,9 @@ def push_to_dropbox(
         return _fail(f"Dropbox connector failed: {type(exc).__name__}: {exc}")
 
     engine = _srv._engine_project_sources
+    if dest_name is None:
+        dest_name = (name if dest_path
+                     else f"{_spine_dir(engine, connector, folder_id)}/{name}")
     if not content_base64:
         destination = engine.dropbox_destination(connector, folder_id, dest_name, dest_path)
         if isinstance(destination, dict):
@@ -1007,7 +1025,7 @@ def add_project_link(
         return _fail(f"Dropbox connector failed: {type(exc).__name__}: {exc}")
 
     engine = _srv._engine_project_sources
-    dest_name = f"{SPINE_OUTPUT_DIR}/{card.filename}"
+    dest_name = f"{_spine_dir(engine, connector, folder_id)}/{card.filename}"
     destination = engine.dropbox_destination(connector, folder_id, dest_name)
     if isinstance(destination, dict):
         return _fail(destination["error"])

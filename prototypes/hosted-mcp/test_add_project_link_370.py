@@ -344,3 +344,28 @@ def test_the_real_create_spine_element_files_it_on_the_deliverables_layer(server
     row = {"layer": layer, "est_item_id": "_authored/link-x", "version_label": "v1"}
     row["card_kind"] = server._stamp_card_kind(row)
     assert _is_deliverable(row)
+
+
+# ── initiative folders: `<root>/<name>/Spine`, no template (2026-11-11) ──
+
+
+def _with_folders(env, *folders):
+    """Give the fake Dropbox a files_get_metadata that knows these folders."""
+    def get_metadata(path):
+        if path in folders:
+            return SimpleNamespace(name=path.rsplit("/", 1)[1])  # no `size`: a folder
+        raise RuntimeError("ApiError('path', LookupError('not_found'))")
+
+    env.dbx.files_get_metadata = get_metadata
+
+
+def test_an_initiative_folder_gets_the_link_in_spine(pt, env):
+    _with_folders(env, f"{ROOT}/Spine")
+    pt.add_project_link("cnc-5237", FIGMA, "SOC 2 Week Plan")
+    assert env.pushes[-1]["dest_name"] == "Spine/Link · SOC 2 Week Plan.md"
+
+
+def test_a_job_folder_keeps_03_assets_06_spine(pt, env):
+    _with_folders(env, f"{ROOT}/03 Assets/06 Spine")
+    pt.add_project_link("sap-5198", FIGMA, "SAP-5198 Schedule v02")
+    assert env.pushes[-1]["dest_name"] == "03 Assets/06 Spine/Link · SAP-5198 Schedule v02.md"
