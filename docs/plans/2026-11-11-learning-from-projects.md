@@ -54,6 +54,7 @@ is mostly Video).
 | Campaign | Event |
 | Video | Web and Digital |
 | Product | Experience |
+| Design (added 2026-11-11) | |
 
 `category` (Production / Strategy) stays as it is. It is a finance grouping,
 not a learning one.
@@ -236,7 +237,7 @@ recorded), then 4 onwards.
 
 ## Decisions (2026-11-11)
 
-- **Project types:** Drew's 12, listed above. The list grows.
+- **Project types:** Drew's 12, plus Design (added the same day by insert). The list grows.
 - **Moments:** the starter list is good, plus booking resources, contractor
   hours, scope change, process order and workload. The list grows.
 - **Reviewer:** the project owner, by default.
