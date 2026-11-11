@@ -616,10 +616,10 @@ mcp_server = MCPServer(
         "sequence for a session like this one, which has no `cxp` and no file "
         "editing. Read `master-cp.md` for the project index; get each "
         "project's path from there rather than constructing it.\n\n"
-        "MOST TOOLS READ; 33 OF THEM WRITE. The writers are the `create_*`, `set_*`, "
+        "MOST TOOLS READ; 37 OF THEM WRITE. The writers are the `create_*`, `set_*`, "
         "`add_*`, `remove_*`, `promote_*`, `retire_*`, `resolve_*`, "
         "`route_*`, `rotate_*`, `seal_to_*` and `capture_*` verbs, plus "
-        "`log_improvement`, `push_to_dropbox` and `ingest_url` — a name that "
+        "`log_improvement`, `log_lesson`, `review_freelancer`, `push_to_dropbox` and `ingest_url` — a name that "
         "sounds like a mutation is one (a read-only endpoint, `/mcp/read`, "
         "carries none of them). Every tenant write is delegated upstream under "
         "YOUR identity; the server holds no MC-2 write key, which is why "
@@ -1435,6 +1435,16 @@ def embed_query(text: str) -> list[float]:
         _embedder_cache.append(voyageai.Client(api_key=os.environ["VOYAGE_API_KEY"]))
     client = _embedder_cache[0]
     result = client.embed([text], model=EMBED_MODEL, input_type="query")
+    return result.embeddings[0]
+
+
+def embed_document(text: str) -> list[float]:
+    """Embed text to STORE (a lesson), same model, `document` input type."""
+    if not _embedder_cache:
+        import voyageai
+
+        _embedder_cache.append(voyageai.Client(api_key=os.environ["VOYAGE_API_KEY"]))
+    result = _embedder_cache[0].embed([text], model=EMBED_MODEL, input_type="document")
     return result.embeddings[0]
 
 
@@ -2880,9 +2890,19 @@ def _hit_project_statuses(
     )
 
 
+def _project_is_archived(client, project_id: str) -> bool:
+    try:
+        rows = (client.table("projects").select("mc_status").eq("id", project_id)
+                .limit(1).execute().data or [])
+        return bool(rows) and rows[0].get("mc_status") == "Archived"
+    except Exception:  # noqa: BLE001 — unknown status: treat as not archived
+        return False
+
+
 @mcp_server.tool()
 def semantic_search(
-    query: str, project_code: str | None = None, limit: int = 10
+    query: str, project_code: str | None = None, limit: int = 10,
+    include_archived: bool = False,
 ) -> dict[str, Any]:
     """Search the project's memory: distilled spine context, then raw chunks.
 
@@ -2923,10 +2943,18 @@ def semantic_search(
       * With no embedding key configured the tool still EXISTS and returns a
         clear unavailable message rather than crashing the server.
 
+    ARCHIVED PROJECTS ARE LEFT OUT by default (Drew, 2026-11-11: an
+    archived project should not occupy search unless you go looking). Their
+    lessons stay live (`list_lessons`); their sources and spine come back with
+    `include_archived=true`, or by naming the archived project as
+    `project_code`. `archived_hidden` says how many hits were left out.
+    Closed projects stay in, labelled with their status (#279).
+
     Args:
         query: natural-language search text.
         project_code: optional project scope, applied server-side.
         limit: maximum chunks to return.
+        include_archived: also return hits from Archived projects.
     """
     usable, reason = embedding_available()
     if not usable:
@@ -3036,7 +3064,9 @@ def semantic_search(
                     # `query_embedding text` param takes the pgvector literal.
                     "query_embedding": "[" + ",".join(str(f) for f in vector) + "]",
                     "match_threshold": 0.0,
-                    "match_count": limit,
+                    # Over-fetch corpus-wide so dropping archived hits still
+                    # leaves `limit` (trimmed below).
+                    "match_count": limit if (project_id or include_archived) else min(limit * 2, 100),
                     "filter_project_id": project_id,
                 },
             )
@@ -3085,6 +3115,19 @@ def semantic_search(
 
     spine_status, asset_status = _hit_project_statuses(client, spine, rows)
 
+    # Archived projects leave default search (2026-11-11). Naming one as
+    # project_code is explicit, so its own hits stay.
+    archived_hidden = 0
+    if not include_archived:
+        named_archived = bool(project_id) and _project_is_archived(client, project_id)
+        if not named_archived:
+            kept = [r for r in rows if asset_status.get(str(r.get("asset_id"))) != "Archived"]
+            kept_spine = [row for row in spine
+                          if spine_status.get(str(row.get("id"))) != "Archived"]
+            archived_hidden = (len(rows) - len(kept)) + (len(spine) - len(kept_spine))
+            rows, spine = kept, kept_spine
+    rows = rows[:limit]
+
     results = [
         {
             "chunk_id": r.get("chunk_id"),
@@ -3116,6 +3159,9 @@ def semantic_search(
         "available": True,
         "embed_model": EMBED_MODEL,
         "scope": "project" if project_id else "corpus-wide",
+        **({"archived_hidden": archived_hidden,
+            "note_on_archived": "hits from archived projects were left out; "
+            "pass include_archived=true to see them"} if archived_hidden else {}),
         **(
             {"account_search_error": account_error,
              "note_on_account": "the company's account-scoped documents could "
@@ -7189,6 +7235,31 @@ def create_commitment(
     }
 
 
+def _internal_lesson_guard(client, project_id: str | None, framing: str | None,
+                           body: str) -> dict[str, Any] | None:
+    """Refuse a client-facing document (proposal, RFP, SOW…) that quotes one
+    of the client's internal lessons (learning from projects: person and
+    client lessons never reach the client). A failed check never blocks."""
+    try:
+        from cp_engine.lessons import client_facing, internal_leaks
+
+        if not client_facing(framing):
+            return None
+        hits = internal_leaks(client, project_id, body)
+    except Exception:  # noqa: BLE001 — the guard is advisory when it cannot read
+        return None
+    if not hits:
+        return None
+    return {
+        "error": (
+            f"{framing!r} is client-facing and quotes {len(hits)} internal "
+            "lesson(s) about the client or its people. Rewrite those passages "
+            "(use what the lesson teaches, not its words); nothing was written."
+        ),
+        "internal_lessons_quoted": hits,
+    }
+
+
 @mcp_server.tool()
 @_names_its_level
 def create_spine_element(
@@ -7278,6 +7349,12 @@ def create_spine_element(
     scope = resolve_write_scope(client, project_code)
     if scope is None:
         return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    guard = _internal_lesson_guard(client, scope["id"], label, body)
+    if guard:
+        audit(client, "create_spine_element", {"project_code": project_code,
+                                               "result": "internal lesson quoted"}, 0)
+        return guard
 
     element_slug = slugify(slug or label)
     est_item_id = f"_authored/{element_slug}"
@@ -7517,6 +7594,13 @@ def add_spine_version(
     next_n = (max(nums) + 1) if nums else 1
     # Carry the row's OWN canonical code, not the caller's form (slug drift).
     row_code = base.get("project_code") or scope["project_code"]
+
+    guard = _internal_lesson_guard(client, base.get("project_id") or scope["id"],
+                                   base.get("framing"), body)
+    if guard:
+        audit(client, "add_spine_version", {"project_code": project_code,
+                                            "result": "internal lesson quoted"}, 0)
+        return guard
 
     # What this supersede is about to hide (#314). Read BEFORE the write so
     # the answer describes the version that was live when the caller decided.
@@ -8168,6 +8252,11 @@ def get_project_state(project_code: str) -> dict[str, Any]:
     decisions — each `{count, items}`, so a summary that is behind shows its
     gap here instead of reading as current.
 
+    `lookouts` (learning from projects) is what this project should watch
+    for: its client's people and client lessons, its project types' lessons
+    and practice lessons, confirmed only, plus how many candidates await the
+    owner. INTERNAL — use them, never quote them in client-facing work.
+
     Served from a shallow clone of TENANT_REPO, pulled on read with a debounce.
     With no TENANT_REPO configured the tool still EXISTS and returns a clean
     "tree access unavailable" rather than erroring.
@@ -8245,6 +8334,16 @@ def get_project_state(project_code: str) -> dict[str, Any]:
             )
     except Exception as exc:  # noqa: BLE001 — advisory; say it failed
         since_block = {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+    # Learning phase 3: the project's lookouts (client, people, its kinds of
+    # work, practice). Internal: never quoted in client-facing work.
+    lookout_block = None
+    try:
+        from cp_engine.lessons import lookouts
+
+        if status_project_id:
+            lookout_block = lookouts(client, status_project_id)
+    except Exception as exc:  # noqa: BLE001 — advisory; say it failed
+        lookout_block = {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
     return _with_project_status({
         "project_code": project_code,
         "available": True,
@@ -8260,6 +8359,9 @@ def get_project_state(project_code: str) -> dict[str, Any]:
         "exec_summary": exec_summary,
         **({"exec_summary_note": exec_note} if exec_note else {}),
         **({"since_summary": since_block} if since_block else {}),
+        **({"lookouts": lookout_block} if lookout_block and (
+            lookout_block.get("total") or lookout_block.get("candidates")
+            or lookout_block.get("error")) else {}),
         "sprint_week": week,
         "sprint_file": str(sprint_path.relative_to(root)) if sprint_path else None,
         "sprint_text": sprint_text,
@@ -11456,6 +11558,8 @@ READ_ONLY_TOOLS: dict[str, str] = {
     "preflight": "tree reads + SELECT spine/sources; pure report",
     "list_vendors": "SELECT vendors (team-gated: its policy admits any authenticated user)",
     "list_rfp_respondents": "SELECT rfp_respondents + vendors (team-gated)",
+    "list_lessons": "SELECT lessons / rpc match_lessons (team-gated)",
+    "list_freelancers": "SELECT entities, freelancer_reviews, contractor_hours (team-gated)",
 }
 
 # name -> what it writes (the reason it is NOT on `/mcp/read`).
@@ -11497,6 +11601,12 @@ MAIN_ONLY_TOOLS: dict[str, str] = {
     # #412: the registry and pipeline writers, under the caller's identity
     "create_vendor": "INSERT vendors",
     "add_rfp_respondent": "INSERT rfp_respondents",
+    # learning from projects: lessons, under the caller's identity
+    "log_lesson": "INSERT lessons (+ UPDATE its embedding)",
+    "set_lesson": "UPDATE lessons",
+    # learning phase 5: freelancer reviews and contractor hours
+    "review_freelancer": "INSERT/UPDATE freelancer_reviews",
+    "set_contractor_hours": "INSERT contractor_hours",
 }
 
 READ_INSTRUCTIONS = (

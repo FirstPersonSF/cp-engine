@@ -743,6 +743,14 @@ projects:
       - what: "<what we're waiting on>"
         from_party: "<external stakeholder name>"
         expected_by: "YYYY-MM-DD" # optional
+# Lessons — top level, NOT under projects. Candidates only: the project
+# owner confirms each one before it counts. Usually none.
+lessons:
+  - text: "<what to do or watch for next time, one sentence>"
+    scope: "client"             # person | client | type | practice
+    person: "<name>"            # only for scope: person
+    moments: ["invoicing"]      # optional; from the moment list in the rules
+    evidence: "<what happened in this meeting that taught it>"
 ```
 
 # Rules
@@ -822,6 +830,19 @@ projects:
    text is not, so the row goes on asserting the old date. If the meeting
    revises a date ("Friday — actually, let's make it Monday"), emit the item
    ONCE with the FINAL date; never one item per date discussed.
+
+13. **Lessons are rare; emit one only when the meeting names it.** A
+   lesson is something we would do differently next time, said or plainly
+   shown in this meeting: "next time we should…", "we should have…",
+   "watch out for…", "that always happens with…", a cost of skipping a step.
+   Not a decision, not a task, not a summary, not your own advice. Scope:
+   `person` (how a stakeholder works), `client` (how the company works),
+   `type` (true of this kind of work), `practice` (how we work everywhere).
+   Moments, when one fits: kickoff, estimating, process-order,
+   booking-resources, hiring-freelancers, contractor-hours, scope-change,
+   travel, shoot, client-review-round, legal-review, workload,
+   final-delivery, invoicing. Most meetings have none: omit `lessons`.
+   Person and client lessons are internal and never reach the client.
 
 # Output format
 
@@ -911,6 +932,14 @@ projects:
         confidence: "high"        # high | medium | low — your read of certainty
         depends_on: ["<other deliverable / event>"]  # optional
         linked_to: ["<other_project_code>"]          # optional
+# Lessons — top level, NOT under projects. Candidates only: the project
+# owner confirms each one before it counts. Usually none.
+lessons:
+  - text: "<what to do or watch for next time, one sentence>"
+    scope: "client"             # person | client | type | practice
+    person: "<name>"            # only for scope: person
+    moments: ["invoicing"]      # optional; from the moment list in the rules
+    evidence: "<what happened in this meeting that taught it>"
 ```
 
 # Rules
@@ -984,6 +1013,19 @@ projects:
     text is not, so the row goes on asserting the old date. If the meeting
     revises a date ("Friday — actually, let's make it Monday"), emit the item
     ONCE with the FINAL date; never one item per date discussed.
+
+15. **Lessons are rare; emit one only when the meeting names it.** A
+   lesson is something we would do differently next time, said or plainly
+   shown in this meeting: "next time we should…", "we should have…",
+   "watch out for…", "that always happens with…", a cost of skipping a step.
+   Not a decision, not a task, not a summary, not your own advice. Scope:
+   `person` (how a stakeholder works), `client` (how the company works),
+   `type` (true of this kind of work), `practice` (how we work everywhere).
+   Moments, when one fits: kickoff, estimating, process-order,
+   booking-resources, hiring-freelancers, contractor-hours, scope-change,
+   travel, shoot, client-review-round, legal-review, workload,
+   final-delivery, invoicing. Most meetings have none: omit `lessons`.
+   Person and client lessons are internal and never reach the client.
 
 # Output format
 

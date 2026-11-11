@@ -179,6 +179,7 @@ def render_master_cp(
     prior_sprint_iso: str | None = None,
     parsed_sprint_files: tuple[SprintFile, ...] | None = None,
     today: date | None = None,
+    lessons_to_review: list[dict] | None = None,
 ) -> str:
     """Render the full master-cp.md body.
 
@@ -401,6 +402,7 @@ def render_master_cp(
         sprint_facts=sprint_facts,
         slack_rollup=slack_rollup,
         drafts_to_review=drafts_to_review,
+        lessons_to_review=lessons_to_review or [],
     )
 
 

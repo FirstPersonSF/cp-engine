@@ -28,12 +28,22 @@ Author: cp-engine (sync)
 <!-- cp-engine:end sprint-facts-strip -->
 
 <!-- cp-engine:start agenda -->
-{%- if agenda or drafts_to_review %}
+{%- if agenda or drafts_to_review or lessons_to_review %}
 ## Agenda — what needs attention this week
 {%- if drafts_to_review %}
 **Drafts to review** ({{ drafts_to_review | map(attribute="codes") | map("length") | sum }})
 {%- for d in drafts_to_review %}
 - {{ d.owner }}: {% for c in d.codes %}`{{ c }}`{% if not loop.last %}, {% endif %}{% endfor %}
+{%- endfor %}
+{% endif %}
+{%- if lessons_to_review %}
+**Lessons to review** ({{ lessons_to_review | map(attribute="candidates") | sum + lessons_to_review | map(attribute="due") | sum + lessons_to_review | selectattr("reviews", "defined") | map(attribute="reviews") | sum }})
+{%- for l in lessons_to_review %}
+{%- set parts = [] %}
+{%- if l.candidates %}{% set _ = parts.append(l.candidates ~ " to confirm") %}{% endif %}
+{%- if l.due %}{% set _ = parts.append(l.due ~ " due for yearly review") %}{% endif %}
+{%- if l.reviews %}{% set _ = parts.append(l.reviews ~ " freelancer review" ~ ("s" if l.reviews != 1 else "") ~ " to write") %}{% endif %}
+- {{ l.owner }}: {{ parts | join(", ") }}
 {%- endfor %}
 {% endif %}
 {%- if agenda %}

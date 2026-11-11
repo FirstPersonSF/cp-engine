@@ -255,6 +255,8 @@ about.
 | `wrap up` | any | Close out the session — **run `/cp-wrapup`**, which carries the full ritual (Exec Summaries, decision + commitment sweeps, spine and word-count checks, commit, push). Also closes a `run weekly review` block. **Without the plugin** (a hosted-only session), see "Wrapping up from a hosted session" below. |
 | `rotate the CP` | any | Manually trigger archive rotation on the focused CP. |
 | `sweep improvements` | any | Harvest `improvements.md`: cluster entries, propose issues. |
+| `remember this: <lesson>` | any | Record a lesson — `log_lesson` on `cp-hosted`. Propose its scope, moments and project, confirm in one line, then log it. |
+| `what should we watch for on <code>` | any | That project's lookouts: its client's people and client lessons, its project types' lessons, practice lessons — `list_lessons <code>`. |
 | `promote uphill <code>` | any | Copy a decision or commitment from `<code>` to its PARENT — the `promote_uphill` verb (`cxp promote-uphill`). One level per call. |
 | `prep sprint planning` | any | Draft next sprint's planning agenda from every active workstream — run `/cp-prep`. |
 | `create a stakeholder for <name>` | any | Build a card for someone on a project, from LinkedIn and our meetings — the `build-stakeholder` skill. |
@@ -343,6 +345,27 @@ of friction**: `- <date> · \`area\` — <observation>`. Full protocol
 lives in that file's header. Real bugs still go to GitHub issues; never
 delete entries. `wrap up` sweeps for unlogged friction;
 `sweep improvements` harvests.
+
+## Lessons
+
+What we learn from projects lives in MC-2 `lessons`, one short lesson per
+row, so every session and every project can use it. Each has a **scope**
+(`person`, `client`, `type` of work, or `practice` — how we work
+everywhere) and the **moments** it bites (invoicing, hiring freelancers,
+scope change…; `list_lessons` with no arguments lists them, and the list
+grows).
+
+- **Record at the moment.** When the user says `remember this`, or a lesson
+  surfaces in the work ("next time…", "we should have…"), propose it in one
+  line — text, scope, moments, project — and `log_lesson` once confirmed.
+  A lesson is what to do or watch for, not a summary.
+- **Candidates wait for the owner.** Lessons drafted from meetings or
+  close-out reports are `candidate`; the project owner confirms, edits or
+  retires them (`set_lesson`). Confirmed lessons come back for review after
+  12 months.
+- **Person and client lessons are internal.** Never put one in a proposal,
+  RFP, deck, email draft or anything a client or partner reads. They inform
+  you; they are not content.
 
 ## Running several sessions
 

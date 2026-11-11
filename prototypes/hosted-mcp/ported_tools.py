@@ -1166,6 +1166,13 @@ def preflight(project_code: str, artifact_kind: str = "rfp") -> dict[str, Any]:
         spine_titles=spine_titles, source_titles=source_titles,
     )
     out = report.to_dict()
+    # Learning phase 3: what past work taught about scoping this kind of
+    # work, and — separately, never for the document — the client's lookouts.
+    if pid:
+        with contextlib.suppress(Exception):
+            from cp_engine.lessons import scoping_lessons
+
+            out["lessons"] = scoping_lessons(client, pid)
     if warnings:
         out["warnings"] = list(warnings)
     _srv.audit(client, tool, {"project_code": project_code, "kind": kind},
@@ -1489,4 +1496,522 @@ def add_rfp_respondent(
         out["level"] = _srv._level_for(project_code)
         if out["level"].get("warning"):
             out.setdefault("warning", out["level"]["warning"])
+    return out
+
+
+# ── Lessons (learning from projects, phases 1–2; mc-2 migs 215–217) ─────
+#
+# Drew, 2026-11-11: "continuously learn from our projects." A lesson is one
+# short statement in MC-2 `lessons`, scoped to a person, a client, a project
+# type or all our work, and tagged with the moments it bites. The engine
+# (`cp_engine.lessons`) builds and checks the rows; the writes are HERE so the
+# read/write classification derived from this file sees them.
+
+_LESSON_SCOPES = "person | client | type | practice"
+
+
+def _lesson_company(client, company: str) -> str | None:
+    """A company id from its code (`IBX`) or exact name, or None."""
+    wanted = (company or "").strip()
+    if not wanted:
+        return None
+    for col, val in (("code", wanted.upper()), ("name", wanted)):
+        rows = (client.table("companies").select("id").eq(col, val)
+                .limit(1).execute().data or [])
+        if rows:
+            return rows[0]["id"]
+    return None
+
+
+def _project_types_of(client, pid: str) -> list[str]:
+    rows = (client.table("projects").select("project_types").eq("id", pid)
+            .limit(1).execute().data or [])
+    return list((rows[0].get("project_types") if rows else None) or [])
+
+
+def _embed_lesson(client, lesson_id: str, text: str) -> dict[str, Any]:
+    """Best-effort embedding write; the lesson is already saved."""
+    ok, reason = _srv.embedding_available()
+    if not ok:
+        return {"embedded": False, "embed_reason": reason}
+    try:
+        vector = _srv.embed_document(text)
+        client.table("lessons").update(
+            {"embedding": vector, "embedded_at": _now_iso()}).eq("id", lesson_id).execute()
+        return {"embedded": True}
+    except Exception as exc:  # noqa: BLE001 — never lose the lesson over search
+        return {"embedded": False, "embed_reason": f"{type(exc).__name__}: {str(exc)[:200]}"}
+
+
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _with_project_codes(client, rows: list[dict]) -> list[dict]:
+    ids = sorted({r["source_project_id"] for r in rows if r.get("source_project_id")})
+    codes: dict[str, str] = {}
+    if ids:
+        for p in (client.table("projects").select("id, code").in_("id", ids)
+                  .execute().data or []):
+            codes[p["id"]] = p.get("code")
+    for r in rows:
+        r["source_project"] = codes.get(r.get("source_project_id"))
+    return rows
+
+
+@hosted_tool
+def log_lesson(
+    text: str,
+    scope: str,
+    project_code: str = "",
+    company: str = "",
+    person: str = "",
+    project_types: list[str] | None = None,
+    moments: list[str] | None = None,
+    other_moment: str = "",
+    evidence: str = "",
+    status: str = "confirmed",
+    source: str = "session",
+    source_ref: str = "",
+) -> dict[str, Any]:
+    """Record a lesson we learned — what `remember this: …` does.
+
+    A lesson is ONE short statement of what to do or watch for next time
+    ("Get travelling freelance directors' expenses in before the final
+    invoice"). Not a summary, not a decision.
+
+    `scope` (required) — who it is about: `person` (a stakeholder: pass
+    `person`), `client` (a company: `company` code like `IBX`, or it is taken
+    from `project_code`), `type` (a kind of work: `project_types`, or the
+    project's own types), `practice` (how we work, everywhere).
+
+    `moments` — when it bites, from the list (`list_lessons` with no
+    arguments shows it): kickoff, estimating, process-order,
+    booking-resources, hiring-freelancers, contractor-hours, scope-change,
+    travel, shoot, client-review-round, legal-review, workload,
+    final-delivery, invoicing. A moment not on the list goes in
+    `other_moment`. `project_code` is the project it came from.
+
+    `status` defaults to `confirmed`: a person saying "remember this" is the
+    review. Pass `candidate` for one you are proposing; the project owner
+    confirms it with `set_lesson`.
+
+    Person and client lessons are ALWAYS internal: never put them in a
+    proposal, RFP, deck or anything a client or partner reads.
+    Team members only.
+    """
+    tool = "log_lesson"
+    refused = _team_gate(tool, project_code or None)
+    if refused:
+        return refused
+    from cp_engine.lessons import LessonError, known_lists, lesson_row, read_shape
+
+    client = _srv.user_client()
+
+    def _fail(error: str) -> dict[str, Any]:
+        _srv.audit(client, tool, {"project_code": project_code, "scope": scope,
+                                  "result": "error"}, 0)
+        return {"project_code": project_code or None, "error": error}
+
+    pid = cid = None
+    if project_code:
+        found = _resolve(client, project_code)
+        if found is None:
+            return _not_found(client, tool, project_code)
+        pid, cid = found
+    if company:
+        cid = _lesson_company(client, company)
+        if cid is None:
+            return _fail(f"no company {company!r} (use its code, e.g. IBX)")
+    types = list(project_types or [])
+    if scope == "type" and not types and pid:
+        types = _project_types_of(client, pid)
+    try:
+        known_types, known_moments = known_lists(client)
+        row = lesson_row(
+            text=text, scope=scope,
+            company_id=cid if scope in ("client", "person") else None,
+            stakeholder_name=person or None, project_types=types,
+            moments=list(moments or []), other_moment=other_moment or None,
+            source_project_id=pid, source_kind=source, source_ref=source_ref or None,
+            evidence=evidence or None, status=status,
+            known_types=known_types, known_moments=known_moments,
+        )
+    except LessonError as exc:
+        hint = f" (scope is one of: {_LESSON_SCOPES})" if "scope" in str(exc) else ""
+        return _fail(str(exc) + hint)
+
+    try:
+        saved = client.table("lessons").insert(row).execute().data or []
+    except Exception as exc:  # noqa: BLE001 — MCP boundary
+        return _fail(f"insert failed: {type(exc).__name__}: {str(exc)[:400]}")
+    if not saved:
+        return _fail("the lesson was not saved (no row returned)")
+    out = read_shape(saved[0])
+    out.update(_embed_lesson(client, out["id"], out.get("text") or row["text"]))
+    _srv.audit(client, tool, {"project_code": project_code, "scope": scope,
+                              "status": out.get("status"), "moments": out.get("moments")}, 1)
+    out["caller"] = _srv.caller_email() or _srv.caller_subject()
+    if out.get("scope") in ("person", "client"):
+        out["internal_only_note"] = "internal: never in client- or partner-facing work"
+    if project_code:
+        with contextlib.suppress(Exception):
+            out["level"] = _srv._level_for(project_code)
+    return out
+
+
+@hosted_tool
+def list_lessons(
+    project_code: str = "",
+    query: str = "",
+    scope: str = "",
+    status: str = "confirmed",
+    moments: list[str] | None = None,
+    project_types: list[str] | None = None,
+    owner: str = "",
+    due_for_review: bool = False,
+    limit: int = 20,
+) -> dict[str, Any]:
+    """Read lessons: lookouts for a project, a search, or the review queue.
+
+    - `project_code` — what applies to that project: its client's person and
+      client lessons, lessons for its project types, and practice lessons.
+      Another client's person/client lessons never come back.
+    - `query` — search by meaning ("what goes wrong with freelancer hours").
+    - `status` — `confirmed` (default), `candidate` (the review queue), or
+      `all`. `owner` narrows to one reviewer ("Drew Fiero").
+    - `due_for_review` — confirmed lessons whose 12-month review has come.
+    - `moments`, `project_types`, `scope` filter further.
+
+    With no arguments it also returns the type and moment lists. Person and
+    client lessons are internal: never quote them in client-facing work.
+    Team members only.
+    """
+    tool = "list_lessons"
+    refused = _team_gate(tool, project_code or None)
+    if refused:
+        return refused
+    from datetime import date
+
+    from cp_engine import lessons as L
+
+    client = _srv.user_client()
+    limit = max(1, min(int(limit or 20), 100))
+    want_status = None if status == "all" else (status or "confirmed")
+    pid = cid = None
+    ptypes: list[str] = []
+    if project_code:
+        found = _resolve(client, project_code)
+        if found is None:
+            return _not_found(client, tool, project_code)
+        pid, cid = found
+        ptypes = _project_types_of(client, pid)
+    out: dict[str, Any] = {"project_code": project_code or None,
+                           "project_types_of_project": ptypes or None}
+    try:
+        if query:
+            ok, reason = _srv.embedding_available()
+            if not ok:
+                return {**out, "error": reason}
+            rows = L.search_lessons(
+                client, _srv.embed_query(query), limit=limit, company_id=cid,
+                project_types=list(project_types or []) or ptypes or None,
+                moments=list(moments or []) or None,
+                include_candidates=want_status in (None, "candidate"))
+            if scope:
+                rows = [r for r in rows if r.get("scope") == scope]
+            out["mode"] = "search"
+        elif due_for_review:
+            rows = L.due_for_review(client, owner_name=owner or None)
+            out["mode"] = "due for review"
+        elif project_code:
+            seen: dict[str, dict] = {}
+            reads = [dict(company_id=cid)] if cid else []
+            if ptypes:
+                reads.append(dict(scope="type", project_types=ptypes))
+            reads.append(dict(scope="practice"))
+            for kw in reads:
+                for r in L.list_lessons(client, status=want_status,
+                                        moments=list(moments or []) or None,
+                                        owner_name=owner or None, limit=limit, **kw):
+                    if scope and r.get("scope") != scope:
+                        continue
+                    seen.setdefault(r["id"], r)
+            rows = list(seen.values())[:limit]
+            out["mode"] = "lookouts"
+        else:
+            rows = L.list_lessons(client, status=want_status, scope=scope or None,
+                                  moments=list(moments or []) or None,
+                                  project_types=list(project_types or []) or None,
+                                  owner_name=owner or None, limit=limit)
+            out["mode"] = "list"
+            if not (scope or moments or project_types or owner):
+                out["project_types"] = [t["slug"] for t in L.list_project_types(client)]
+                out["moments"] = [m["slug"] for m in L.list_moments(client)]
+    except Exception as exc:  # noqa: BLE001 — MCP boundary
+        _srv.audit(client, tool, {"project_code": project_code, "result": "error"}, 0)
+        return {**out, "error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+
+    rows = _with_project_codes(client, rows)
+    out.update(count=len(rows), lessons=rows,
+               today=date.today().isoformat(),
+               note="person/client lessons are internal: never in client-facing work")
+    _srv.audit(client, tool, {"project_code": project_code, "mode": out["mode"],
+                              "status": status}, len(rows))
+    return out
+
+
+@hosted_tool
+def set_lesson(
+    lesson_id: str,
+    status: str = "",
+    reason: str = "",
+    text: str = "",
+    scope: str = "",
+    company: str = "",
+    person: str = "",
+    project_types: list[str] | None = None,
+    moments: list[str] | None = None,
+    other_moment: str = "",
+    evidence: str = "",
+    owner: str = "",
+) -> dict[str, Any]:
+    """Confirm, retire or edit a lesson.
+
+    `status`: `confirmed` (the owner agrees; also how a lesson due for its
+    12-month review is kept, which restarts the year), `retired` (no longer
+    true; pass `reason`), or `candidate`. Any other argument edits that
+    field; empty ones are left alone. Changing `text` re-embeds it for
+    search. Lessons are never deleted. Team members only.
+    """
+    tool = "set_lesson"
+    refused = _team_gate(tool, None)
+    if refused:
+        return refused
+    from cp_engine.lessons import LessonError, edit_patch, known_lists, read_shape, status_patch
+
+    client = _srv.user_client()
+
+    def _fail(error: str) -> dict[str, Any]:
+        _srv.audit(client, tool, {"lesson_id": lesson_id, "result": "error"}, 0)
+        return {"lesson_id": lesson_id, "error": error}
+
+    fields: dict[str, Any] = {}
+    for key, val in (("text", text), ("scope", scope), ("stakeholder_name", person),
+                     ("other_moment", other_moment), ("evidence", evidence),
+                     ("owner_name", owner)):
+        if val:
+            fields[key] = val
+    if project_types is not None:
+        fields["project_types"] = project_types
+    if moments is not None:
+        fields["moments"] = moments
+    if company:
+        cid = _lesson_company(client, company)
+        if cid is None:
+            return _fail(f"no company {company!r} (use its code, e.g. IBX)")
+        fields["company_id"] = cid
+    if not fields and not status:
+        return _fail("nothing to change: pass status or a field to edit")
+    try:
+        patch: dict[str, Any] = {}
+        if fields:
+            known_types, known_moments = known_lists(client)
+            patch.update(edit_patch(known_types=known_types, known_moments=known_moments,
+                                    **fields))
+        if status:
+            patch.update(status_patch(status, reason=reason or None))
+    except LessonError as exc:
+        return _fail(str(exc))
+
+    try:
+        rows = client.table("lessons").update(patch).eq("id", lesson_id).execute().data or []
+    except Exception as exc:  # noqa: BLE001 — MCP boundary
+        return _fail(f"update failed: {type(exc).__name__}: {str(exc)[:400]}")
+    if not rows:
+        return _fail(f"no lesson {lesson_id!r}")
+    out = read_shape(rows[0])
+    if "text" in patch:
+        out.update(_embed_lesson(client, lesson_id, patch["text"]))
+    _srv.audit(client, tool, {"lesson_id": lesson_id, "status": status or None,
+                              "fields": sorted(fields)}, 1)
+    out["caller"] = _srv.caller_email() or _srv.caller_subject()
+    return out
+
+
+# ── Freelancers (learning phase 5; mc-2 mig 218) ─────────────────────
+#
+# Drew, 2026-11-11: evaluate freelancers with a record of their projects and
+# a rating, recommend the right person from history, and agree contractor
+# hours before they start and track them. Internal: never client-facing.
+
+
+def _person_or_error(client, tool: str, person: str) -> tuple[dict | None, dict | None]:
+    from cp_engine.freelancers import find_person
+
+    found = find_person(client, person)
+    if found is None:
+        _srv.audit(client, tool, {"person": person, "result": "error"}, 0)
+        return None, {"error": f"no single person matches {person!r} in MC-2 (People)"}
+    return found, None
+
+
+@hosted_tool
+def review_freelancer(
+    project_code: str,
+    person: str,
+    rating: int,
+    recommend: str,
+    strengths: str = "",
+    watch_outs: str = "",
+    role: str = "",
+) -> dict[str, Any]:
+    """Record how a freelancer worked out on one project.
+
+    `rating` 1–5; `recommend` yes | with-reservations | no; `strengths`
+    and `watch_outs` in a sentence each ("fast; needs a written brief").
+    Completes the review Close requested, or adds one. One review per
+    freelancer per project: a second call replaces the first. Internal.
+    Team members only.
+    """
+    tool = "review_freelancer"
+    refused = _team_gate(tool, project_code)
+    if refused:
+        return refused
+    from cp_engine.freelancers import FreelancerError, review_patch
+
+    client = _srv.user_client()
+    found = _resolve(client, project_code)
+    if found is None:
+        return _not_found(client, tool, project_code)
+    pid, _cid = found
+    who, err = _person_or_error(client, tool, person)
+    if err:
+        return {"project_code": project_code, **err}
+    try:
+        patch = review_patch(rating=rating, recommend=recommend, strengths=strengths,
+                             watch_outs=watch_outs, role=role,
+                             reviewer=_srv.caller_email() or "", now_iso=_now_iso())
+    except FreelancerError as exc:
+        _srv.audit(client, tool, {"project_code": project_code, "result": "error"}, 0)
+        return {"project_code": project_code, "error": str(exc)}
+    try:
+        existing = (client.table("freelancer_reviews").select("id")
+                    .eq("entity_id", who["id"]).eq("project_id", pid).limit(1).execute().data or [])
+        if existing:
+            client.table("freelancer_reviews").update(patch).eq("id", existing[0]["id"]).execute()
+        else:
+            client.table("freelancer_reviews").insert(
+                {"entity_id": who["id"], "project_id": pid, **patch}).execute()
+    except Exception as exc:  # noqa: BLE001 — MCP boundary
+        _srv.audit(client, tool, {"project_code": project_code, "result": "error"}, 0)
+        return {"project_code": project_code, "error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+    _srv.audit(client, tool, {"project_code": project_code, "person": who.get("name"),
+                              "rating": rating, "recommend": recommend}, 1)
+    return {"project_code": project_code, "person": who.get("name"), "rating": rating,
+            "recommend": recommend, "replaced": bool(existing),
+            "caller": _srv.caller_email() or _srv.caller_subject()}
+
+
+@hosted_tool
+def set_contractor_hours(
+    project_code: str,
+    person: str,
+    kind: str,
+    hours: float,
+    source: str = "",
+    period_start: str = "",
+    period_end: str = "",
+    source_ref: str = "",
+    note: str = "",
+) -> dict[str, Any]:
+    """Record a contractor's AGREED hours (before they start) or ACTUAL hours.
+
+    `kind` agreed | actual. Agreed: the newest one counts. Actual: one row per
+    invoice or Gusto timesheet period — `source` invoice | gusto | manual,
+    `source_ref` the invoice number, `period_start`/`period_end` ISO dates.
+    Returns where the person now stands against the agreement. Internal.
+    Team members only.
+    """
+    tool = "set_contractor_hours"
+    refused = _team_gate(tool, project_code)
+    if refused:
+        return refused
+    from cp_engine.freelancers import FreelancerError, hours_row, hours_status
+
+    client = _srv.user_client()
+    found = _resolve(client, project_code)
+    if found is None:
+        return _not_found(client, tool, project_code)
+    pid, _cid = found
+    who, err = _person_or_error(client, tool, person)
+    if err:
+        return {"project_code": project_code, **err}
+    try:
+        row = hours_row(entity_id=who["id"], project_id=pid, kind=kind, hours=hours,
+                        source=source, period_start=period_start or None,
+                        period_end=period_end or None, source_ref=source_ref, note=note)
+        client.table("contractor_hours").insert(row).execute()
+    except FreelancerError as exc:
+        _srv.audit(client, tool, {"project_code": project_code, "result": "error"}, 0)
+        return {"project_code": project_code, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001 — MCP boundary
+        _srv.audit(client, tool, {"project_code": project_code, "result": "error"}, 0)
+        return {"project_code": project_code, "error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+    _srv.audit(client, tool, {"project_code": project_code, "person": who.get("name"),
+                              "kind": kind, "hours": row["hours"]}, 1)
+    standing = None
+    with contextlib.suppress(Exception):
+        standing = (hours_status(client, project_id=pid, entity_id=who["id"]) or [None])[0]
+    return {"project_code": project_code, "person": who.get("name"), "recorded": row,
+            "standing": standing, "caller": _srv.caller_email() or _srv.caller_subject()}
+
+
+@hosted_tool
+def list_freelancers(
+    need: str = "",
+    project_code: str = "",
+    limit: int = 8,
+) -> dict[str, Any]:
+    """Who should we use, and how are contractors tracking.
+
+    - `need` ("motion designer", "director who travels") — freelancers
+      ranked with the evidence: their ratings and recommendations, past
+      projects and those projects' types, how recently, watch-outs.
+    - `project_code` — that project's contractors against their agreed
+      hours (over / near / ok / no agreement / no actuals; an ESTIMATE from
+      payables is labelled), and ranks for that project's types.
+    Also returns reviews Close requested that are still to write. Internal.
+    Team members only.
+    """
+    tool = "list_freelancers"
+    refused = _team_gate(tool, project_code or None)
+    if refused:
+        return refused
+    from cp_engine.freelancers import hours_status, pending_reviews, recommend
+
+    client = _srv.user_client()
+    out: dict[str, Any] = {"need": need or None, "project_code": project_code or None}
+    pid = None
+    ptypes: list[str] = []
+    if project_code:
+        found = _resolve(client, project_code)
+        if found is None:
+            return _not_found(client, tool, project_code)
+        pid, _cid = found
+        ptypes = _project_types_of(client, pid)
+    try:
+        out["ranked"] = recommend(client, need=need, project_types=ptypes or None,
+                                  limit=max(1, min(int(limit or 8), 25)))
+        if pid:
+            out["hours"] = hours_status(client, project_id=pid)
+        out["reviews_to_write"] = pending_reviews(client)
+    except Exception as exc:  # noqa: BLE001 — MCP boundary
+        _srv.audit(client, tool, {"project_code": project_code, "result": "error"}, 0)
+        return {**out, "error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+    out["note"] = "internal: ratings and watch-outs about people never reach a client"
+    _srv.audit(client, tool, {"project_code": project_code, "need": need},
+               len(out.get("ranked") or []))
     return out

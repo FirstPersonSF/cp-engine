@@ -225,6 +225,13 @@ class ProjectPlanningBlock:
     # Janet Noe active on ibx-5192 (3 meetings)". Set after the blocks are
     # built (it needs the siblings); None when not quiet or unexplained.
     sibling_activity: str | None = None
+    # Learning phase 3: confirmed lessons for the moments coming up on this
+    # project (an invoice due, a shoot, a review round) — `{text, moment,
+    # scope, person}`. Internal: they inform planning, never client output.
+    watch_for: tuple[dict, ...] = ()
+    # Learning phase 5: contractors over or near their agreed hours, or
+    # working with no agreement. One line each; internal.
+    hours_alerts: tuple[str, ...] = ()
     # ``fetch_error`` carries ONE sentinel since the ClickUp fallback was
     # removed (commitments consolidation, cp-engine #38):
     #   "no_schedule_milestones" — the MC-2 estimator schedule has no undone
@@ -256,6 +263,9 @@ class PlanningResult:
     capacity_binding: CapacityBinding = field(
         default_factory=lambda: {"basis": "owner_of_record", "owners": []}
     )
+    # Learning phase 6: people flagged in the next weeks (hours past
+    # capacity, or due commitments piling up), with a suggestion each.
+    workload_lookahead: tuple[str, ...] = ()
     cross_cutting_decisions: tuple[WeeklyDecision, ...] = ()
     # Window-filter accounting for the decisions surface: how many entries
     # were dropped as stale (older than the 28-day lookback) and how many
@@ -1568,6 +1578,36 @@ def build_project_block(
         if exec_summary is None and cp_md_path.is_file() else None
     )
 
+    # Learning phase 3: what is coming up (exec summary, milestones,
+    # commitments, open asks) names moments; their lessons ride along.
+    watch: tuple[dict, ...] = ()
+    try:
+        from cp_engine.lessons import watch_for as _watch_for
+
+        upcoming = "\n".join([
+            exec_summary or "",
+            *(str(m.get("deliverable") or "") for m in (*milestones, *client_asks, *our_commitments)),
+            *(str(getattr(a, "text", "") or "") for a in sprint_asks),
+        ])
+        watch = tuple(_watch_for(supabase_client, getattr(project, "mc2_id", None), upcoming))
+    except Exception as exc:  # noqa: BLE001 — advisory
+        log.warning("watch-for read failed for %s: %s", getattr(project, "code", "?"), exc)
+    hours_alerts: tuple[str, ...] = ()
+    try:
+        from cp_engine.freelancers import hours_status as _hours_status
+
+        if supabase_client is not None and getattr(project, "mc2_id", None):
+            lines = []
+            for h in _hours_status(supabase_client, project_id=project.mc2_id):
+                if h["state"] in ("over", "near"):
+                    est = " (estimated from payables)" if h["estimated"] else ""
+                    lines.append(f"{h['name']}: {h['actual']} of {h['agreed']} agreed hours"
+                                 f" — {h['state']}{est}")
+                elif h["state"] == "no agreement":
+                    lines.append(f"{h['name']}: hours logged with no agreed total")
+            hours_alerts = tuple(lines)
+    except Exception as exc:  # noqa: BLE001 — advisory
+        log.warning("contractor-hours read failed for %s: %s", getattr(project, "code", "?"), exc)
     return ProjectPlanningBlock(
         project=project,
         exec_summary=exec_summary,
@@ -1588,6 +1628,8 @@ def build_project_block(
         exec_summary_placeholder_fields=placeholder_fields,
         exec_summary_partial_refresh=partial,
         exec_summary_unauthored_ingest=unauthored_fed,
+        watch_for=watch,
+        hours_alerts=hours_alerts,
     )
 
 
@@ -1987,9 +2029,14 @@ def _render_cross_cutting(
 
     week_qs = result.week_open_questions
     week_qs_stale = result.week_open_questions_stale
-    if not binding and not decisions and not week_qs and not week_qs_stale:
+    lookahead = result.workload_lookahead
+    if not binding and not decisions and not week_qs and not week_qs_stale and not lookahead:
         out.append("_(no cross-cutting signals this sprint)_")
         return out
+
+    if lookahead:
+        out.extend(lookahead)
+        out.append("")
 
     if binding:
         out.append("**Capacity binding constraints:**")
@@ -2241,6 +2288,18 @@ def _render_project_block(block: ProjectPlanningBlock) -> list[str]:
         out.append(f"**Cross-engagement:** {block.sibling_activity}")
         out.append("")
 
+    if block.watch_for:
+        out.append("**Watch for** _(lessons; internal)_:")
+        for w in block.watch_for:
+            who = f"{w['person']}: " if w.get("person") else ""
+            out.append(f"- [{w.get('moment') or 'lesson'}] {who}{w['text']}")
+        out.append("")
+
+    if block.hours_alerts:
+        out.append("**Contractor hours:**")
+        out.extend(f"- {line}" for line in block.hours_alerts)
+        out.append("")
+
     if block.drift:
         out.append("**⚠ Estimate drift:**")
         out.extend(f"- {w}" for w in block.drift)
@@ -2349,6 +2408,18 @@ def _render_bundle_project_block(block: ProjectPlanningBlock) -> list[str]:
     out.extend(_render_open_questions(block))
     if block.sibling_activity:
         out.append(f"**Cross-engagement:** {block.sibling_activity}")
+        out.append("")
+
+    if block.watch_for:
+        out.append("**Watch for** _(lessons; internal)_:")
+        for w in block.watch_for:
+            who = f"{w['person']}: " if w.get("person") else ""
+            out.append(f"- [{w.get('moment') or 'lesson'}] {who}{w['text']}")
+        out.append("")
+
+    if block.hours_alerts:
+        out.append("**Contractor hours:**")
+        out.extend(f"- {line}" for line in block.hours_alerts)
         out.append("")
 
     if block.drift:
@@ -2735,6 +2806,14 @@ def build_planning_result(
         except Exception as exc:  # noqa: BLE001 — a review list must not cost prep
             errors.append(f"alias candidates unreadable: {type(exc).__name__}: {exc}")
 
+    lookahead_lines: tuple[str, ...] = ()
+    try:
+        from cp_engine import workload as _workload
+
+        lookahead_lines = tuple(_workload.render(_workload.lookahead(supabase_client, today=today)))
+    except Exception as exc:  # noqa: BLE001 — advisory
+        errors.append(f"workload lookahead unreadable: {type(exc).__name__}: {exc}")
+
     return PlanningResult(
         week_iso=week_iso,
         week_dates=week_dates_label,
@@ -2750,6 +2829,7 @@ def build_planning_result(
         },
         urgent_counts=urgent_counts,
         capacity_binding=capacity_binding,
+        workload_lookahead=lookahead_lines,
         cross_cutting_decisions=cross_cutting_decisions,
         cross_cutting_decisions_stale_count=stale_count,
         cross_cutting_decisions_undated_count=undated_count,

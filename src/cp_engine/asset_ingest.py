@@ -2376,26 +2376,10 @@ def list_project_files_annotated(
     }
 
 
-def archive_project_assets(client, project_id: str) -> int:
-    """Archive a project's un-promoted assets on project close.
-
-    `UPDATE rag_assets SET scope='archived', archived_at=now()
-     WHERE project_id=<project_id> AND scope='project'`.
-
-    CRITICAL: the `scope='project'` filter is the guard — only un-promoted
-    assets archive. Account-scoped (already promoted) assets belong to the
-    company now, not the project, and are left untouched.
-
-    Returns the count of assets archived.
-    """
-    resp = (
-        client.table(Tables.RAG_ASSETS)
-        .update({"scope": "archived", "archived_at": _utc_now_iso()})
-        .eq("project_id", project_id)
-        .eq("scope", "project")
-        .execute()
-    )
-    return _affected_count(resp)
+# `archive_project_assets` (scope='archived' on a closing project's sources)
+# was retired 2026-11-11 (learning from projects): closing a project keeps its
+# context reachable. Archived projects drop out of DEFAULT search instead, by
+# project status, and are searched when asked (`include_archived`).
 
 
 # ──────────────────────────────────────────────────────────────────────

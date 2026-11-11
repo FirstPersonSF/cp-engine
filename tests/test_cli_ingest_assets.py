@@ -289,20 +289,12 @@ def test_ingest_assets_scope_internal_is_noop(monkeypatch):
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_archive_cmd_reports_count(monkeypatch):
-    _stub_client(monkeypatch)
-
-    monkeypatch.setattr(
-        asset_ingest,
-        "resolve_project_folders",
-        lambda client, code: _folders(project_id="pid-1"),
-    )
-    monkeypatch.setattr(asset_ingest, "archive_project_assets", lambda client, pid: 3)
-
+def test_archive_project_assets_is_retired():
+    """Learning from projects (2026-11-11): closing a project keeps its
+    sources; the command that marked them archived is gone."""
     result = CliRunner().invoke(main, ["archive-project-assets", "ibx-5153"])
-    assert result.exit_code == 0, result.output
-    assert "3" in result.output
-    assert "ibx-5153" in result.output
+    assert result.exit_code != 0
+    assert not hasattr(asset_ingest, "archive_project_assets")
 
 
 def test_resolve_miss_exits_nonzero(monkeypatch):

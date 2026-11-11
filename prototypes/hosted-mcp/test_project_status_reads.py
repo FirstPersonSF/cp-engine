@@ -161,10 +161,11 @@ def test_pull_reads_the_elements_HOME_project_not_the_optional_scope(server, db)
     assert out["project_status"] == "Archived"
 
 
-def test_semantic_search_marks_each_hit_from_finished_work(server, db, monkeypatch):
-    """Corpus-wide search is where a finished project's polished brief
-    competes with the live one. Each archived hit is marked; the live hit is
-    left exactly as it was; nothing is dropped."""
+def test_semantic_search_leaves_archived_out_unless_asked(server, db, monkeypatch):
+    """Drew, 2026-11-11: an archived project should not occupy search unless
+    you go looking. Default search drops its hits and says how many; with
+    include_archived (or naming the archived project) they come back, marked
+    (#279). This replaces the earlier "annotate, never drop" rule."""
     db.rpcs = {
         "match_spine_context": [
             {"id": "s-arch", "framing": "Old brief", "project_code": "snt-labscon-26"},
@@ -180,14 +181,15 @@ def test_semantic_search_marks_each_hit_from_finished_work(server, db, monkeypat
 
     out = server.semantic_search("brief")
     assert "error" not in out, out
-    by_chunk = {r["chunk_id"]: r for r in out["results"]}
+    assert [r["chunk_id"] for r in out["results"]] == ["k2"]
+    assert [c["framing"] for c in out["spine_context"]] == ["New brief"]
+    assert out["archived_hidden"] == 2 and "include_archived" in out["note_on_archived"]
+
+    full = server.semantic_search("brief", include_archived=True)
+    by_chunk = {r["chunk_id"]: r for r in full["results"]}
     assert by_chunk["k1"]["project_status"] == "Archived" and by_chunk["k1"]["archived"]
     assert "project_status" not in by_chunk["k2"]
-    ctx = {c["framing"]: c for c in out["spine_context"]}
-    assert ctx["Old brief"]["project_status"] == "Archived"
-    assert "project_status" not in ctx["New brief"]
-    assert out["finished_project_hits"] == 2
-    assert len(out["results"]) == 2 and len(out["spine_context"]) == 2
+    assert full["finished_project_hits"] == 2 and "archived_hidden" not in full
 
     scoped = server.semantic_search("brief", project_code=ARCHIVED)
     assert scoped["project_status"] == "Archived" and scoped["archived"] is True

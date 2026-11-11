@@ -261,6 +261,28 @@ def _fetch_estimate_or_none(client, project):
         return None
 
 
+def _lessons_to_review(client, today):
+    """Learning phase 3: per owner, lessons to confirm and lessons due for
+    their yearly review. Never fails the sync."""
+    try:
+        from cp_engine.lessons import review_queue_by_owner
+
+        queue = {q["owner"]: dict(q, reviews=0) for q in review_queue_by_owner(client, today=today)}
+    except Exception:  # noqa: BLE001
+        queue = {}
+    # Learning phase 5: freelancer reviews Close requested, by project owner.
+    try:
+        from cp_engine.freelancers import pending_reviews
+
+        for r in pending_reviews(client) if client is not None else []:
+            q = queue.setdefault(r["owner"], {"owner": r["owner"], "candidates": 0, "due": 0,
+                                              "reviews": 0})
+            q["reviews"] = q.get("reviews", 0) + 1
+    except Exception:  # noqa: BLE001
+        pass
+    return [queue[o] for o in sorted(queue)]
+
+
 def sync_tenant(
     config: TenantConfig,
     *,
@@ -1087,6 +1109,7 @@ def _sync_tenant_inner(
                 prior_sprint_iso=prior_sprint_week_iso(sync_clock),
                 parsed_sprint_files=tuple(parsed_files),
                 today=local_date(sync_clock),
+                lessons_to_review=_lessons_to_review(mc2_client, local_date(sync_clock)),
             )
             if (
                 _write_if_changed(

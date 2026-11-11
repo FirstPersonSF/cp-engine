@@ -18,6 +18,7 @@ Layout (arch-phase-4, cp-engine #32 — split from a single 4k-LOC file):
   routers/spine.py   — POST /api/spine/promote, /api/spine/promote-transcript
   routers/meetings.py— POST /api/meetings/promote-transcript, /api/meetings/synthesize
   routers/assets.py  — POST /api/assets/ingest
+  routers/closing.py — POST /api/close-out (learning phase 4)
   routers/integrations.py — POST /api/resolve-tags, /clickup-task-closed
   routers/sessions.py— POST /api/sessions/capture
   routers/project_state.py— POST /api/project-state/capture
@@ -184,6 +185,7 @@ def health() -> dict:
 # side effects (there should be none) can't race the log configuration.
 from routers import assets as _assets_router  # noqa: E402
 from routers import cron as _cron_router  # noqa: E402
+from routers import closing as _closing_router  # noqa: E402
 from routers import email as _email_router  # noqa: E402
 from routers import ingest as _ingest_router  # noqa: E402
 from routers import integrations as _integrations_router  # noqa: E402
@@ -209,6 +211,7 @@ app.include_router(_promote_uphill_router.router)
 app.include_router(_improvements_router.router)
 app.include_router(_rotation_router.router)
 app.include_router(_cron_router.router)
+app.include_router(_closing_router.router)
 
 
 # ── Back-compat re-exports (arch-phase-4 split) ───────────────────────
