@@ -326,6 +326,15 @@ def brief_cmd(code: str) -> None:
     except Exception as exc:  # noqa: BLE001
         click.echo(f"(WARNING: since-summary read failed: {exc})", err=True)
 
+    lookout_block = None
+    try:
+        from cp_engine.lessons import lookouts
+
+        lpid = mc2_db._resolve_project_id(client, code) if client else None
+        lookout_block = lookouts(client, lpid) if lpid else None
+    except Exception as exc:  # noqa: BLE001
+        click.echo(f"(WARNING: lookouts read failed: {exc})", err=True)
+
     if working_dir is None and briefing_body is None and commitments is None:
         click.echo(
             f"'{code}' resolves to no working dir, and MC-2 has no spine or "
@@ -346,6 +355,7 @@ def brief_cmd(code: str) -> None:
             canon=canon,
             canon_note=canon_note,
             since=since_block,
+            lookouts=lookout_block,
         ),
         nl=False,
     )
@@ -775,10 +785,34 @@ def preflight_cmd(code: str, artifact_kind: str, weeks: int, as_json: bool) -> N
         code, artifact_kind, cp_md_text=cp_md_text, sprint_texts=sprint_texts
     )
 
+    # Learning phase 3: scoping lessons for this kind of work, and the
+    # client's lookouts kept apart (inform only; never in the document).
+    lesson_block = None
+    try:
+        from cp_engine.lessons import scoping_lessons
+
+        lclient = mc2_db.get_client(config, required=False)
+        lpid = mc2_db._resolve_project_id(lclient, code) if lclient else None
+        lesson_block = scoping_lessons(lclient, lpid) if lpid else None
+    except Exception as exc:  # noqa: BLE001 — advisory
+        click.echo(f"(WARNING: lessons read failed: {exc})", err=True)
+
     if as_json:
-        click.echo(_json.dumps(report.to_dict(), indent=2))
+        data = report.to_dict()
+        if lesson_block:
+            data["lessons"] = lesson_block
+        click.echo(_json.dumps(data, indent=2))
     else:
         click.echo(render_report(report), nl=False)
+        if lesson_block and (lesson_block.get("scoping") or lesson_block.get("client_lookouts")):
+            click.echo("\n## Lessons (internal)\n")
+            for item in lesson_block.get("scoping") or []:
+                click.echo(f"- [{', '.join(item.get('moments') or []) or item.get('scope')}] {item['text']}")
+            if lesson_block.get("client_lookouts"):
+                click.echo("\nClient lookouts — inform only, never write these into the document:")
+                for item in lesson_block["client_lookouts"]:
+                    who = f"{item['person']}: " if item.get("person") else ""
+                    click.echo(f"- {who}{item['text']}")
 
     sys.exit(0 if report.ready else 1)
 

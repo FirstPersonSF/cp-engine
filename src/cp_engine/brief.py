@@ -284,6 +284,7 @@ def compose_brief(
     canon: list[dict] | None = None,
     canon_note: str | None = None,
     since: dict | None = None,
+    lookouts: dict | None = None,
 ) -> str:
     """Assemble the six-section context pack. Pure and deterministic —
     identical inputs compose byte-identical output. `canon`/`canon_note`
@@ -296,10 +297,19 @@ def compose_brief(
         (("Since the summary", render_since(since)),)
         if since and since.get("total") else ()
     )
+    # Learning phase 3: what this project should watch for, from lessons.
+    from cp_engine.lessons import render_lookouts
+
+    lookout_sections = (
+        (("Lookouts", render_lookouts(lookouts)),)
+        if lookouts and (lookouts.get("total") or lookouts.get("candidates")
+                         or lookouts.get("error")) else ()
+    )
     sections = (
         ("Facts", facts_section(cp_md_text)),
         ("Exec Summary (trimmed)", exec_summary_section(cp_md_text)),
         *since_sections,
+        *lookout_sections,
         ("Canon — current truth", canon_section(canon, canon_note)),
         ("Inputs & Briefing", briefing_section(briefing_body, briefing_note)),
         ("Open commitments", commitments_section(commitments,

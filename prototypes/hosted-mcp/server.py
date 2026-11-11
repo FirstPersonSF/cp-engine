@@ -7199,6 +7199,31 @@ def create_commitment(
     }
 
 
+def _internal_lesson_guard(client, project_id: str | None, framing: str | None,
+                           body: str) -> dict[str, Any] | None:
+    """Refuse a client-facing document (proposal, RFP, SOW…) that quotes one
+    of the client's internal lessons (learning from projects: person and
+    client lessons never reach the client). A failed check never blocks."""
+    try:
+        from cp_engine.lessons import client_facing, internal_leaks
+
+        if not client_facing(framing):
+            return None
+        hits = internal_leaks(client, project_id, body)
+    except Exception:  # noqa: BLE001 — the guard is advisory when it cannot read
+        return None
+    if not hits:
+        return None
+    return {
+        "error": (
+            f"{framing!r} is client-facing and quotes {len(hits)} internal "
+            "lesson(s) about the client or its people. Rewrite those passages "
+            "(use what the lesson teaches, not its words); nothing was written."
+        ),
+        "internal_lessons_quoted": hits,
+    }
+
+
 @mcp_server.tool()
 @_names_its_level
 def create_spine_element(
@@ -7288,6 +7313,12 @@ def create_spine_element(
     scope = resolve_write_scope(client, project_code)
     if scope is None:
         return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    guard = _internal_lesson_guard(client, scope["id"], label, body)
+    if guard:
+        audit(client, "create_spine_element", {"project_code": project_code,
+                                               "result": "internal lesson quoted"}, 0)
+        return guard
 
     element_slug = slugify(slug or label)
     est_item_id = f"_authored/{element_slug}"
@@ -7527,6 +7558,13 @@ def add_spine_version(
     next_n = (max(nums) + 1) if nums else 1
     # Carry the row's OWN canonical code, not the caller's form (slug drift).
     row_code = base.get("project_code") or scope["project_code"]
+
+    guard = _internal_lesson_guard(client, base.get("project_id") or scope["id"],
+                                   base.get("framing"), body)
+    if guard:
+        audit(client, "add_spine_version", {"project_code": project_code,
+                                            "result": "internal lesson quoted"}, 0)
+        return guard
 
     # What this supersede is about to hide (#314). Read BEFORE the write so
     # the answer describes the version that was live when the caller decided.
@@ -8178,6 +8216,11 @@ def get_project_state(project_code: str) -> dict[str, Any]:
     decisions — each `{count, items}`, so a summary that is behind shows its
     gap here instead of reading as current.
 
+    `lookouts` (learning from projects) is what this project should watch
+    for: its client's people and client lessons, its project types' lessons
+    and practice lessons, confirmed only, plus how many candidates await the
+    owner. INTERNAL — use them, never quote them in client-facing work.
+
     Served from a shallow clone of TENANT_REPO, pulled on read with a debounce.
     With no TENANT_REPO configured the tool still EXISTS and returns a clean
     "tree access unavailable" rather than erroring.
@@ -8255,6 +8298,16 @@ def get_project_state(project_code: str) -> dict[str, Any]:
             )
     except Exception as exc:  # noqa: BLE001 — advisory; say it failed
         since_block = {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+    # Learning phase 3: the project's lookouts (client, people, its kinds of
+    # work, practice). Internal: never quoted in client-facing work.
+    lookout_block = None
+    try:
+        from cp_engine.lessons import lookouts
+
+        if status_project_id:
+            lookout_block = lookouts(client, status_project_id)
+    except Exception as exc:  # noqa: BLE001 — advisory; say it failed
+        lookout_block = {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
     return _with_project_status({
         "project_code": project_code,
         "available": True,
@@ -8270,6 +8323,9 @@ def get_project_state(project_code: str) -> dict[str, Any]:
         "exec_summary": exec_summary,
         **({"exec_summary_note": exec_note} if exec_note else {}),
         **({"since_summary": since_block} if since_block else {}),
+        **({"lookouts": lookout_block} if lookout_block and (
+            lookout_block.get("total") or lookout_block.get("candidates")
+            or lookout_block.get("error")) else {}),
         "sprint_week": week,
         "sprint_file": str(sprint_path.relative_to(root)) if sprint_path else None,
         "sprint_text": sprint_text,

@@ -47,6 +47,15 @@ from the other, and never quote the engagement fee to a partner.
 cxp preflight <code> --kind rfp
 ```
 
+**Read the preflight's lessons.** Its `## Lessons` part (JSON: `lessons`)
+lists what past work taught about scoping this kind of work. Let those
+shape what the document commits to (rounds, booking lead times, hours
+agreed with freelancers, how a scope change is priced). The client
+lookouts listed beside them are internal: they inform how you write, and
+never appear in the document. Saving a client-facing element that quotes
+one is refused.
+
+
 Take `found` as your scope: deliverables, audience, schedule, usage.
 **Deliverables come from CP, never from invention** — if the preflight did
 not find a deliverable, it is not in the RFP.

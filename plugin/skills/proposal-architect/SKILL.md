@@ -35,6 +35,14 @@ draft. It has three gates and each catches a different failure:
 | `shape_warning` | wrong KIND of project for this artifact |
 | `funding_warning` | right shape, unfunded scope |
 
+**Read the preflight's lessons.** Its `## Lessons` part (JSON: `lessons`)
+lists what past work taught about scoping this kind of work. Let those
+shape what the document commits to (rounds, booking lead times, hours
+agreed with freelancers, how a scope change is priced). The client
+lookouts listed beside them are internal: they inform how you write, and
+never appear in the document. Saving a client-facing element that quotes
+one is refused.
+
 **2. The Service Library lives in MC-2. Call `list_services`.** Never use
 an uploaded spreadsheet, a Google Doc, or an Airtable link — all three
 are retired. A Reference ID from a stale source is indistinguishable from

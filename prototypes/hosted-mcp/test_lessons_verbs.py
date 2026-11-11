@@ -263,3 +263,50 @@ def test_non_team_caller_is_refused(pt, env, server, monkeypatch):
     monkeypatch.setattr(server, "caller_is_team_member", lambda: (False, "tree access is team-only"))
     assert "error" in pt.log_lesson("Something we learned here.", "practice")
     assert not _inserts(env)
+
+
+# ── Phase 3: the guard on client-facing spine writes ─────────────────
+
+
+def _guard_store():
+    return _Store({
+        "projects": [{"id": "p-ibx", "company_id": "ibx", "project_types": ["campaign"]}],
+        "lessons": [{"id": "j", "text": "Janet ends a review round only once legal has seen the work.",
+                     "scope": "person", "company_id": "ibx", "status": "confirmed",
+                     "stakeholder_name": "Janet Noe", "project_types": [], "moments": []}],
+    })
+
+
+def test_guard_refuses_a_proposal_that_quotes_a_client_lesson(server):
+    out = server._internal_lesson_guard(
+        _guard_store(), "p-ibx", "Engagement Summary — AI Campaign",
+        "Timeline: Janet ends a review round only once legal has seen the work, so...")
+    assert "nothing was written" in out["error"]
+    assert out["internal_lessons_quoted"][0]["id"] == "j"
+
+
+def test_guard_lets_names_and_internal_documents_through(server):
+    store = _guard_store()
+    assert server._internal_lesson_guard(
+        store, "p-ibx", "Engagement Summary — AI Campaign", "Janet Noe approves each round.") is None
+    assert server._internal_lesson_guard(
+        store, "p-ibx", "Synthesis — working notes",
+        "Janet ends a review round only once legal has seen the work.") is None
+
+
+def test_create_spine_element_runs_the_guard_before_writing(server, monkeypatch):
+    store = _guard_store()
+    monkeypatch.setattr(server, "user_client", lambda: store)
+    monkeypatch.setattr(server, "caller_subject", lambda: "u1")
+    monkeypatch.setattr(server, "resolve_write_scope",
+                        lambda c, code: {"id": "p-ibx", "project_code": "ibx-5153"})
+    monkeypatch.setattr(server, "audit", lambda *a, **k: None)
+    out = server.create_spine_element(
+        "ibx-5153", "Engagement Summary — AI Campaign",
+        "Janet ends a review round only once legal has seen the work.", layer="brief")
+    assert "internal lesson" in out["error"]
+    assert not [w for w in store.writes if w[0] == "spine_substance"]
+
+
+def test_get_project_state_documents_lookouts_as_internal(server):
+    assert "INTERNAL" in server.get_project_state.__doc__

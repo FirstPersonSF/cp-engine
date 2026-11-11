@@ -28,12 +28,18 @@ Author: cp-engine (sync)
 <!-- cp-engine:end sprint-facts-strip -->
 
 <!-- cp-engine:start agenda -->
-{%- if agenda or drafts_to_review %}
+{%- if agenda or drafts_to_review or lessons_to_review %}
 ## Agenda — what needs attention this week
 {%- if drafts_to_review %}
 **Drafts to review** ({{ drafts_to_review | map(attribute="codes") | map("length") | sum }})
 {%- for d in drafts_to_review %}
 - {{ d.owner }}: {% for c in d.codes %}`{{ c }}`{% if not loop.last %}, {% endif %}{% endfor %}
+{%- endfor %}
+{% endif %}
+{%- if lessons_to_review %}
+**Lessons to review** ({{ lessons_to_review | map(attribute="candidates") | sum + lessons_to_review | map(attribute="due") | sum }})
+{%- for l in lessons_to_review %}
+- {{ l.owner }}:{% if l.candidates %} {{ l.candidates }} to confirm{% endif %}{% if l.candidates and l.due %},{% endif %}{% if l.due %} {{ l.due }} due for yearly review{% endif %}
 {%- endfor %}
 {% endif %}
 {%- if agenda %}

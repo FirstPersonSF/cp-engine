@@ -1166,6 +1166,13 @@ def preflight(project_code: str, artifact_kind: str = "rfp") -> dict[str, Any]:
         spine_titles=spine_titles, source_titles=source_titles,
     )
     out = report.to_dict()
+    # Learning phase 3: what past work taught about scoping this kind of
+    # work, and — separately, never for the document — the client's lookouts.
+    if pid:
+        with contextlib.suppress(Exception):
+            from cp_engine.lessons import scoping_lessons
+
+            out["lessons"] = scoping_lessons(client, pid)
     if warnings:
         out["warnings"] = list(warnings)
     _srv.audit(client, tool, {"project_code": project_code, "kind": kind},

@@ -456,3 +456,262 @@ def record_meeting_candidates(
             if embed is not None:
                 _embed_row(client, saved[0]["id"], row["text"], embed)
     return out
+
+
+# ── Phase 3: surfacing ────────────────────────────────────────────────
+
+#: Lookout groups, in the order a reader wants them.
+LOOKOUT_GROUPS = (("people", "People"), ("client", "Client"),
+                  ("type", "This kind of work"), ("practice", "How we work"))
+
+
+def _project_facts(client, project_id: str) -> dict:
+    rows = (client.table(Tables.PROJECTS).select("id, company_id, project_types")
+            .eq("id", project_id).limit(1).execute().data or [])
+    return rows[0] if rows else {}
+
+
+def lookouts(client, project_id: str | None, *, per_group: int = 6) -> dict:
+    """What a project should watch for: its client's people and client
+    lessons, its project types' lessons, and practice lessons — confirmed
+    only. Never another client's person/client lessons. Each group is
+    `{count, items}`; a failed read is `{error}`, never shown as nothing.
+    Also counts what awaits the owner (candidates for this project's client
+    or this project, and confirmed lessons due for their 12-month review)."""
+    out: dict[str, Any] = {"internal": True}
+    if client is None or not project_id:
+        return out
+    try:
+        facts = _project_facts(client, project_id)
+    except Exception as exc:  # noqa: BLE001
+        return {**out, "error": str(exc)[:200]}
+    cid = facts.get("company_id")
+    ptypes = list(facts.get("project_types") or [])
+    out["project_types"] = ptypes
+
+    def _group(**kw) -> dict:
+        try:
+            rows = list_lessons(client, status="confirmed", limit=per_group * 3, **kw)
+            return rows
+        except Exception as exc:  # noqa: BLE001
+            return {"error": str(exc)[:200]}
+
+    raw = {
+        "people": _group(company_id=cid, scope="person") if cid else [],
+        "client": _group(company_id=cid, scope="client") if cid else [],
+        "type": _group(scope="type", project_types=ptypes) if ptypes else [],
+        "practice": _group(scope="practice"),
+    }
+    total = 0
+    for key, rows in raw.items():
+        if isinstance(rows, dict):
+            out[key] = rows
+            continue
+        out[key] = {"count": len(rows), "items": [
+            {"id": r.get("id"), "text": r.get("text"), "person": r.get("stakeholder_name"),
+             "moments": r.get("moments") or [], "types": r.get("project_types") or []}
+            for r in rows[:per_group]]}
+        total += len(rows)
+    out["total"] = total
+    try:
+        waiting = list_lessons(client, status="candidate", source_project_id=project_id, limit=200)
+        if cid:
+            seen = {r["id"] for r in waiting}
+            waiting += [r for r in list_lessons(client, status="candidate", company_id=cid, limit=200)
+                        if r["id"] not in seen]
+        out["candidates"] = len(waiting)
+    except Exception:  # noqa: BLE001 — a count never fails the block
+        pass
+    return out
+
+
+def render_lookouts(block: dict) -> str:
+    """Markdown for `cxp brief`: grouped, people named, internal said once."""
+    if block.get("error"):
+        return f"_Could not read lookouts: {block['error']}_"
+    lines = ["_Internal: never in client-facing work._"]
+    for key, label in LOOKOUT_GROUPS:
+        part = block.get(key)
+        if not part:
+            continue
+        if "error" in part:
+            lines.append(f"- **{label}:** could not read ({part['error']})")
+            continue
+        if not part.get("count"):
+            continue
+        lines.append(f"- **{label}:**")
+        for item in part["items"]:
+            who = f"{item['person']}: " if item.get("person") else ""
+            when = f" _({', '.join(item['moments'])})_" if item.get("moments") else ""
+            lines.append(f"  - {who}{item['text']}{when}")
+        if part["count"] > len(part["items"]):
+            lines.append(f"  - … {part['count'] - len(part['items'])} more (`list_lessons`)")
+    if block.get("candidates"):
+        lines.append(f"- {block['candidates']} candidate(s) awaiting the owner's review.")
+    return "\n".join(lines)
+
+
+#: Words in what is coming up that mean a moment is near. Moments not listed
+#: here (the list grows) match on their own name, so a new moment works on
+#: day one and gets better words later.
+MOMENT_SIGNALS: dict[str, tuple[str, ...]] = {
+    "kickoff": ("kickoff", "kick-off", "kick off"),
+    "estimating": ("estimate", "quote", "sow", "pricing", "budget"),
+    "process-order": ("sign-off", "sign off", "approval", "skip"),
+    "booking-resources": ("book ", "booking", "availability", "hold dates", "crew"),
+    "hiring-freelancers": ("freelance", "contractor", "hire ", "director"),
+    "contractor-hours": ("hours", "timesheet", "overage"),
+    "scope-change": ("scope", "change order", "out of scope", "additional round"),
+    "travel": ("travel", "flight", "hotel", "on-site", "onsite", "on site"),
+    "shoot": ("shoot", "filming", "production day", "on set"),
+    "client-review-round": ("review", "feedback", "round", "approval"),
+    "legal-review": ("legal", "clearance", "compliance", "mlr"),
+    "final-delivery": ("final delivery", "deliver final", "handoff", "hand-off", "launch", "final files"),
+    "invoicing": ("invoice", "invoicing", "billing", "purchase order", " po "),
+}
+
+
+def moments_in(text: str, known_moments: Iterable[str] | None = None) -> list[str]:
+    """Moments whose signal words appear in `text` (what is coming up)."""
+    hay = f" {(text or '').lower()} "
+    slugs = list(known_moments) if known_moments is not None else list(MOMENT_SIGNALS)
+    found = []
+    for slug in slugs:
+        words = MOMENT_SIGNALS.get(slug) or (slug.replace("-", " "),)
+        if any(w in hay for w in words):
+            found.append(slug)
+    return found
+
+
+def watch_for(client, project_id: str | None, upcoming_text: str, *, limit: int = 5) -> list[dict]:
+    """Confirmed lessons for the moments near on this project: its client's,
+    its types' and practice ones — never another client's. Each item names
+    the moment that brought it up. Empty on any failure (advisory)."""
+    if client is None or not project_id or not (upcoming_text or "").strip():
+        return []
+    try:
+        _types, known_moments = known_lists(client)
+        near = moments_in(upcoming_text, known_moments)
+        if not near:
+            return []
+        facts = _project_facts(client, project_id)
+        cid, ptypes = facts.get("company_id"), set(facts.get("project_types") or [])
+        rows = list_lessons(client, status="confirmed", moments=near, limit=100)
+    except Exception:  # noqa: BLE001 — a prep hint never fails the bundle
+        return []
+    out = []
+    for r in rows:
+        if r.get("scope") in ("person", "client") and r.get("company_id") != cid:
+            continue
+        if r.get("scope") == "type" and not (set(r.get("project_types") or []) & ptypes):
+            continue
+        hit = [m for m in (r.get("moments") or []) if m in near]
+        out.append({"id": r.get("id"), "text": r.get("text"), "moment": hit[0] if hit else None,
+                    "scope": r.get("scope"), "person": r.get("stakeholder_name")})
+        if len(out) >= limit:
+            break
+    return out
+
+
+#: Moments that bear on scoping and pricing a piece of work.
+SCOPING_MOMENTS = ("kickoff", "estimating", "process-order", "booking-resources",
+                   "hiring-freelancers", "contractor-hours", "scope-change")
+
+
+def scoping_lessons(client, project_id: str | None, *, limit: int = 8) -> dict:
+    """For proposals, RFPs and estimates: confirmed lessons about scoping
+    this kind of work (its types' and practice lessons on the scoping
+    moments), plus the client's lookouts SEPARATELY, marked inform-only.
+
+    The split is the guardrail's first half: `scoping` may shape what the
+    document commits to; `client_lookouts` must never appear in it."""
+    out: dict[str, Any] = {"scoping": [], "client_lookouts": [],
+                           "rule": "client_lookouts inform you; never write them into the document"}
+    if client is None or not project_id:
+        return out
+    try:
+        facts = _project_facts(client, project_id)
+        cid, ptypes = facts.get("company_id"), list(facts.get("project_types") or [])
+        rows = list_lessons(client, status="confirmed", moments=list(SCOPING_MOMENTS), limit=100)
+        scoping = [r for r in rows if r.get("scope") == "practice"
+                   or (r.get("scope") == "type" and set(r.get("project_types") or []) & set(ptypes))]
+        out["scoping"] = [{"text": r["text"], "moments": r.get("moments") or [],
+                           "scope": r.get("scope")} for r in scoping[:limit]]
+        if cid:
+            people = list_lessons(client, status="confirmed", company_id=cid, limit=limit)
+            out["client_lookouts"] = [{"text": r["text"], "person": r.get("stakeholder_name"),
+                                       "scope": r.get("scope")} for r in people
+                                      if r.get("scope") in ("person", "client")]
+    except Exception as exc:  # noqa: BLE001 — advisory
+        out["error"] = str(exc)[:200]
+    return out
+
+
+# ── Guardrail: internal lessons never reach client-facing work ─────────
+
+import re as _re
+
+#: Framings of documents a client or partner reads. Proposals and RFPs are
+#: saved as spine elements with these framings (the proposal-architect and
+#: rfp-authoring skills).
+_CLIENT_FACING = _re.compile(
+    r"engagement summary|proposal|\brfp\b|statement of work|\bsow\b|scope of work"
+    r"|client (deck|email|brief|update)|partner brief", _re.I)
+
+#: Consecutive words a document must share with a lesson to count as quoting it.
+LEAK_SHINGLE = 6
+
+_WORD = _re.compile(r"[a-z0-9']+")
+
+
+def client_facing(framing: str | None) -> bool:
+    return bool(_CLIENT_FACING.search(framing or ""))
+
+
+def _shingles(text: str, n: int) -> set[tuple[str, ...]]:
+    words = _WORD.findall((text or "").lower())
+    return {tuple(words[i:i + n]) for i in range(max(0, len(words) - n + 1))}
+
+
+def leaks(text: str, lessons: Iterable[dict], *, n: int = LEAK_SHINGLE) -> list[dict]:
+    """Lessons whose wording appears in `text` (n consecutive words). A name
+    alone is not a leak — Janet belongs in a proposal; "Janet ends rounds only
+    when legal has seen it" does not."""
+    doc = _shingles(text, n)
+    if not doc:
+        return []
+    return [l for l in lessons if _shingles(l.get("text") or "", n) & doc]
+
+
+def internal_leaks(client, project_id: str | None, text: str) -> list[dict]:
+    """The project's client's person/client lessons (any status but retired)
+    quoted in `text`. Empty when there is nothing to check against."""
+    if client is None or not project_id or not (text or "").strip():
+        return []
+    cid = _project_facts(client, project_id).get("company_id")
+    if not cid:
+        return []
+    rows = [r for s in ("candidate", "confirmed")
+            for r in list_lessons(client, status=s, company_id=cid, limit=200)
+            if r.get("scope") in ("person", "client")]
+    return [{"id": r.get("id"), "text": r.get("text"), "person": r.get("stakeholder_name")}
+            for r in leaks(text, rows)]
+
+
+def review_queue_by_owner(client, *, today: date | None = None) -> list[dict]:
+    """Per reviewer: candidates to confirm and confirmed lessons due for
+    their 12-month review. `[{owner, candidates, due}]`, owners sorted;
+    empty on any failure (the master-cp agenda never fails a sync)."""
+    if client is None:
+        return []
+    try:
+        cands = list_lessons(client, status="candidate", limit=200)
+        due = due_for_review(client, today=today)
+    except Exception:  # noqa: BLE001
+        return []
+    by: dict[str, dict] = {}
+    for rows, key in ((cands, "candidates"), (due, "due")):
+        for r in rows:
+            o = r.get("owner_name") or "No owner"
+            by.setdefault(o, {"owner": o, "candidates": 0, "due": 0})[key] += 1
+    return [by[o] for o in sorted(by)]

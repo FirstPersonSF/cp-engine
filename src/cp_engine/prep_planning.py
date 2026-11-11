@@ -225,6 +225,10 @@ class ProjectPlanningBlock:
     # Janet Noe active on ibx-5192 (3 meetings)". Set after the blocks are
     # built (it needs the siblings); None when not quiet or unexplained.
     sibling_activity: str | None = None
+    # Learning phase 3: confirmed lessons for the moments coming up on this
+    # project (an invoice due, a shoot, a review round) — `{text, moment,
+    # scope, person}`. Internal: they inform planning, never client output.
+    watch_for: tuple[dict, ...] = ()
     # ``fetch_error`` carries ONE sentinel since the ClickUp fallback was
     # removed (commitments consolidation, cp-engine #38):
     #   "no_schedule_milestones" — the MC-2 estimator schedule has no undone
@@ -1568,6 +1572,20 @@ def build_project_block(
         if exec_summary is None and cp_md_path.is_file() else None
     )
 
+    # Learning phase 3: what is coming up (exec summary, milestones,
+    # commitments, open asks) names moments; their lessons ride along.
+    watch: tuple[dict, ...] = ()
+    try:
+        from cp_engine.lessons import watch_for as _watch_for
+
+        upcoming = "\n".join([
+            exec_summary or "",
+            *(str(m.get("deliverable") or "") for m in (*milestones, *client_asks, *our_commitments)),
+            *(str(getattr(a, "text", "") or "") for a in sprint_asks),
+        ])
+        watch = tuple(_watch_for(supabase_client, getattr(project, "mc2_id", None), upcoming))
+    except Exception as exc:  # noqa: BLE001 — advisory
+        log.warning("watch-for read failed for %s: %s", getattr(project, "code", "?"), exc)
     return ProjectPlanningBlock(
         project=project,
         exec_summary=exec_summary,
@@ -1588,6 +1606,7 @@ def build_project_block(
         exec_summary_placeholder_fields=placeholder_fields,
         exec_summary_partial_refresh=partial,
         exec_summary_unauthored_ingest=unauthored_fed,
+        watch_for=watch,
     )
 
 
@@ -2241,6 +2260,13 @@ def _render_project_block(block: ProjectPlanningBlock) -> list[str]:
         out.append(f"**Cross-engagement:** {block.sibling_activity}")
         out.append("")
 
+    if block.watch_for:
+        out.append("**Watch for** _(lessons; internal)_:")
+        for w in block.watch_for:
+            who = f"{w['person']}: " if w.get("person") else ""
+            out.append(f"- [{w.get('moment') or 'lesson'}] {who}{w['text']}")
+        out.append("")
+
     if block.drift:
         out.append("**⚠ Estimate drift:**")
         out.extend(f"- {w}" for w in block.drift)
@@ -2349,6 +2375,13 @@ def _render_bundle_project_block(block: ProjectPlanningBlock) -> list[str]:
     out.extend(_render_open_questions(block))
     if block.sibling_activity:
         out.append(f"**Cross-engagement:** {block.sibling_activity}")
+        out.append("")
+
+    if block.watch_for:
+        out.append("**Watch for** _(lessons; internal)_:")
+        for w in block.watch_for:
+            who = f"{w['person']}: " if w.get("person") else ""
+            out.append(f"- [{w.get('moment') or 'lesson'}] {who}{w['text']}")
         out.append("")
 
     if block.drift:
