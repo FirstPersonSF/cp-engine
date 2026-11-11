@@ -4,6 +4,14 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.135.2 — 2026-11-10
+
+**A session commit no longer takes an earlier session's files, and the commitments sweep stops two false alarms.** Patch: one new `--exclude` option, no MC-2 migration.
+
+- `cxp session commit` and `capture-session`'s working-dir sweep hold back an UNTRACKED file nothing has touched (mtime or ctime) since this session started, and name it; `--path` takes one in, new `--exclude` leaves any path out. "This session" is the worktree's registry entry or the hook entry of the Claude process running `cxp`; unknown start holds nothing (#428, #433).
+- Commitments sweep: `date_drift` ignores reference dates ("from 2027-01-04", "kickoff 2027-02-03", "three weeks before the 02-03 kickoff", a date inside an identifier); "due", "by" and a bare "before" still count. `likely_duplicates` never pairs a `us_to_them` row with a `them_to_us` row (#433).
+- Meeting lists never include a duplicate recording (`duplicate_of` set); ingest skips those and the original carries the content (#433).
+
 ## v0.135.1 — 2026-11-10
 
 **Meetings tagged for a workstream show up on it, and dir-slugs of 15 more workstreams resolve.** Patch: no new verbs, no MC-2 migration.
