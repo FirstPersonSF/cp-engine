@@ -9,8 +9,9 @@ Drew, 2026-11-11:
   way to ensure that they're tracking to those hours" → `contractor_hours`
   (`agreed`, newest counts; `actual` per invoice or Gusto timesheet) +
   `hours_status`.
-- Actual hours come from the invoice, or Gusto timesheets for those paid
-  through Gusto. Where neither has been recorded, a payable's amount ÷ the
+- Actual hours come from the invoice, or Gusto timesheets for those on
+  payroll. Each person's `entities.paid_by` (Invoice | Payroll, mc-2 mig 219)
+  says which; payroll means Gusto. Where neither has been recorded, a payable's amount ÷ the
   person's default rate gives an ESTIMATE, always labelled as one.
 
 Freelancers are `entities` rows (`is_external`, kind `freelancer`); which
@@ -78,13 +79,25 @@ def hours_row(*, entity_id: str, project_id: str, kind: str, hours: float,
             "source_ref": source_ref.strip() or None, "note": note.strip() or None}
 
 
+def _actuals_from(person: dict) -> str:
+    """Where a person's actual hours come from: Paid by (mig 219) decides;
+    payroll means Gusto. An unset toggle with a Gusto method still reads as
+    payroll (the DB keeps the two in step)."""
+    paid_by = person.get("paid_by")
+    if paid_by == "payroll" or (paid_by is None and person.get("payment_method") == "gusto"):
+        return "Gusto timesheets"
+    if paid_by == "invoice":
+        return "invoices"
+    return "unknown — set Paid by (Invoice or Payroll) in MC-2"
+
+
 def find_person(client, name: str) -> dict | None:
     """An entity by exact name, else a unique case-insensitive substring."""
     wanted = (name or "").strip()
     if not wanted:
         return None
     rows = (client.table(Tables.ENTITIES)
-            .select("id, name, is_external, kind, default_hourly_rate, payment_method")
+            .select("id, name, is_external, kind, default_hourly_rate, payment_method, paid_by")
             .execute().data or [])
     exact = [r for r in rows if (r.get("name") or "").lower() == wanted.lower()]
     if exact:
@@ -119,7 +132,7 @@ def hours_status(client, *, project_id: str | None = None, entity_id: str | None
         return []
     ids = sorted({k[0] for k in pairs})
     people = {e["id"]: e for e in (client.table(Tables.ENTITIES)
-                                   .select("id, name, default_hourly_rate, payment_method")
+                                   .select("id, name, default_hourly_rate, payment_method, paid_by")
                                    .in_("id", ids).execute().data or [])}
     out = []
     for (eid, pid), p in sorted(pairs.items()):
@@ -147,10 +160,8 @@ def hours_status(client, *, project_id: str | None = None, entity_id: str | None
         out.append({"entity_id": eid, "name": person.get("name"), "project_id": pid,
                     "agreed": agreed, "actual": round(actual, 1), "estimated": estimated,
                     "share": round(actual / agreed, 2) if agreed else None, "state": state,
-                    "paid_by": person.get("payment_method"),
-                    "actuals_from": ("Gusto timesheets" if person.get("payment_method") == "gusto"
-                                     else "invoices" if person.get("payment_method") else
-                                     "unknown — set how they are paid in MC-2")})
+                    "paid_by": person.get("paid_by"),
+                    "actuals_from": _actuals_from(person)})
     return out
 
 
