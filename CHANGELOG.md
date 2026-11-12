@@ -4,6 +4,12 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.136.4 — 2026-11-11
+
+**Large images are shrunk before reading instead of failing.** Patch: no new verbs, no MC-2 migration.
+
+- An image over 15MB is copied to a JPEG (long side at most 4096px) and read from the copy. Exports of 30–78MB failed before with "Vision API has a 20MB limit". The stored hash is still the original's, so dedup is unchanged (library #28, pinned @73b4677, #444).
+
 ## v0.136.3 — 2026-11-11
 
 **Changed files update on re-ingest, and skipped files stop counting as failures.** Patch: no new verbs, no MC-2 migration.
