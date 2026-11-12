@@ -520,6 +520,31 @@ def _clear_listing_cache() -> None:
     _LISTING_CACHE.clear()
 
 
+def _drive_change_token(item: dict) -> str | None:
+    """A Drive file's change token: its md5Checksum, or for a Google-native
+    file (no checksum) `gnative:<id>:<modifiedTime>` — unique per file, so it
+    can never match another file's token."""
+    if item.get("md5Checksum"):
+        return item["md5Checksum"]
+    native = str(item.get("mimeType") or "").startswith("application/vnd.google-apps.")
+    if native and item.get("modifiedTime") and item.get("id"):
+        return f"gnative:{item['id']}:{item['modifiedTime']}"
+    return None
+
+
+def _has_parser(pipeline, name: str) -> bool:
+    """True unless the pipeline says outright it has no parser for `name`.
+    Fail-open: a pipeline without `_select_parser` (test fakes) or one that
+    raises lets the file through to ingest as before."""
+    select = getattr(pipeline, "_select_parser", None)
+    if select is None:
+        return True
+    try:
+        return select(name) is not None
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def _drive_file_ref(item: dict, folder_path: tuple[str, ...] = ()) -> FileRef:
     """Map one non-folder Drive child dict to a FileRef (download is by id).
 
@@ -536,9 +561,11 @@ def _drive_file_ref(item: dict, folder_path: tuple[str, ...] = ()) -> FileRef:
         modified=item.get("modifiedTime"),
         path=None,
         folder_path=folder_path,
-        # None for Google-native Docs/Sheets/Slides (Drive omits md5Checksum for
-        # non-binary files) → those have no change token and always re-ingest.
-        change_token=item.get("md5Checksum"),
+        # Drive omits md5Checksum for Google-native Docs/Sheets/Slides, and
+        # their exports differ byte-for-byte on every download, so without a
+        # token they re-downloaded every run and read as changed. Their
+        # modifiedTime moves exactly when the document does (2026-11-11).
+        change_token=_drive_change_token(item),
     )
 
 
@@ -1133,6 +1160,13 @@ class IngestRunResult:
     # BEFORE download, each with a logged source_note — never silent (the
     # xlsx-ingest lesson).
     skipped_junk: int = 0
+    # No parser for the file type (Photoshop, Keynote, Premiere and After
+    # Effects project files from the job template): skipped BEFORE download
+    # (2026-11-11 — they read as 'failed 4' on every project).
+    skipped_unsupported: int = 0
+    # Readable but nothing to ingest: no speech, no audio track, no text
+    # (the pipeline's skip_reason 'empty'). Not a failure.
+    skipped_empty: int = 0
     # Prior active assets superseded by a same-title re-ingest (#57): the doc's
     # CONTENT changed since its last ingest, so the pipeline created a brand-new
     # row (hash dedup can't catch it, and the path-keyed dedup only versions
@@ -1572,6 +1606,11 @@ def ingest_project_assets(
             print(f"[asset-ingest] junk filter: skipping {name!r} — {junk}",
                   file=sys.stderr)
             continue
+        if not _has_parser(pipeline, name):
+            # No parser for this type: downloading it (a Premiere project, a
+            # 2 GB ProRes master) could only end in "No parser available".
+            result.skipped_unsupported += 1
+            continue
         # Ingest cache: if this file is unchanged since its last ingest (active
         # rag_asset's meta.change_token == the freshly-listed token), skip it
         # BEFORE any download/hash/embed — the `continue` guarantees none of those
@@ -1714,8 +1753,15 @@ def ingest_project_assets(
                                 {"source": file_ref.name, "note": note}
                             )
                 elif action == "skipped":
-                    # Already stamped on the run that first created it — no-op.
-                    result.skipped += 1
+                    reason = getattr(ingest_result, "skip_reason", None)
+                    if reason == "unsupported":
+                        result.skipped_unsupported += 1
+                    elif reason == "empty":
+                        result.skipped_empty += 1
+                    else:
+                        # Unchanged: already stamped on the run that first
+                        # created it — no-op.
+                        result.skipped += 1
                 else:  # 'failed' (or anything unexpected)
                     result.failed += 1
                     err = getattr(ingest_result, "error", None) or f"action={action}"
@@ -1954,22 +2000,26 @@ def _unchanged_since_last_ingest(
     if not token:
         return False  # no token (e.g. Google-native) → can't prove unchanged
     try:
-        rows = (
-            client.table(Tables.RAG_ASSETS)
-            .select("meta")  # explicit, never *
-            .eq(owner_col, project_id)
-            .eq("source_provider", file_ref.source)
-            .eq("source_file_id", file_ref.id)
-            .eq("status", "active")
-            .limit(1)
-            .execute()
-            .data
-            or []
-        )
-        if not rows:
-            return False
-        stored = (rows[0].get("meta") or {}).get("change_token")
-        return stored is not None and stored == token
+        # Active first, then archived: a curator's archive survives re-ingest
+        # (the pipeline's dedup skips an unchanged archived file), so an
+        # unchanged archived file must not be downloaded and re-read either —
+        # an archived slide PNG went through the vision model every run.
+        for status in ("active", "archived"):
+            rows = (
+                client.table(Tables.RAG_ASSETS)
+                .select("meta")  # explicit, never *
+                .eq(owner_col, project_id)
+                .eq("source_provider", file_ref.source)
+                .eq("source_file_id", file_ref.id)
+                .eq("status", status)
+                .limit(1)
+                .execute()
+                .data
+                or []
+            )
+            if rows and (rows[0].get("meta") or {}).get("change_token") == token:
+                return True
+        return False
     except Exception as exc:  # noqa: BLE001 — fail-open: skip-check failure must
         # never crash the run or wrongly skip; degrade to "ingest normally". But
         # surface it on stderr (matching _existing_dup_at_other_path) so a real

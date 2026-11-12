@@ -21,6 +21,8 @@ def _echo_run_summary(code: str, run) -> None:
         f"skipped={run.skipped} deduped={run.deduped} "
         f"superseded={run.superseded} "
         f"unchanged={run.skipped_unchanged} shortcuts={run.skipped_shortcuts} "
+        f"unsupported={getattr(run, 'skipped_unsupported', 0)} "
+        f"empty={getattr(run, 'skipped_empty', 0)} "
         f"failed={run.failed}"
     )
     for name, err in run.failures:
@@ -176,6 +178,8 @@ def ingest_assets_cmd(
         f"superseded={result.total_superseded} "
         f"unchanged={result.total_skipped_unchanged} "
         f"shortcuts={result.total_skipped_shortcuts} "
+        f"unsupported={sum(x.skipped_unsupported for x in result.outcomes)} "
+        f"empty={sum(x.skipped_empty for x in result.outcomes)} "
         f"failed={result.total_failed} "
         f"unconfigured={result.total_unconfigured}"
     )
