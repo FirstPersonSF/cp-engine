@@ -458,7 +458,7 @@ wheels = [
 [[package]]
 name = "cloud-storage"
 version = "0.1.0"
-source = { git = "https://github.com/FirstPersonSF/1p-component-library.git?subdirectory=integrations%2Fcloud-storage&rev=3c2048d#3c2048d262aa0f5b3e8c3b07142e1a4973f9521f" }
+source = { git = "https://github.com/FirstPersonSF/1p-component-library.git?subdirectory=integrations%2Fcloud-storage&rev=73b4677#73b4677037520a88d7cb20bae82618a94d98a8fa" }
 dependencies = [
     { name = "resilience" },
 ]
@@ -623,8 +623,8 @@ dev = [
 requires-dist = [
     { name = "anthropic", specifier = ">=0.40" },
     { name = "click", specifier = ">=8.1" },
-    { name = "cloud-storage", extras = ["all"], git = "https://github.com/FirstPersonSF/1p-component-library.git?subdirectory=integrations%2Fcloud-storage&rev=3c2048d" },
-    { name = "document-ingest", extras = ["llm", "docx", "pptx", "pdf", "spreadsheet", "supabase", "web", "voyage"], git = "https://github.com/FirstPersonSF/1p-component-library.git?subdirectory=starters%2Fdocument-ingest&rev=3c2048d" },
+    { name = "cloud-storage", extras = ["all"], git = "https://github.com/FirstPersonSF/1p-component-library.git?subdirectory=integrations%2Fcloud-storage&rev=73b4677" },
+    { name = "document-ingest", extras = ["llm", "docx", "pptx", "pdf", "spreadsheet", "supabase", "web", "voyage"], git = "https://github.com/FirstPersonSF/1p-component-library.git?subdirectory=starters%2Fdocument-ingest&rev=73b4677" },
     { name = "fastapi", marker = "extra == 'dev'", specifier = ">=0.115" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
     { name = "jinja2", specifier = ">=3.1" },
@@ -644,7 +644,7 @@ requires-dist = [
     { name = "spine-authoring", git = "https://github.com/FirstPersonSF/1p-component-library.git?subdirectory=services%2Fspine-authoring&rev=a9b3f4e" },
     { name = "supabase", specifier = ">=2.0" },
     { name = "tomlkit", specifier = ">=0.13" },
-    { name = "visual-document-capture", git = "https://github.com/FirstPersonSF/1p-component-library.git?subdirectory=processors%2Fvisual-document-capture&rev=3c2048d" },
+    { name = "visual-document-capture", git = "https://github.com/FirstPersonSF/1p-component-library.git?subdirectory=processors%2Fvisual-document-capture&rev=73b4677" },
     { name = "voyageai", specifier = ">=0.4" },
 ]
 provides-extras = ["dev"]
@@ -741,7 +741,7 @@ wheels = [
 [[package]]
 name = "document-ingest"
 version = "2.0.0"
-source = { git = "https://github.com/FirstPersonSF/1p-component-library.git?subdirectory=starters%2Fdocument-ingest&rev=3c2048d#3c2048d262aa0f5b3e8c3b07142e1a4973f9521f" }
+source = { git = "https://github.com/FirstPersonSF/1p-component-library.git?subdirectory=starters%2Fdocument-ingest&rev=73b4677#73b4677037520a88d7cb20bae82618a94d98a8fa" }
 dependencies = [
     { name = "pyyaml" },
 ]
@@ -752,6 +752,7 @@ docx = [
 ]
 llm = [
     { name = "openai" },
+    { name = "pillow" },
 ]
 pdf = [
     { name = "pypdf" },
@@ -3529,7 +3530,7 @@ wheels = [
 [[package]]
 name = "visual-document-capture"
 version = "0.1.0"
-source = { git = "https://github.com/FirstPersonSF/1p-component-library.git?subdirectory=processors%2Fvisual-document-capture&rev=3c2048d#3c2048d262aa0f5b3e8c3b07142e1a4973f9521f" }
+source = { git = "https://github.com/FirstPersonSF/1p-component-library.git?subdirectory=processors%2Fvisual-document-capture&rev=73b4677#73b4677037520a88d7cb20bae82618a94d98a8fa" }
 dependencies = [
     { name = "anthropic" },
     { name = "pypdf" },
