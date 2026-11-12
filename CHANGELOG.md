@@ -4,6 +4,15 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.136.3 — 2026-11-11
+
+**Changed files update on re-ingest, and skipped files stop counting as failures.** Patch: no new verbs, no MC-2 migration.
+
+- **Changed files update:** a new version of a file at the same path is no longer refused by MC-2's one-active-row rule. Before, an edited file kept its old text (library #27, pinned @3c2048d).
+- **Audio ingests:** every audio file failed on a missing `utterances` key. Audio with no speech and video with no audio track are now skipped as `empty` (library #27).
+- **Fewer downloads:** Google Docs, Sheets and Slides get a change token from their modified time, and unchanged archived files are skipped before download. Both were downloaded and re-read on every run (#443).
+- **Clearer counts:** files with no parser (Photoshop, Keynote, Premiere, After Effects project files) are skipped before download and counted `unsupported`. `backfill_learning` prints every failed file (#443).
+
 ## v0.136.2 — 2026-11-11
 
 **Close-out reports reach MC-2 and Dropbox, and ingest stops dropping a document's last short section.** Patch: no new verbs, no MC-2 migration.
