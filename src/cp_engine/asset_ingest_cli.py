@@ -101,6 +101,8 @@ class _ProjectOutcome:
     superseded: int = 0
     skipped_unchanged: int = 0
     skipped_shortcuts: int = 0
+    skipped_unsupported: int = 0
+    skipped_empty: int = 0
     failed: int = 0
     failures: list[tuple[str, str]] = field(default_factory=list)
     error: str | None = None  # whole-project error (resolve/run blew up)
@@ -196,6 +198,8 @@ def fan_out_ingest(
             outcome.superseded = run.superseded
             outcome.skipped_unchanged = run.skipped_unchanged
             outcome.skipped_shortcuts = run.skipped_shortcuts
+            outcome.skipped_unsupported = run.skipped_unsupported
+            outcome.skipped_empty = run.skipped_empty
             outcome.failed = run.failed
             outcome.failures = list(run.failures)
             outcome.unconfigured = run.unconfigured_reason

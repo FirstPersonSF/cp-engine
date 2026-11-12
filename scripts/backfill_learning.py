@@ -119,8 +119,12 @@ def step_ingest(client, url, key, projects, apply: bool) -> None:
             run = asset_ingest.ingest_project_assets(
                 p["cp_code"] or p["code"], mc_project_id=p["id"], supabase_url=url, supabase_key=key)
             print(f"  {p['cp_code']}: created {run.created}, versioned {run.versioned}, "
-                  f"skipped {run.skipped}, failed {run.failed}"
+                  f"skipped {run.skipped}, unchanged {run.skipped_unchanged}, "
+                  f"unsupported {run.skipped_unsupported}, empty {run.skipped_empty}, "
+                  f"failed {run.failed}"
                   + (f" ({run.unconfigured_reason})" if run.unconfigured_reason else ""))
+            for name, err in run.failures:  # every failure, by file
+                print(f"    FAIL {name}: {str(err)[:200]}")
         except Exception as exc:  # noqa: BLE001
             print(f"  {p['cp_code']}: FAILED {type(exc).__name__}: {str(exc)[:160]}")
 
