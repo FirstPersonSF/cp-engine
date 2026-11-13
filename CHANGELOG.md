@@ -4,6 +4,20 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.137.0 — 2026-11-13
+
+**cp can keep Mission Control's Spine Map right: five verbs for what a person says about it.** Minor: five new cp-hosted verbs; no MC-2 migration (220–223 are already applied).
+
+The Map is a read-only list of deliverables. A person says where things go, in chat or on a belief-check page, and a session records it. Before this release that took direct database writes: about 80 rows on `ibx-5153` went in that way on 11-12 and 11-13.
+
+- **`get_map_state`** reads what is recorded for a project: each phase and its agreement, which work item serves which deliverable, deliverable statuses, shared dates and column overrides. It also lists what is missing: work items that serve nothing, meetings on no work item, and rows that point at something no longer on the estimate.
+- **`set_work_item_deliverable`** records which deliverable a work item serves. A pairing is `suggested` until a person agrees; `confirmed` is stamped with the caller and the time; `removed` deletes it.
+- **`set_map_mark`** records, for a card or a meeting, the date it went to the client or a different column. For a deliverable it records Done, Replaced or Not approved. Anything a call leaves out stays as it is; `""` clears one thing.
+- **`set_phase_agreement`** says which agreement a phase was sold under, for a reset or add-on that was added as a new phase of the same estimate.
+- **`set_meeting_work_item`** attaches a meeting to a work item through Mission Control, which also promotes the transcript on projects set to promote every assigned meeting.
+- **Names, not ids.** A work item, deliverable, phase or agreement is named by its name, a distinct part of it, or `"<phase> / <name>"`. A name that fits more than one is refused with the candidates.
+- `/cp-tools` has a section for the Map (#448).
+
 ## v0.136.4 — 2026-11-11
 
 **Large images are shrunk before reading instead of failing.** Patch: no new verbs, no MC-2 migration.
