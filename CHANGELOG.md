@@ -4,6 +4,15 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.137.2 — 2026-11-13
+
+**The Map can say a deliverable is in progress, and SOW cards stop warning about what the Map says is done.** Patch: no new verbs; MC-2 mig 225 (already applied).
+
+- **In progress:** `set_map_mark` takes In progress as a deliverable status. Before, a deliverable being worked on read the same as one not started.
+- **No false past-due:** an Agreement card and sprint prep no longer warn "past due, no done-mark" on a deliverable the Map marks Done, Replaced or Not approved, or on a work item that serves only those. The schedule's done-mark is rarely kept; the Map's status is what a person said.
+- **Who said so:** `get_map_state` returns the note and the setter behind each deliverable status.
+- Both gaps were found by a cold read of `ibx-5153` (#451, mc-2 #473).
+
 ## v0.137.1 — 2026-11-13
 
 **The Map verbs can see a job's agreements.** Patch: no new verbs; MC-2 mig 224 (already applied).
