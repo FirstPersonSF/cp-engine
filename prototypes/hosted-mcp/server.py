@@ -11623,6 +11623,7 @@ READ_ONLY_TOOLS: dict[str, str] = {
     "list_rfp_respondents": "SELECT rfp_respondents + vendors (team-gated)",
     "list_lessons": "SELECT lessons / rpc match_lessons (team-gated)",
     "list_freelancers": "SELECT entities, freelancer_reviews, contractor_hours (team-gated)",
+    "where_is": "the file map + SELECT projects/project_integrations + lists one Dropbox or Drive folder (team-gated)",
     "get_map_state": "SELECT agreements, estimator.*, work_item_deliverables, spine_map_marks, fathom_meetings (team-gated)",
 }
 

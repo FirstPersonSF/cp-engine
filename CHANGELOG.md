@@ -6,6 +6,17 @@ Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automat
 
 ## v0.137.3 — 2026-11-13
 
+**cp knows where each kind of file is kept, on Dropbox and on Google Drive.** One new cp-hosted verb (`where_is`) and one new argument (`push_to_dropbox(kind=…)`); no MC-2 migration.
+
+Every project's Dropbox folder and Drive folder are laid out the same way, but cp only knew two of the folders. On 11-13 a session pushed an invoice to Dropbox `03 Assets/06 Spine` when it was already filed on Drive, because nothing said where invoices live. Drew: "I think we should teach cp where all of the files are kept between dropbox and drive".
+
+- **`where_is`** answers "where does this kind of file go, and what is there now?". With a project code alone it returns the whole map: 24 kinds of file (invoices, SOWs, estimates, research, client inputs, working files, deliverables and the rest), each with its store and folder for that project. With a kind, such as `invoices` or "purchase order", it finds that folder and lists what is in it, with a link for a Drive folder. If the folder is not on the project it says which part of the path is missing; it never makes a path up.
+- **Client inputs:** what the client sends us goes on Dropbox. The exception is a Google Doc, Sheet or Slides deck, which goes on Drive. The map, the verb and the tenant `CLAUDE.md` all say so.
+- **`push_to_dropbox(kind=…)`** files an upload in the right Dropbox folder for its kind. A kind that is kept on Drive is refused before anything is uploaded, with the Drive folder named, because cp cannot write to Google Drive yet. Calls without `kind` behave as before.
+- **Tenant `CLAUDE.md`** gains a short "Where files live" section, generated from the same map, telling a session to call `where_is` before uploading a file or saying one is missing.
+- The map lives in one place, `cp_engine/file_map.py`. The folder names the hosted server and the wrap-report publisher used to carry are now read from it.
+- Not in this release: writing to Google Drive. cp's Drive account can only read.
+
 **cp reads project folders that live in a Shared Drive.** Patch: no new verbs, no migration.
 
 - **Why:** on 2026-11-13 the active project folders moved into the `1P_Project_Files` Shared Drive. Drive answers a folder listing there with an empty list and no error unless the call asks for Shared Drive items, so ingest and the folder rules saw every project's Drive folder as empty.
