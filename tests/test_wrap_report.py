@@ -16,6 +16,7 @@ from cp_engine.wrap_report import (
     Financials,
     WrapBundle,
     financials_payload,
+    job_number,
     summarize_effort,
     summarize_financials,
     summarize_meetings,
@@ -319,3 +320,15 @@ def test_payload_carries_both_margins_and_what_the_costs_are_made_of():
     assert pay["costs"]["through"] == "2026-11-05"
     assert pay["costs"]["by_payee"][0] == {"name": "Trilogy Studios", "amount": 49279.0}
     assert "partner time" in pay["note"]
+
+
+def test_job_number_is_the_segment_after_the_company_not_every_digit():
+    """`slt-5196-brand-campaign-26` is job 5196. Joining all digits gave
+    519626, which matches no project: a wrap run with the full code read
+    nothing and rendered every fact as blank."""
+    assert job_number("slt-5196-brand-campaign-26") == "5196"
+    assert job_number("slt-5196") == "5196"
+    # The company prefix can hold a digit; the number is the second segment.
+    assert job_number("1pi-9005-mission-control") == "9005"
+    assert job_number("5196") == "5196"
+    assert job_number("no-digits") == ""

@@ -449,6 +449,22 @@ def unanswerable_fields(bundle: WrapBundle) -> list[str]:
     return missing
 
 
+def job_number(code: str) -> str:
+    """The job number in a workstream code: the digits after the company
+    prefix (`<co>-<number>-<slug>`), else the first run of digits.
+
+    `slt-5196-brand-campaign-26` is job 5196. Joining every digit in the
+    code gave 519626, which matches no project, so `cxp wrap` with a full
+    code found nothing and wrote a report with every fact blank. The
+    company prefix can hold a digit too (`1pi-9005-...`), so the number is
+    read from the second segment, not from the first digit seen.
+    """
+    import re
+
+    m = re.match(r"[^-]*-(\d+)", code or "") or re.search(r"(\d+)", code or "")
+    return m.group(1) if m else ""
+
+
 def build_wrap(client, code: str, workdir, *, tail_days: int = 14,
                today=None, warn=None) -> tuple[WrapBundle, dict]:
     """The wrap bundle as a dict — the facts `/cp-wrap` and the Close run
@@ -477,7 +493,7 @@ def build_wrap(client, code: str, workdir, *, tail_days: int = 14,
         if not rows:
             # `projects.code` is the SHORT code, not the dir slug (the known
             # code-vs-slug bridge). Fall back to the numeric suffix.
-            digits = "".join(ch for ch in code if ch.isdigit())
+            digits = job_number(code)
             if digits:
                 rows = (
                     client.table(Tables.PROJECTS)
