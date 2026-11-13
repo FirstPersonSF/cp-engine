@@ -4,6 +4,15 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## Unreleased
+
+**The wrap report states the final project margin.** No new verbs, no MC-2 migration.
+
+- `cxp wrap --bundle` has a `financials` block, read from Mission Control: what is billed, collected and still to bill, recorded costs by payee with the date of the latest one, the margin on what is billed so far, and the projected margin once the planned invoices go out.
+- The margin subtracts every recorded cost: external, internal labor and software. Partner time is not costed, and a cost not yet entered is not in it; the bundle and the facts document say so.
+- `--facts-docx` adds the margin rows and a "Costs by payee" table. When the money could not be read it says "NOT READ — do not state a margin".
+- `/cp-wrap` asks for the margin first in the Commercial section. "Actual profitability %" is no longer a blank for a person to fill when the margin is measured.
+- Before this the `slt-5196` wrap said the margin could not be told, while Mission Control held every invoice and cost.
 ## v0.137.1 — 2026-11-13
 
 **The Map verbs can see a job's agreements.** Patch: no new verbs; MC-2 mig 224 (already applied).

@@ -76,6 +76,11 @@ def test_bundle_keys_it_documents_are_the_keys_the_bundle_emits(skill: str) -> N
         "not_assessable_from_data",
         "open_commitments",
         "feedback_artifacts",
+        "financials.projected_margin_pct",
+        "financials.margin_to_date_pct",
+        "financials.costs.by_payee",
+        "financials.costs.through",
+        "financials.verified",
     ):
         assert key in skill, f"skill never mentions bundle key {key!r}"
 
@@ -145,3 +150,12 @@ def test_dropbox_guidance_avoids_the_bare_dest_name_trap(skill: str) -> None:
     rule broken twice by hand before the tool default was fixed."""
     assert "03 Assets/06 Spine" in skill
     assert "bare" in skill and "dest_name" in skill
+
+
+def test_it_requires_the_margin_and_its_caveats(flat: str) -> None:
+    """The slt-5196 wrap shipped saying the margin could not be told. The
+    skill must ask for the number and for what it leaves out."""
+    low = flat.lower()
+    assert "state the margin" in low
+    assert "partner time" in low
+    assert "if `financials.verified` is false" in low

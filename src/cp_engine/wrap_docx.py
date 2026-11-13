@@ -190,6 +190,39 @@ def facts_table(payload: dict) -> list[list[str]]:
     tgt = payload.get("target_profit_pct")
     rows.append(["Target margin", f"{float(tgt):.0f}%" if tgt else "not recorded"])
 
+    fin = payload.get("financials") or {}
+    margin_read = bool(fin.get("verified"))
+    if margin_read:
+        costs = fin.get("costs") or {}
+        if fin.get("revenue_at_completion"):
+            still = fin.get("planned_forward")
+            rows.append([
+                "Billed to date",
+                _money(fin.get("billed"))
+                + (f" · {_money(still)} still to bill" if still else ""),
+            ])
+            through = costs.get("through")
+            rows.append([
+                "Costs recorded",
+                f"${float(costs.get('total') or 0):,.0f}"
+                + (f" (through {through})" if through else ""),
+            ])
+            to_date = fin.get("margin_to_date_pct")
+            if to_date is not None:
+                rows.append(["Margin on billed to date", f"{float(to_date):.1f}%"])
+            projected = fin.get("projected_margin_pct")
+            if projected is not None:
+                rows.append([
+                    "Projected final margin",
+                    f"{float(projected):.1f}% on recorded costs; "
+                    "partner time not costed",
+                ])
+        else:
+            rows.append(["Margin", "nothing billed or planned"])
+    else:
+        # Same rule as unread hours: an unread table is not a zero.
+        rows.append(["Margin", "NOT READ — do not state a margin"])
+
     if eff.get("verified") and eff.get("total_hours"):
         rows.append([
             "Hours (allocated)",
@@ -202,7 +235,10 @@ def facts_table(payload: dict) -> list[list[str]]:
     else:
         # Loud, because a silent blank here is what produced a retro that
         # said "hours not captured" while the table held 326.5 of them.
-        rows.append(["Hours", "NOT READ — do not state a margin"])
+        rows.append([
+            "Hours",
+            "NOT READ" if margin_read else "NOT READ — do not state a margin",
+        ])
 
     if mtg.get("count"):
         rows.append([
@@ -227,4 +263,20 @@ def effort_table(payload: dict) -> list[list[str]]:
         return []
     rows = [["Person", "Hours (allocated)"]]
     rows.extend([[p.get("name", "?"), str(p.get("hours", 0))] for p in people])
+    return rows
+
+
+def cost_table(payload: dict) -> list[list[str]]:
+    """Recorded costs by payee. Empty list when unread or when there are
+    none — the caller skips the section rather than rendering a bare total."""
+    fin = payload.get("financials") or {}
+    costs = fin.get("costs") or {}
+    payees = costs.get("by_payee") or []
+    if not fin.get("verified") or not payees:
+        return []
+    rows = [["Payee", "Recorded cost"]]
+    rows.extend(
+        [[p.get("name", "?"), f"${float(p.get('amount') or 0):,.2f}"] for p in payees]
+    )
+    rows.append(["Total", f"${float(costs.get('total') or 0):,.2f}"])
     return rows
