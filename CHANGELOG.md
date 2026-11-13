@@ -4,7 +4,7 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
-## Unreleased
+## v0.138.0 — 2026-11-13
 
 **cp knows where each kind of file is kept, on Dropbox and on Google Drive.** One new cp-hosted verb (`where_is`) and one new argument (`push_to_dropbox(kind=…)`); no MC-2 migration.
 
