@@ -92,11 +92,11 @@ class Tables:
     FREELANCER_REVIEWS = "freelancer_reviews"
     CONTRACTOR_HOURS = "contractor_hours"
     # The Spine Map's stores (mc-2 migs 220, 222, 223): which deliverable a
-    # work item serves, and what a person said about one Map item. Agreements
-    # are read to name the SOW a phase was sold under (mig 221).
+    # work item serves, and what a person said about one Map item. A job's
+    # agreements are read through the `map_agreements` function (mig 224),
+    # not as a table: the table admits no signed-in reader.
     WORK_ITEM_DELIVERABLES = "work_item_deliverables"
     SPINE_MAP_MARKS = "spine_map_marks"
-    AGREEMENTS = "agreements"
     # Read-only here: a contractor's billed amounts, the fallback ESTIMATE of
     # actual hours (amount ÷ rate) when no invoice/Gusto hours are recorded.
     PAYABLES = "payables"
