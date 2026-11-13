@@ -100,6 +100,9 @@ class Tables:
     # Read-only here: a contractor's billed amounts, the fallback ESTIMATE of
     # actual hours (amount ÷ rate) when no invoice/Gusto hours are recorded.
     PAYABLES = "payables"
+    # Read-only here: what a job has actually spent, per payee. The wrap
+    # report's margin is built from these and `get_job_financials`.
+    ACTUAL_COSTS = "actual_costs"
 
     # public — spine
     SPINE_SUBSTANCE = "spine_substance"

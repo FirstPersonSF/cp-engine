@@ -16,6 +16,7 @@ from cp_engine.wrap_docx import (
     BLANK,
     WrapSection,
     build_wrap_docx,
+    cost_table,
     effort_table,
     facts_table,
 )
@@ -226,3 +227,59 @@ def test_unmatched_asterisk_is_left_alone(tmp_path: Path) -> None:
         out_path=tmp_path / "w.docx",
     )
     assert "5 * 3 is fifteen" in _text(out)
+
+
+# ── margin rows ──────────────────────────────────────────────────────
+
+_FIN = {
+    "verified": True,
+    "billed": 156666.41,
+    "planned_forward": 50000.0,
+    "revenue_at_completion": 206666.41,
+    "costs": {
+        "total": 78314.25,
+        "through": "2026-11-05",
+        "by_payee": [{"name": "Trilogy Studios", "amount": 49279.0}],
+    },
+    "margin_to_date_pct": 51.7,
+    "projected_margin_pct": 62.1,
+}
+
+
+def test_facts_table_states_both_margins_when_read() -> None:
+    rows = dict(
+        (r[0], r[1]) for r in facts_table(dict(_PAYLOAD, financials=_FIN))
+    )
+    assert rows["Margin on billed to date"] == "51.7%"
+    assert rows["Projected final margin"].startswith("62.1%")
+    # The caveat travels with the number.
+    assert "partner time not costed" in rows["Projected final margin"]
+    assert "through 2026-11-05" in rows["Costs recorded"]
+    assert "$50,000 still to bill" in rows["Billed to date"]
+
+
+def test_unread_financials_render_loudly_not_as_a_missing_row() -> None:
+    """A payload from before the financial read, or a failed read, must say
+    so. A silently absent margin row is how the slt-5196 wrap shipped
+    without one."""
+    rows = dict((r[0], r[1]) for r in facts_table(_PAYLOAD))
+    assert rows["Margin"] == "NOT READ — do not state a margin"
+
+
+def test_read_hours_missing_does_not_forbid_a_measured_margin() -> None:
+    payload = dict(_PAYLOAD, effort={"verified": False}, financials=_FIN)
+    rows = dict((r[0], r[1]) for r in facts_table(payload))
+    assert rows["Hours"] == "NOT READ"
+    assert rows["Projected final margin"].startswith("62.1%")
+
+
+def test_cost_table_lists_payees_and_the_total() -> None:
+    rows = cost_table(dict(_PAYLOAD, financials=_FIN))
+    assert rows[0] == ["Payee", "Recorded cost"]
+    assert ["Trilogy Studios", "$49,279.00"] in rows
+    assert rows[-1] == ["Total", "$78,314.25"]
+
+
+def test_cost_table_is_empty_when_unread() -> None:
+    assert cost_table(_PAYLOAD) == []
+    assert cost_table(dict(_PAYLOAD, financials={"verified": False})) == []

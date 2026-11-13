@@ -221,6 +221,127 @@ def summarize_effort(
 
 
 @dataclass(frozen=True)
+class Financials:
+    """Money in and money out, as Mission Control holds them.
+
+    The totals come from MC-2's `get_job_financials` — the same function the
+    Financials page reads — so the report and the page start from the same
+    billed and cost figures. `by_payee` and `costs_through` come from
+    `actual_costs`, to show what the total is made of and how fresh it is.
+
+    The margin subtracts ALL three cost buckets (external, internal labor,
+    software), as mc-2's Jobs card does. The function's own
+    `actual_margin_pct` subtracts external costs only, so it reads higher
+    whenever a cost is filed against an employee: on slt-5196, 51.7% against
+    50.0% here, the gap being $2,678.88 of travel on staff cards.
+
+    Two margins, because a job is usually wrapped before its last invoice:
+    `margin_to_date_pct` is on what has been billed; `projected_margin_pct`
+    adds the invoices still planned. Costs are what is RECORDED. A cost not
+    yet entered, and partner time that is never costed, are not in either
+    number, and the report must say so.
+
+    The slt-5196 wrap of 2026-11-13 said the margin "cannot be told" while
+    `invoices` and `actual_costs` held every figure needed. The bundle had
+    not read them.
+    """
+
+    billed: float = 0.0
+    collected: float = 0.0
+    planned_forward: float = 0.0
+    external_costs: float = 0.0
+    internal_labor: float = 0.0
+    software_costs: float = 0.0
+    planned_costs: float = 0.0
+    by_payee: list[tuple[str, float]] = field(default_factory=list)
+    costs_through: _dt.date | None = None
+    # False when the read failed. Distinct from "read it and found nothing".
+    verified: bool = True
+
+    @property
+    def costs_total(self) -> float:
+        return round(
+            self.external_costs + self.internal_labor + self.software_costs, 2
+        )
+
+    @property
+    def outstanding(self) -> float:
+        return round(self.billed - self.collected, 2)
+
+    @property
+    def revenue_at_completion(self) -> float:
+        """Billed so far plus the invoices still planned."""
+        return round(self.billed + self.planned_forward, 2)
+
+    @property
+    def margin_to_date_pct(self) -> float | None:
+        """Margin on what has been billed. None with nothing billed — a
+        margin on zero revenue is not a number."""
+        if not self.verified or self.billed <= 0:
+            return None
+        return round((self.billed - self.costs_total) / self.billed * 100, 1)
+
+    @property
+    def projected_margin_pct(self) -> float | None:
+        """Margin once the planned invoices go out, on today's costs."""
+        revenue = self.revenue_at_completion
+        if not self.verified or revenue <= 0:
+            return None
+        return round((revenue - self.costs_total) / revenue * 100, 1)
+
+    @property
+    def projected_profit(self) -> float | None:
+        if not self.verified or self.revenue_at_completion <= 0:
+            return None
+        return round(self.revenue_at_completion - self.costs_total, 2)
+
+
+def _money(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def summarize_financials(
+    fin_row: dict | None,
+    cost_rows: list[dict],
+    names: dict[str, str] | None = None,
+) -> Financials:
+    """Fold one `get_job_financials` row and the project's `actual_costs`
+    rows into a :class:`Financials`.
+
+    `fin_row` is None when the function returned no row for the project: it
+    was read, and the job has no invoices or costs. That is verified and
+    empty, not unread.
+    """
+    names = names or {}
+    row = fin_row or {}
+    by: Counter[str] = Counter()
+    latest: _dt.date | None = None
+    for r in cost_rows:
+        amount = _money(r.get("amount"))
+        if not amount:
+            continue
+        by[names.get(str(r.get("entity_id")), "unattributed")] += amount
+        day = _as_date(r.get("cost_date"))
+        if day and (latest is None or day > latest):
+            latest = day
+    return Financials(
+        billed=_money(row.get("billed")),
+        collected=_money(row.get("collected")),
+        planned_forward=_money(row.get("planned_forward")),
+        external_costs=_money(row.get("external_costs")),
+        internal_labor=_money(row.get("internal_labor")),
+        software_costs=_money(row.get("software_costs")),
+        planned_costs=_money(row.get("planned_costs")),
+        by_payee=[(n, round(a, 2)) for n, a in by.most_common()],
+        costs_through=latest,
+        verified=True,
+    )
+
+
+@dataclass(frozen=True)
 class WrapBundle:
     """Everything the model needs to synthesize the wrap report.
 
@@ -238,6 +359,11 @@ class WrapBundle:
     account_manager: str = ""
     meetings: MeetingLoad = field(default_factory=MeetingLoad)
     effort: EffortSummary = field(default_factory=EffortSummary)
+    # Unread by default: a bundle built without the financial read must not
+    # look like a job with no money in it.
+    financials: Financials = field(
+        default_factory=lambda: Financials(verified=False)
+    )
     deliverables: list[str] = field(default_factory=list)
     # Elements absorbed into a shipped deliverable — what each round consumed.
     sealed_inputs: list[tuple[str, str]] = field(default_factory=list)
@@ -270,6 +396,40 @@ class WrapBundle:
         return round(self.budget / self.effort.total_hours, 2)
 
 
+# MC-2's one definition of a job's billed, collected and costs (mc-2
+# `routers/financials.py` reads the same function).
+_JOB_FINANCIALS_RPC = "get_job_financials"
+
+
+def financials_payload(f: Financials) -> dict:
+    """The `financials` block of the bundle."""
+    return {
+        "verified": f.verified,
+        "note": (
+            "From Mission Control's invoices and RECORDED costs. Costs not "
+            "yet entered and partner time are not in the margin; say so, "
+            "and name `costs.through`."
+        ),
+        "billed": f.billed,
+        "collected": f.collected,
+        "outstanding": f.outstanding,
+        "planned_forward": f.planned_forward,
+        "revenue_at_completion": f.revenue_at_completion,
+        "costs": {
+            "total": f.costs_total,
+            "external": f.external_costs,
+            "internal_labor": f.internal_labor,
+            "software": f.software_costs,
+            "planned": f.planned_costs,
+            "through": f.costs_through.isoformat() if f.costs_through else None,
+            "by_payee": [{"name": n, "amount": a} for n, a in f.by_payee],
+        },
+        "margin_to_date_pct": f.margin_to_date_pct,
+        "projected_margin_pct": f.projected_margin_pct,
+        "projected_profit": f.projected_profit,
+    }
+
+
 def unanswerable_fields(bundle: WrapBundle) -> list[str]:
     """Which HUMAN_ENTRY_FIELDS this bundle genuinely cannot fill.
 
@@ -279,6 +439,10 @@ def unanswerable_fields(bundle: WrapBundle) -> list[str]:
     until the template was applied afterwards.
     """
     missing = list(HUMAN_ENTRY_FIELDS)
+    if bundle.financials.projected_margin_pct is not None:
+        # Mission Control holds the invoices and the costs, so the margin is
+        # a measured number, not a blank for a person to fill.
+        missing = [f for f in missing if not f.startswith("Actual profitability")]
     if bundle.budget and bundle.effort.total_hours:
         # We can at least frame profitability, so it stops being a pure blank.
         missing = [f for f in missing if not f.startswith("Actual profitability")]
@@ -343,6 +507,7 @@ def build_wrap(client, code: str, workdir, *, tail_days: int = 14,
 
     # ── Effort (allocated hours, NOT timesheet actuals) ───────────────
     effort = EffortSummary(verified=False)
+    names: dict[str, str] = {}
     if project_id:
         try:
             arows = (
@@ -365,6 +530,40 @@ def build_wrap(client, code: str, workdir, *, tail_days: int = 14,
             effort = summarize_effort(arows, names)
         except Exception as exc:  # noqa: BLE001
             warn(f"(WARNING: allocation read failed: {exc})")
+
+    # ── Money: invoices and recorded costs, as the Financials page has them ──
+    financials = Financials(verified=False)
+    if project_id:
+        try:
+            frows = (
+                client.rpc(_JOB_FINANCIALS_RPC, {"p_project_id": project_id})
+                .execute()
+                .data
+            ) or []
+            crows = (
+                client.table(Tables.ACTUAL_COSTS)
+                .select("entity_id, amount, cost_date")
+                .eq("project_id", project_id)
+                .execute()
+                .data
+            ) or []
+            if not names:
+                names = {
+                    str(e["id"]): e.get("name") or "unattributed"
+                    for e in (
+                        client.table(Tables.ENTITIES)
+                        .select("id, name")
+                        .execute()
+                        .data
+                        or []
+                    )
+                }
+            own = [r for r in frows if str(r.get("group_key")) == str(project_id)]
+            financials = summarize_financials(
+                (own or frows or [None])[0], crows, names
+            )
+        except Exception as exc:  # noqa: BLE001
+            warn(f"(WARNING: financials read failed: {exc})")
 
     # ── Spine: deliverables + what each round absorbed ────────────────
     elements: list = []
@@ -403,6 +602,7 @@ def build_wrap(client, code: str, workdir, *, tail_days: int = 14,
         account_manager=str(row.get("account_manager") or ""),
         meetings=meetings,
         effort=effort,
+        financials=financials,
         deliverables=deliverables,
         open_commitments=commitments,
         feedback_artifacts=feedback,
@@ -431,6 +631,7 @@ def build_wrap(client, code: str, workdir, *, tail_days: int = 14,
             "by_person": [{"name": n, "hours": h} for n, h in b.effort.by_person],
         },
         "budget_per_hour": b.budget_per_hour,
+        "financials": financials_payload(b.financials),
         "meetings": {
             "count": b.meetings.count,
             "total_hours": b.meetings.total_hours,
