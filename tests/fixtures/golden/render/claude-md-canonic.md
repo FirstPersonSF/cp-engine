@@ -133,6 +133,48 @@ relations, provenance); **3 — Commitments** (dated obligations).
 or commitment work — per-verb signatures and usage discipline live
 there, not here.
 
+## Where files live
+
+Every project has a Dropbox folder and a Google Drive folder, laid out the
+same way on every project. Paths below are inside the project's own folder.
+**Before you upload a file, or say one is missing, call
+`where_is(<code>, <kind>)`** on `cp-hosted`: it finds the folder for this
+project and lists what is in it. `push_to_dropbox(kind=…)` files by kind on
+Dropbox; cp cannot write to Google Drive yet, so a Drive file is filed by a
+person.
+
+**Google Drive**
+
+- `invoices` (invoices to the client): `Management/02 Contracts and Financials/05 Invoices PDFs`
+- `sows` (statements of work): `Management/02 Contracts and Financials/03 SOWs`
+- `estimates` (estimates): `Management/02 Contracts and Financials/02 Estimate PDFs`
+- `purchase-orders` (purchase orders): `Management/02 Contracts and Financials/04 Purchase Orders`
+- `engagement-summaries` (engagement summaries): `Management/02 Contracts and Financials/01 Engagement Summary`
+- `vendor-invoices` (invoices from vendors): `Management/01 1P Expenses/Vendor Invoices`
+- `vendor-contracts` (vendor contracts and estimates): `Management/01 1P Expenses/Vendor Contracts and Estimates`
+- `receipts` (credit card receipts): `Management/01 1P Expenses/Credit Card Receipts`
+- `live-action` (shoot paperwork): `Management/03 Live Action and Talent/Live Action`
+- `talent` (talent paperwork): `Management/03 Live Action and Talent/Talent`
+- `wrap` (wrap reports): `Management/04 Wrap`
+- `research` (research, interviews and surveys): `Define and Approach/01 Research`
+- `trackers` (trackers and calculators): `Define and Approach/02 Trackers and Calcs`
+- `narrative` (narrative and strategy documents): `Define and Approach/03 Narrative`
+- `client-inputs-google` (what the client sends us, when it is a Google Doc, Sheet or Slides deck): `Define and Approach/04 Client Inputs`
+- `client-share` (documents we share with the client): `Define and Approach/05 Client Share`
+
+**Dropbox**
+
+- `client-inputs` (what the client sends us: documents, brand assets, footage, fonts): `03 Assets/01 Client Assets`
+- `audio` (audio): `03 Assets/02 Audio`
+- `renders` (renders): `03 Assets/03 Renders`
+- `sources-and-stock` (source footage, photos and stock): `03 Assets/04 Sources and Stock`
+- `working-files` (working files: Premiere, After Effects, Illustrator, decks in progress): `02 Working Files`
+- `deliverables` (finished deliverables): `04 Deliverables`
+- `project-notes` (project notes): `01 Project Notes`
+- `spine` (documents cp generates): `03 Assets/06 Spine`
+
+**Client inputs.** What the client sends us goes on Dropbox, in `03 Assets/01 Client Assets`. The one exception is a Google-native file (a Google Doc, Sheet or Slides deck): that goes on Drive, in `Define and Approach/04 Client Inputs`.
+
 ## Authority precedence (enforced)
 
 When sources conflict: **partner directive** > **project canon** (the

@@ -55,6 +55,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from cp_engine import file_map
+
 # The server module, bound by `register`. Every helper is looked up on it at
 # call time (never imported by value), so monkeypatching the server patches
 # these verbs as well.
@@ -82,11 +84,13 @@ def register(server_module) -> None:
         server_module.mcp_server.tool()(fn)
 
 
+# Every folder name below is a lookup into the one file map
+# (`cp_engine.file_map`); nothing here holds its own copy of a path.
 # Where generated work belongs in a project's Dropbox (Drew, 2026-08-03).
-SPINE_OUTPUT_DIR = "03 Assets/06 Spine"
+SPINE_OUTPUT_DIR = file_map.get("spine").path
 # An initiative's folder is `<root>/<name>/Spine` and nothing else (mc-2,
 # 2026-11-11): no template, so no `03 Assets/`. Generated work lands there.
-INITIATIVE_SPINE_DIR = "Spine"
+INITIATIVE_SPINE_DIR = file_map.INITIATIVE_SPINE_DIR
 
 
 def _spine_dir(engine, connector, folder_id: str) -> str:
@@ -102,7 +106,7 @@ def _spine_dir(engine, connector, folder_id: str) -> str:
     return SPINE_OUTPUT_DIR
 # Where a web page a client pointed us at lands (#350): it is client-supplied
 # material, not our output.
-URL_SOURCE_DIR = "03 Assets/01 Client Assets"
+URL_SOURCE_DIR = file_map.get("client-inputs").path
 
 
 def _no_dropbox_folder(project_code: str, reason: str | None = None) -> str:
@@ -428,6 +432,532 @@ def pull_document_comments(project_code: str, doc_title: str) -> dict[str, Any]:
     return {"project_code": project_code, **result}
 
 
+# ── where files live (the file map) ───────────────────────────────────
+
+# How many of a folder's entries `where_is` returns before it stops.
+WHERE_IS_MAX_ENTRIES = 100
+# How many of the folder names really present are shown beside a missing one.
+_WHERE_IS_SIBLINGS = 30
+
+
+def _kind_summary(kind) -> dict[str, Any]:
+    out = {"kind": kind.key, "what": kind.label, "store": kind.store, "path": kind.path}
+    if kind.note:
+        out["note"] = kind.note
+    return out
+
+
+def _kind_not_found(asked: str) -> dict[str, Any]:
+    """The refusal for a `kind` that names several kinds, or none."""
+    found = file_map.find(asked)
+    if found.candidates:
+        return {
+            "error": (f"{asked!r} matches several kinds of file. Nothing was "
+                      "chosen for you: pass one of the `candidates` by its `kind`."),
+            "candidates": [_kind_summary(k) for k in found.candidates],
+        }
+    return {
+        "error": (f"{asked!r} is not a kind of file cp knows. The `candidates` "
+                  "are every kind it does know: pass one by its `kind`."),
+        "candidates": [_kind_summary(k) for k in file_map.kinds()],
+    }
+
+
+def _kind_for_push(kind: str, name: str, dest_name: str | None,
+                   dest_path: str | None):
+    """`(file kind, None)` when `push_to_dropbox` may file by `kind`, else
+    `(None, refusal)`. Pure: reads the file map and the arguments only, so
+    every refusal happens before a credential is read or a byte is sent."""
+    found = file_map.find(kind)
+    if found.kind is None:
+        return None, _kind_not_found(kind)
+    filed = found.kind
+    if filed.store == file_map.DRIVE:
+        return None, {
+            "error": (f"Nothing was uploaded. {filed.label[:1].upper()}{filed.label[1:]} "
+                      f"are kept on Google Drive, in `{filed.path}`, and cp cannot "
+                      "write to Google Drive yet. Ask a person to file "
+                      f"{name!r} there. `where_is(project_code, \"{filed.key}\")` "
+                      "gives the folder's link and what is already in it."),
+            **_kind_summary(filed),
+        }
+    homes = {filed.path.casefold()}
+    if filed.key == "spine":
+        homes.add(INITIATIVE_SPINE_DIR.casefold())
+    clash = None
+    if dest_path is not None:
+        tail = dest_path.rstrip("/").casefold()
+        if not any(tail == home or tail.endswith("/" + home) for home in homes):
+            clash = f"dest_path names {dest_path!r}"
+        elif dest_name is not None and "/" in dest_name:
+            clash = f"dest_name names {dest_name!r}"
+    elif dest_name is not None:
+        folder = dest_name.rsplit("/", 1)[0] if "/" in dest_name else ""
+        if folder.casefold() not in homes:
+            clash = f"dest_name names {dest_name!r}"
+    if clash:
+        return None, {
+            "error": (f"Nothing was uploaded. `kind=\"{filed.key}\"` files this in "
+                      f"`{filed.path}`, but {clash}. Pass `kind` on its own, or "
+                      "leave `kind` out and name the folder yourself."),
+            **_kind_summary(filed),
+        }
+    return filed, None
+
+
+def _project_stores(client, pid: str):
+    """`(folders, connectors, notes)`: the workstream's Dropbox and Drive
+    folders as ingest sees them — bound, else inherited from an ancestor
+    (#396). `folder_rules.apply_folder_rules` applies the same inheritance to
+    both stores, so this does too. A connector is built only if a rule has
+    to list a parent's folder, and comes back for reuse. `folders` is None
+    when MC-2 has no row for the project."""
+    from cp_engine import asset_ingest, folder_rules
+
+    folders = asset_ingest.resolve_project_folders_by_id(client, pid)
+    if folders is None:
+        return None, {}, []
+    try:
+        res = folder_rules.apply_folder_rules(
+            client, folders,
+            factories={"dropbox": _new_dropbox_connector, "drive": _new_drive_connector},
+        )
+    except Exception as exc:  # noqa: BLE001 — a rule never fails the read
+        return folders, {}, [{"source": "config",
+                              "note": f"folder rules skipped: {type(exc).__name__}: {exc}"}]
+    return folders, res.connectors, res.notes
+
+
+def _new_dropbox_connector():
+    from cloud_storage.dropbox_connector import DropboxConnector
+
+    return DropboxConnector()
+
+
+def _new_drive_connector():
+    """The Drive connector, as `pull_document_comments` builds it: the
+    service account from the environment, with Drive's read-only scope."""
+    from cloud_storage.google_drive_connector import GoogleDriveConnector
+
+    return GoogleDriveConnector(service_account_file=None)
+
+
+def _drive_folder_url(folder_id: str) -> str:
+    return f"https://drive.google.com/drive/folders/{folder_id}"
+
+
+def _no_folder_reason(notes: list[dict[str, str]], source: str) -> str:
+    """Why nothing was inherited for `source`, from the folder rules' notes."""
+    why = [n["note"].removeprefix("no inherited folder — ") for n in notes
+           if n.get("source") == source and n.get("kind") != "inherited"]
+    return "; ".join(why)
+
+
+def _no_store_folder(project_code: str, store: str, notes: list[dict[str, str]]) -> str:
+    """The sentence for a project with no folder in `store`."""
+    service = "google_drive" if store == file_map.DRIVE else "dropbox"
+    msg = (f"{project_code!r} has no {file_map.STORE_NAMES[store]} folder in MC-2, "
+           "so there is nowhere to look. Add it under the project's Integrations "
+           f"in MC-2 (a `project_integrations` row, service={service}), then ask again.")
+    reason = _no_folder_reason(notes, store)
+    if reason:
+        msg += f" Nothing could be inherited from a parent: {reason}."
+    return msg
+
+
+def _ingest_fields(folders, store: str, *, dropbox_path: str | None = None,
+                   drive_segments: tuple[str, ...] = ()) -> dict[str, Any]:
+    """Whether ingest reads a folder, from MC-2 configuration alone
+    (`asset_ingest.folder_ingest_gap`, the rules `list_files` applies)."""
+    from cp_engine.asset_ingest import folder_ingest_gap
+
+    gap = folder_ingest_gap(folders, store, dropbox_path=dropbox_path,
+                            drive_segments=drive_segments)
+    if gap:
+        return {"ingest_reads_it": False,
+                "ingest_note": f"Ingest does not read this folder: {gap}."}
+    return {"ingest_reads_it": True}
+
+
+def _dropbox_root(connector_for, folder_id: str) -> str:
+    """The project's Dropbox folder as a literal path. A stored path is
+    returned without a call; an `id:` form is resolved (and may raise)."""
+    if folder_id.startswith("/"):
+        return folder_id.rstrip("/")
+    return _srv._engine_project_sources._dropbox_folder_path(connector_for(), folder_id)
+
+
+def _dropbox_entries(connector, path: str) -> tuple[list[dict[str, Any]], bool]:
+    """`(entries, capped)` for one Dropbox folder, one level. Stops reading
+    once it holds more than the cap. Raises whatever Dropbox raises."""
+    out: list[dict[str, Any]] = []
+    more = False
+    result = connector.dbx.files_list_folder(path)
+    while True:
+        for entry in getattr(result, "entries", []) or []:
+            if type(entry).__name__ == "DeletedMetadata":
+                continue
+            # FolderMetadata carries no `size`; FileMetadata does.
+            is_folder = getattr(entry, "size", None) is None
+            modified = getattr(entry, "server_modified", None)
+            out.append({
+                "name": getattr(entry, "name", None),
+                "is_folder": is_folder,
+                "size": None if is_folder else entry.size,
+                "modified": (modified.isoformat() if hasattr(modified, "isoformat")
+                             else modified),
+            })
+        more = bool(getattr(result, "has_more", False))
+        if not more or len(out) > WHERE_IS_MAX_ENTRIES:
+            break
+        result = connector.dbx.files_list_folder_continue(result.cursor)
+    capped = more or len(out) > WHERE_IS_MAX_ENTRIES
+    return out[:WHERE_IS_MAX_ENTRIES], capped
+
+
+def _dropbox_missing_segment(connector, root: str, segments: tuple[str, ...]):
+    """`(missing segment, the part of the path that exists)` for a Dropbox
+    folder that could not be listed; `(None, root)` means the project's own
+    folder is the missing one."""
+    if _dropbox_file_state(connector, root) == "missing":
+        return None, root
+    here = root
+    for seg in segments:
+        nxt = f"{here}/{seg}"
+        if _dropbox_file_state(connector, nxt) != "folder":
+            return seg, here
+        here = nxt
+    return segments[-1], here
+
+
+def _drive_walk(connector, root_id: str, segments: tuple[str, ...]):
+    """Walk from the project's Drive folder down `segments`, one exact folder
+    name at a time. Returns `(folder id, None)`, or `(None, problem)` naming
+    the first segment that is missing (with the folder names that ARE there)
+    or that two folders share. Never builds an id or a path it did not read."""
+    from cp_engine import folder_rules
+
+    here = root_id
+    walked: list[str] = []
+    for seg in segments:
+        subs = folder_rules.list_subfolders("drive", connector, here)
+        hits = [fid for name, fid in subs if name == seg]
+        if not hits:
+            hits = [fid for name, fid in subs if name.casefold() == seg.casefold()]
+        if len(hits) != 1:
+            return None, {
+                "segment": seg,
+                "found_path": "/".join(walked),
+                "found_id": here,
+                "duplicates": len(hits),
+                "folders_there": sorted(n for n, _ in subs)[:_WHERE_IS_SIBLINGS],
+            }
+        here = hits[0]
+        walked.append(seg)
+    return here, None
+
+
+def _drive_entries(connector, folder_id: str) -> tuple[list[dict[str, Any]], bool]:
+    """`(entries, capped)` for one Drive folder, one level."""
+    from cp_engine.asset_ingest import _DRIVE_FOLDER_MIME, DRIVE_LIST_ALL_DRIVES
+
+    items = connector._list_files_with_pagination(
+        query=f"'{folder_id}' in parents and trashed=false",
+        fields="files(id,name,mimeType,size,modifiedTime,webViewLink)",
+        page_size=WHERE_IS_MAX_ENTRIES,
+        **DRIVE_LIST_ALL_DRIVES,
+    )
+    out = []
+    for item in items[:WHERE_IS_MAX_ENTRIES]:
+        is_folder = item.get("mimeType") == _DRIVE_FOLDER_MIME
+        size = item.get("size")
+        out.append({
+            "name": item.get("name"),
+            "is_folder": is_folder,
+            # Drive reports no size for a folder or a Google-native file.
+            "size": int(size) if size is not None and not is_folder else None,
+            "modified": item.get("modifiedTime"),
+            "id": item.get("id"),
+            "url": item.get("webViewLink"),
+        })
+    return out, len(items) > WHERE_IS_MAX_ENTRIES
+
+
+def _sorted_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Folders first, then by name."""
+    return sorted(entries, key=lambda e: (not e["is_folder"], (e["name"] or "").casefold()))
+
+
+def _capped_note(capped: bool) -> dict[str, Any]:
+    if not capped:
+        return {"capped": False}
+    return {"capped": True,
+            "capped_note": (f"This folder holds more than {WHERE_IS_MAX_ENTRIES} entries. "
+                            f"Only the first {WHERE_IS_MAX_ENTRIES} read are listed, so a "
+                            "file that is not shown may still be there.")}
+
+
+@hosted_tool
+def where_is(project_code: str, kind: str = "") -> dict[str, Any]:
+    """Say where a kind of file is kept for a project, and what is in that folder.
+
+    Every project has a Dropbox folder and a Google Drive folder, and both
+    are laid out the same way on every project. This verb knows that layout.
+    Call it BEFORE you upload a file, and before you tell anyone a file is
+    missing: an invoice is on Google Drive, a client's brand assets are on
+    Dropbox, and looking in the wrong one finds nothing.
+
+    **With no `kind`** it returns the whole map for this project: `kinds`,
+    one entry per kind of file, each with the store it is kept in (`drive`
+    or `dropbox`), its folder inside the project (`path`), and the resolved
+    location (`dropbox_path`, or the project's Drive folder link in
+    `stores.drive.root_url`). Nothing is listed and no folder is checked.
+    `client_inputs_rule` is the one rule to remember: what the client sends
+    us goes on Dropbox, unless it is a Google Doc, Sheet or Slides deck,
+    which goes on Drive.
+
+    **With a `kind`** (a `kind` from the map such as `invoices`, or a plain
+    word for it such as `purchase order`) it finds that folder and lists
+    what is in it: each entry's `name`, `is_folder`, `size` in bytes and
+    `modified` time. At most 100 entries come back, and `capped` says when
+    there were more. For a Drive folder it also returns `folder_id` and
+    `folder_url`, and each entry's own `id` and `url`.
+
+    What it tells you when it cannot list the folder:
+
+    - `exists: false` with `missing_segment`: that folder, or one above it,
+      is not there on this project. `missing` says which one in a sentence,
+      and `folders_there` names the folders that are there, in case it was
+      renamed. Nothing is created and no path is made up.
+    - `error` saying the project has no Dropbox or Google Drive folder in
+      MC-2: add the folder under the project's Integrations in MC-2.
+    - `error` with `candidates`: the word you passed matches several kinds,
+      or none. Pick one of the candidates and call again.
+
+    `ingest_reads_it` says whether cp's ingest reads that folder, from the
+    project's MC-2 settings. A file in a folder ingest does not read never
+    reaches the source store, so `list_project_sources` will not show it.
+
+    A workstream with no folder of its own uses its subfolder of a parent's
+    folder when exactly one exists, as ingest does; `inherited_from` then
+    names the parent. This verb only reads. To file something on Dropbox use
+    `push_to_dropbox(kind=...)`; cp cannot write to Google Drive yet. Needs
+    team membership, because the folders are read with the service's own
+    Dropbox and Drive credentials.
+    """
+    tool = "where_is"
+    refused = _team_gate(tool, project_code)
+    if refused:
+        return refused
+    client = _srv.user_client()
+
+    def _fail(error: str, **extra: Any) -> dict[str, Any]:
+        _srv.audit(client, tool, {"project_code": project_code, "result": "error"}, 0)
+        return {"project_code": project_code, "error": error, **extra}
+
+    asked = (kind or "").strip()
+    wanted = None
+    if asked:
+        found = file_map.find(asked)
+        if found.kind is None:
+            refusal = _kind_not_found(asked)
+            return _fail(refusal.pop("error"), **refusal)
+        wanted = found.kind
+
+    resolved = _resolve(client, project_code)
+    if resolved is None:
+        return _not_found(client, tool, project_code)
+    pid, _cid = resolved
+
+    try:
+        folders, connectors, notes = _project_stores(client, pid)
+    except Exception as exc:  # noqa: BLE001 — an MC-2 read error: a named error
+        return _fail(f"could not read the project's folders from MC-2: "
+                     f"{type(exc).__name__}: {exc}")
+    dropbox_id = getattr(folders, "mc_dropbox_folder_id", None)
+    drive_id = getattr(folders, "google_drive_folder_id", None)
+    inherited = dict(getattr(folders, "inherited_from", None) or {})
+
+    def _dropbox():
+        if connectors.get("dropbox") is None:
+            connectors["dropbox"] = _new_dropbox_connector()
+        return connectors["dropbox"]
+
+    def _drive():
+        if connectors.get("drive") is None:
+            connectors["drive"] = _new_drive_connector()
+        return connectors["drive"]
+
+    if wanted is None:
+        return _where_is_map(client, project_code, folders, notes, dropbox_id,
+                             drive_id, inherited, _dropbox)
+
+    base: dict[str, Any] = {"project_code": project_code, **_kind_summary(wanted)}
+    if wanted.key.startswith("client-inputs"):
+        base["client_inputs_rule"] = file_map.CLIENT_INPUTS_RULE
+    if inherited.get(wanted.store):
+        base["inherited_from"] = inherited[wanted.store]
+    audit_args = {"project_code": project_code, "kind": wanted.key}
+
+    if wanted.store == file_map.DROPBOX:
+        if not dropbox_id:
+            return _fail(_no_store_folder(project_code, file_map.DROPBOX, notes),
+                         **_kind_summary(wanted))
+        gap = dropbox_credential_gap()
+        if gap:
+            return _fail(gap, **_kind_summary(wanted))
+        try:
+            connector = _dropbox()
+            root = _dropbox_root(_dropbox, dropbox_id)
+        except Exception as exc:  # noqa: BLE001 — auth/config: a named error
+            return _fail(f"could not reach the project's Dropbox folder: "
+                         f"{type(exc).__name__}: {exc}", **_kind_summary(wanted))
+        rel = wanted.path
+        if wanted.key == "spine":
+            # An initiative's folder has `Spine`, not the job template.
+            rel = _spine_dir(_srv._engine_project_sources, connector, dropbox_id)
+            base["path"] = rel
+        path = f"{root}/{rel}"
+        base["dropbox_path"] = path
+        base.update(_ingest_fields(folders, file_map.DROPBOX, dropbox_path=path))
+        try:
+            entries, capped = _dropbox_entries(connector, path)
+        except Exception as exc:  # noqa: BLE001
+            if "not_found" not in str(exc):
+                return _fail(f"could not list {path}: {type(exc).__name__}: {exc}",
+                             **_kind_summary(wanted))
+            try:
+                segment, found_path = _dropbox_missing_segment(
+                    connector, root, tuple(rel.split("/")))
+            except Exception as exc2:  # noqa: BLE001
+                return _fail(f"could not list {path}: {type(exc2).__name__}: {exc2}",
+                             **_kind_summary(wanted))
+            _srv.audit(client, tool, {**audit_args, "result": "missing"}, 0)
+            if segment is None:
+                return {**base, "exists": False, "missing_segment": None,
+                        "found_path": None,
+                        "missing": (f"The project's Dropbox folder itself, {root}, was "
+                                    "not found. Check the folder under the project's "
+                                    "Integrations in MC-2.")}
+            try:
+                from cp_engine import folder_rules
+
+                there = sorted(n for n, _ in folder_rules.list_subfolders(
+                    "dropbox", connector, found_path))[:_WHERE_IS_SIBLINGS]
+            except Exception:  # noqa: BLE001 — an aid to the reader, not the answer
+                there = None
+            return {**base, "exists": False, "missing_segment": segment,
+                    "found_path": found_path,
+                    **({"folders_there": there} if there is not None else {}),
+                    "missing": (f"There is no `{segment}` folder in {found_path} on this "
+                                f"project, so `{rel}` does not exist here. Nothing was "
+                                "created.")}
+        _srv.audit(client, tool, audit_args, len(entries))
+        return {**base, "exists": True, "entries": _sorted_entries(entries),
+                "count": len(entries), **_capped_note(capped)}
+
+    # ── Google Drive ──
+    if not drive_id:
+        return _fail(_no_store_folder(project_code, file_map.DRIVE, notes),
+                     **_kind_summary(wanted))
+    base["root_id"] = drive_id
+    base["root_url"] = _drive_folder_url(drive_id)
+    base.update(_ingest_fields(folders, file_map.DRIVE, drive_segments=wanted.segments))
+    gap = drive_credential_gap()
+    if gap:
+        return _fail(gap, **_kind_summary(wanted))
+    connector = None
+    try:
+        connector = _drive()
+        folder_id, problem = _drive_walk(connector, drive_id, wanted.segments)
+        if problem is None:
+            entries, capped = _drive_entries(connector, folder_id)
+    except Exception as exc:  # noqa: BLE001 — Drive/auth: a named error
+        # Drive answers "not found" for a folder that is not shared with the
+        # account as well as for a deleted one, so name the account (10-30).
+        from cp_engine.folder_rules import drive_account
+
+        account = drive_account(connector)
+        return _fail(f"could not read the project's Google Drive folder: "
+                     f"{type(exc).__name__}: {exc}"
+                     + (f" [read as {account}; is the folder shared with it?]"
+                        if account else ""), **_kind_summary(wanted))
+    if problem is not None:
+        _srv.audit(client, tool, {**audit_args, "result": "missing"}, 0)
+        where = (f"`{problem['found_path']}`" if problem["found_path"]
+                 else "the project's Drive folder")
+        if problem["duplicates"]:
+            missing = (f"{where} holds {problem['duplicates']} folders named "
+                       f"`{problem['segment']}`, so cp cannot tell which one is meant. "
+                       "Nothing was chosen for you.")
+        else:
+            missing = (f"There is no `{problem['segment']}` folder in {where} on this "
+                       f"project, so `{wanted.path}` does not exist here. Nothing was "
+                       "created.")
+        return {**base, "exists": False, "missing_segment": problem["segment"],
+                "found_path": problem["found_path"],
+                "found_url": _drive_folder_url(problem["found_id"]),
+                "folders_there": problem["folders_there"], "missing": missing}
+    _srv.audit(client, tool, audit_args, len(entries))
+    return {**base, "exists": True, "folder_id": folder_id,
+            "folder_url": _drive_folder_url(folder_id),
+            "entries": _sorted_entries(entries), "count": len(entries),
+            **_capped_note(capped)}
+
+
+def _where_is_map(client, project_code: str, folders, notes, dropbox_id, drive_id,
+                  inherited: dict[str, str], dropbox_connector) -> dict[str, Any]:
+    """The whole map for one project: every kind, resolved against the
+    project's two folders. Lists nothing and checks no folder."""
+    stores: dict[str, Any] = {}
+    dropbox_root = None
+    if dropbox_id:
+        try:
+            dropbox_root = _dropbox_root(dropbox_connector, dropbox_id)
+            stores["dropbox"] = {"root": dropbox_root}
+        except Exception as exc:  # noqa: BLE001 — an `id:` folder that would not resolve
+            stores["dropbox"] = {"root": None, "missing": (
+                "The project's Dropbox folder could not be resolved to a path: "
+                f"{type(exc).__name__}: {exc}")}
+    else:
+        stores["dropbox"] = {"root": None, "missing": _no_store_folder(
+            project_code, file_map.DROPBOX, notes)}
+    if drive_id:
+        stores["drive"] = {"root_id": drive_id, "root_url": _drive_folder_url(drive_id)}
+    else:
+        stores["drive"] = {"root_id": None, "root_url": None, "missing": _no_store_folder(
+            project_code, file_map.DRIVE, notes)}
+    for store, code in inherited.items():
+        if code and store in stores:
+            stores[store]["inherited_from"] = code
+
+    entries = []
+    for kind in file_map.kinds():
+        entry = _kind_summary(kind)
+        if kind.store == file_map.DROPBOX:
+            path = f"{dropbox_root}/{kind.path}" if dropbox_root else None
+            entry["dropbox_path"] = path
+            if path:
+                entry.update(_ingest_fields(folders, file_map.DROPBOX, dropbox_path=path))
+        else:
+            entry["root_url"] = stores["drive"]["root_url"]
+            if drive_id:
+                entry.update(_ingest_fields(folders, file_map.DRIVE,
+                                            drive_segments=kind.segments))
+        entries.append(entry)
+
+    _srv.audit(client, "where_is", {"project_code": project_code}, len(entries))
+    return {
+        "project_code": project_code,
+        "stores": stores,
+        "client_inputs_rule": file_map.CLIENT_INPUTS_RULE,
+        "kinds": entries,
+        "next": ("This is the layout every project uses; it does not check that a "
+                 "folder exists. Call where_is(project_code, kind) to find one "
+                 "folder and list what is in it."),
+    }
+
+
 # ── an upload is not an ingest (#350) ─────────────────────────────────
 
 _NOT_INGESTED = (
@@ -510,6 +1040,7 @@ def push_to_dropbox(
     overwrite: bool = False,
     dest_path: str | None = None,
     ingest: bool = False,
+    kind: str = "",
 ) -> dict[str, Any]:
     """Put a file INTO a project's Dropbox folder (the write-back path).
 
@@ -534,6 +1065,16 @@ def push_to_dropbox(
     (the upload link is no-clobber the same way). The connector has no delete
     or move, so a misplaced copy is removed by hand: when `source_path` is
     None, ASK where it goes, never guess.
+
+    **FILE IT BY KIND.** Pass `kind` (for example `deliverables`,
+    `client-inputs`, `working-files`; `where_is(project_code)` lists them
+    all) and the file goes to the folder that kind of file is kept in, as
+    `<folder>/<filename>`. A kind that is kept on Google Drive (invoices,
+    SOWs, estimates, research and the rest of the Drive half of the map) is
+    refused before anything is uploaded: cp cannot write to Drive yet, and
+    the refusal names the Drive folder so a person can file it there. `kind`
+    replaces `dest_name` and `dest_path`; passing one of them as well is
+    refused unless it names the same folder.
 
     **NO DROPBOX FOLDER?** An unbound workstream uses its subfolder of a
     parent's folder when exactly one exists, as ingest does
@@ -571,6 +1112,15 @@ def push_to_dropbox(
     if not name or "/" in name or "\\" in name or name in (".", ".."):
         return _fail("filename must be a bare file name (no folders) — "
                      "put folders in dest_name or dest_path")
+    # Filing by kind (the file map) is settled before any credential is
+    # read or any call is made: a Drive kind, an unknown kind and a
+    # destination that disagrees with the kind all stop here.
+    filed = None
+    if (kind or "").strip():
+        filed, refusal = _kind_for_push(kind, name, dest_name, dest_path)
+        if refusal:
+            _srv.audit(client, tool, {"project_code": project_code, "result": "error"}, 0)
+            return {"project_code": project_code, **refusal}
     gap = dropbox_credential_gap()
     if gap:
         return _fail(gap)
@@ -594,8 +1144,12 @@ def push_to_dropbox(
 
     engine = _srv._engine_project_sources
     if dest_name is None:
-        dest_name = (name if dest_path
-                     else f"{_spine_dir(engine, connector, folder_id)}/{name}")
+        if dest_path:
+            dest_name = name
+        elif filed is not None and filed.key != "spine":
+            dest_name = f"{filed.path}/{name}"
+        else:
+            dest_name = f"{_spine_dir(engine, connector, folder_id)}/{name}"
     if not content_base64:
         destination = engine.dropbox_destination(connector, folder_id, dest_name, dest_path)
         if isinstance(destination, dict):

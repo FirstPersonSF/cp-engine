@@ -92,7 +92,22 @@ worked — not as current direction. `Holding` carries its status and no note.
   `overall_similarity` (the duplicate check). Each side is an INGESTED title —
   the server cannot read a local file; ingest the revised copy first. The read
   for feedback that arrives as a REVISED COPY.
-- `push_to_dropbox(project_code, filename, content_base64?, dest_name?, overwrite?, dest_path?, ingest?)` —
+- `where_is(project_code, kind?)` — where a kind of file is kept for this
+  project, and what is in that folder. Every project's Dropbox and Google
+  Drive folders are laid out the same way; this verb knows the layout. Call
+  it BEFORE uploading a file and before saying one is missing. With no
+  `kind` it returns the whole map (`kinds`: each kind's store, folder, and
+  resolved location) and lists nothing. With a `kind` (`invoices`, `sows`,
+  `client-inputs`, `deliverables`, or a plain word such as "purchase order")
+  it finds the folder and lists up to 100 entries: `name`, `is_folder`,
+  `size`, `modified`, and for Drive the folder's `folder_id` and
+  `folder_url`. `exists: false` with `missing_segment` means that folder is
+  not on this project (nothing is created or guessed); `candidates` means
+  the word matched several kinds or none. `ingest_reads_it` says whether
+  ingest reads that folder. **Client inputs go on Dropbox, except a Google
+  Doc, Sheet or Slides deck, which goes on Drive.** Read-only; team members
+  only.
+- `push_to_dropbox(project_code, filename, content_base64?, dest_name?, overwrite?, dest_path?, ingest?, kind?)` —
   the WRITE-BACK inverse of `fetch_project_source`: put a document you generated
   (a `.pptx` deck, `.docx`, PDF) INTO the project's Dropbox folder, so the
   humans find it where they expect. Pass the bytes as `content_base64` (max
@@ -100,7 +115,12 @@ worked — not as current direction. `Holding` carries its status and no note.
   the file to — the right path from a shell for anything but a small file.
   `dest_name` defaults to `03 Assets/06 Spine/<filename>`; `dest_path` (an
   absolute folder, e.g. `fetch_project_source`'s `source_path`) writes a
-  correction back where the original lives. Refuses to clobber an existing
+  correction back where the original lives. `kind` (a kind from `where_is`,
+  e.g. `deliverables`) files it in that kind's folder instead; a kind kept
+  on Google Drive (invoices, SOWs, estimates…) is refused before anything
+  is uploaded, because cp cannot write to Drive yet, and `kind` with a
+  `dest_name`/`dest_path` that names another folder is refused too.
+  Refuses to clobber an existing
   name unless `overwrite=true`. No delete or move exists, so when you do not
   know where a file goes, ASK. Team members only; writes with the service's
   Dropbox credentials. **An upload is not an ingest** (#350): the file is not

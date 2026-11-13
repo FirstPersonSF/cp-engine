@@ -29,6 +29,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from cp_engine.clock import tenant_now, tenant_today
 from cp_engine import __version__ as ENGINE_VERSION
+from cp_engine import file_map
 from cp_engine.config import TenantConfig
 from cp_engine.state import (
     Issue,
@@ -1120,6 +1121,7 @@ def render_claude_md(config: TenantConfig) -> str:
     template = _env().get_template("CLAUDE.md.j2")
     return template.render(
         skill_rows=_claude_md_skill_rows(),
+        file_map_markdown=file_map.render_markdown(),
         tenant=config,
         engine_version=ENGINE_VERSION,
         today=_today_iso(),

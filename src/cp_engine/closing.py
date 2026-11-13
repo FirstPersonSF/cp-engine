@@ -34,6 +34,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from cp_engine import file_map
 from cp_engine.mc2_db import Tables
 
 #: Same model the transcript planner uses.
@@ -236,7 +237,8 @@ def run_close(
 
 #: Where generated work lands in a project's Dropbox: an initiative's bare
 #: `Spine/` when the folder has one, else the job template's spine folder.
-SPINE_DIRS = ("Spine", "03 Assets/06 Spine")
+#: Both names come from the one file map (`file_map.py`).
+SPINE_DIRS = (file_map.INITIATIVE_SPINE_DIR, file_map.get("spine").path)
 
 
 def project_dropbox_folder(client, project_id: str) -> str | None:

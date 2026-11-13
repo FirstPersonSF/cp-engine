@@ -1,6 +1,6 @@
 {
   "_why": "Architecture plan step 0 (2026-09-30): the surface may shrink but not grow without a deliberate edit here. 64 hosted tools, 68 cxp commands and 36 tables carried the usage in which ~a quarter to a third did 90% of the work. Raising a number is a decision: say why in the commit.",
-  "hosted_tools": 73,
+  "hosted_tools": 74,
   "cxp_commands": 60,
   "mc2_tables": 42,
   "_raised": [
@@ -21,7 +21,8 @@
     "2026-11-11: mc2_tables 37→40 for `freelancer_reviews`, `contractor_hours` and (read-only) `payables` (learning phase 5, mc-2 mig 218). Drew asked to evaluate freelancers with a record of their projects and ratings, and to agree contractor hours before start and track them.",
     "2026-11-11: hosted_tools 65→68 for `review_freelancer`, `set_contractor_hours` and `list_freelancers` (learning phase 5). Drew asked to rate freelancers per project, recommend from history, and agree and track contractor hours.",
     "2026-11-13: mc2_tables 40→43 for `work_item_deliverables`, `spine_map_marks` and (read-only) `agreements` (the Spine Map's stores, mc-2 migs 220–223). Drew set the direction on 11-12: Claude keeps the spine filed and a person corrects it; these hold what the person says about the Map.",
-    "2026-11-13: hosted_tools 68→73 for `get_map_state`, `set_work_item_deliverable`, `set_map_mark`, `set_phase_agreement` and `set_meeting_work_item`. On 11-12/13 every pairing, shared date, deliverable status, phase agreement and meeting assignment on ibx-5153 went in by direct SQL from one session (about 80 rows), with no attribution and no check that a work item and a deliverable were on the same job, and a hosted-only session could not keep the Map right at all. Drew, 2026-11-13: \"Let's build the cp tools for the map.\" Five rather than nine: removing a pairing and clearing a mark are values of the set verbs, not verbs of their own."
+    "2026-11-13: hosted_tools 68→73 for `get_map_state`, `set_work_item_deliverable`, `set_map_mark`, `set_phase_agreement` and `set_meeting_work_item`. On 11-12/13 every pairing, shared date, deliverable status, phase agreement and meeting assignment on ibx-5153 went in by direct SQL from one session (about 80 rows), with no attribution and no check that a work item and a deliverable were on the same job, and a hosted-only session could not keep the Map right at all. Drew, 2026-11-13: \"Let's build the cp tools for the map.\" Five rather than nine: removing a pairing and clearing a mark are values of the set verbs, not verbs of their own.",
+    "2026-11-13: hosted_tools 73→74 for `where_is`. cp knew nothing about where files are kept: the same folder template is on every project's Dropbox and Drive, but only two of its paths were written down, inside the hosted server. On 11-13 a session pushed an invoice to Dropbox `03 Assets/06 Spine` when it was already filed on Drive under `Management/02 Contracts and Financials/05 Invoices PDFs`. Drew, 2026-11-13: \"I think we should teach cp where all of the files are kept between dropbox and drive\". One read-only verb for the whole map and for one folder's listing; filing by kind is an argument on `push_to_dropbox`, not a verb."
   ],
   "_lowered": [
     "2026-10-01: step 5 retire list — hosted_tools 71→55 (16 zero-use/dormant tools retired: worksets, notes, step editors, etc.), cxp_commands 69→53 (11 dead commands, dates-loop, weekly-sort, snapshots, mcp), mc2_tables 37→34 (notes, worksets, spine_snapshots out of the registry). Frozen at these counts until 2026-11-01 (Drew): no raise without a reason in the commit.",

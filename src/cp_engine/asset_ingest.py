@@ -751,6 +751,61 @@ def ingest_reach_gap(
     return None
 
 
+def folder_ingest_gap(
+    folders: ProjectFolders | None,
+    source: str,
+    *,
+    dropbox_path: str | None = None,
+    drive_segments: tuple[str, ...] = (),
+) -> str | None:
+    """Why a scan of this project would NOT look inside one FOLDER, or None
+    when it would. The folder-level twin of `ingest_reach_gap`, for the file
+    map (`where_is`): it answers "does ingest pick up what is filed here?"
+    from MC-2 configuration alone, with no provider call.
+
+    `source` is "dropbox" (give the folder's absolute `dropbox_path`) or
+    "drive" (give `drive_segments`, the folder names from the project's
+    Drive folder down to this one). Same rules as `list_files`: the source
+    is on, a folder is bound or inherited, the folder is not a child
+    workstream's, and it passes the project's `asset_ingest_folders`
+    allowlist. `folders` should have the folder rules applied, as for
+    `ingest_reach_gap`. A file inside a scanned folder can still be skipped
+    for its own reasons (an extension ingest does not read).
+    """
+    if folders is None:
+        return "there is no MC-2 folder configuration for this project"
+    if _out_of_scope(folders):
+        return ("a self-company workstream with an agreement is not an "
+                "asset-ingest target")
+    drive = source == "drive"
+    name = "Google Drive" if drive else "Dropbox"
+    if not (folders.enable_google_drive if drive else folders.enable_dropbox):
+        return f"the project's {name} source is not enabled in MC-2"
+    if not (folders.google_drive_folder_id if drive else folders.mc_dropbox_folder_id):
+        return f"the project has no {name} folder, bound or inherited"
+    if drive:
+        if drive_segments and drive_segments[0] in set(folders.child_drive_folders):
+            return (f"`{drive_segments[0]}` is a child workstream's folder: "
+                    "ingest reads it from that workstream")
+        ref = FileRef(source="drive", id="", name="", mime_type=None, size=None,
+                      modified=None, folder_path=tuple(drive_segments))
+    else:
+        path = (dropbox_path or "").rstrip("/")
+        for child_root in folders.child_dropbox_roots:
+            root = child_root.rstrip("/").lower()
+            if path.lower() == root or path.lower().startswith(root + "/"):
+                return (f"it is inside a child workstream's folder ({child_root}): "
+                        "ingest reads it from that workstream")
+        # `_folder_segments` drops the last element as the file name.
+        ref = FileRef(source="dropbox", id="", name="", mime_type=None, size=None,
+                      modified=None, path=f"{path}/_")
+    allow = folders.asset_ingest_folders
+    if allow and not _matches_allowlist(ref, allow):
+        return ("it is not one of the project's ingest folders "
+                f"({', '.join(allow)})")
+    return None
+
+
 def _folder_segments(ref: FileRef) -> list[str]:
     """The FOLDER name segments of a ref — its ancestry, NOT the filename.
 
