@@ -2,7 +2,7 @@
   "_why": "Architecture plan step 0 (2026-09-30): the surface may shrink but not grow without a deliberate edit here. 64 hosted tools, 68 cxp commands and 36 tables carried the usage in which ~a quarter to a third did 90% of the work. Raising a number is a decision: say why in the commit.",
   "hosted_tools": 73,
   "cxp_commands": 60,
-  "mc2_tables": 43,
+  "mc2_tables": 42,
   "_raised": [
     "2026-11-10: cxp_commands 62→60 — `cxp spine-lint` and `cxp seal-sweep` retired; the cp-hosted `spine_lint` / `seal_sweep` verbs run the same engine code with no local credentials. Drew's call 2026-11-10 (the CLI copies failed whenever 1Password was locked).",
     "2026-09-30: cxp_commands 68→69 for `cxp health` (step 3, daily health line); mc2_tables 36→37 for `webhook_runs` (step 3, a run record on every webhook path).",
@@ -24,6 +24,7 @@
     "2026-11-13: hosted_tools 68→73 for `get_map_state`, `set_work_item_deliverable`, `set_map_mark`, `set_phase_agreement` and `set_meeting_work_item`. On 11-12/13 every pairing, shared date, deliverable status, phase agreement and meeting assignment on ibx-5153 went in by direct SQL from one session (about 80 rows), with no attribution and no check that a work item and a deliverable were on the same job, and a hosted-only session could not keep the Map right at all. Drew, 2026-11-13: \"Let's build the cp tools for the map.\" Five rather than nine: removing a pairing and clearing a mark are values of the set verbs, not verbs of their own."
   ],
   "_lowered": [
-    "2026-10-01: step 5 retire list — hosted_tools 71→55 (16 zero-use/dormant tools retired: worksets, notes, step editors, etc.), cxp_commands 69→53 (11 dead commands, dates-loop, weekly-sort, snapshots, mcp), mc2_tables 37→34 (notes, worksets, spine_snapshots out of the registry). Frozen at these counts until 2026-11-01 (Drew): no raise without a reason in the commit."
+    "2026-10-01: step 5 retire list — hosted_tools 71→55 (16 zero-use/dormant tools retired: worksets, notes, step editors, etc.), cxp_commands 69→53 (11 dead commands, dates-loop, weekly-sort, snapshots, mcp), mc2_tables 37→34 (notes, worksets, spine_snapshots out of the registry). Frozen at these counts until 2026-11-01 (Drew): no raise without a reason in the commit.",
+    "2026-11-13: mc2_tables 43→42 — `agreements` left the registry a few hours after it joined. A signed-in team member reads zero rows from that table (RLS on, no policy), which v0.137.0's first real run showed; agreements are now read through the team-gated `map_agreements` function (mc-2 mig 224), which returns no amounts."
   ]
 }

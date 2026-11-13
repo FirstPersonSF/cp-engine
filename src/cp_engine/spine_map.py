@@ -71,7 +71,6 @@ _STATUS_WORDS = {
 
 PAIRING_COLUMNS = "id, work_item_id, deliverable_id, status, confirmed_by, confirmed_at, note"
 MARK_COLUMNS = "id, item_key, shared_on, shared_to, column_key, status_key, note, set_by"
-AGREEMENT_COLUMNS = "id, kind, number, title, signed_date, estimate_id, parent_agreement_id"
 # `estimator.phases.agreement_id` (mc-2 mig 221): the agreement a phase was
 # sold under. Named here once, as a constant, because `spine_substance` has a
 # column of the same name that mc-2 owns end to end, and
@@ -301,23 +300,30 @@ def root_agreement(agreements: list[dict], agreement_id: str | None) -> dict | N
     return cur
 
 
+def read_agreements(client, project_id: str) -> list[dict]:
+    """A job's agreements by identity: id, kind, number, title, signed date,
+    the estimate one names, and its parent. Oldest first.
+
+    Through the `map_agreements` function (mc-2 mig 224), never the table.
+    `public.agreements` has RLS on and no policy, so a signed-in team member
+    reads zero rows from it: v0.137.0 shipped a table read here, and on its
+    first real run every phase came back with no agreement and "SOW-6"
+    matched nothing. The pre-release check had used the service role, which
+    RLS does not bind. The function is team-gated and returns no amounts.
+    """
+    rows = client.rpc("map_agreements", {"p_project_id": project_id}).execute().data or []
+    return sorted(rows, key=lambda a: (a.get("signed_date") or "9999", a.get("number") or ""))
+
+
 def read_state(client, project_id: str, estimate: Estimate | None) -> dict[str, Any]:
     """Everything recorded about one project's Map, read with names attached.
 
-    Four explicit-column reads: the job's agreements, which agreement each
+    Four reads: the job's agreements (`read_agreements`), which agreement each
     phase names, the work-item pairings, and the marks. A pairing or mark
     whose target is no longer on the estimate is returned under `stale`
     rather than dropped: a row that points nowhere is worth seeing.
     """
-    agreements = (
-        client.table(Tables.AGREEMENTS)
-        .select(AGREEMENT_COLUMNS)
-        .eq("project_id", project_id)
-        .execute()
-        .data
-        or []
-    )
-    agreements.sort(key=lambda a: (a.get("signed_date") or "9999", a.get("number") or ""))
+    agreements = read_agreements(client, project_id)
     pairings = (
         client.table(Tables.WORK_ITEM_DELIVERABLES)
         .select(PAIRING_COLUMNS)

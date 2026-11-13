@@ -81,9 +81,18 @@ class _Store:
     def schema(self, name):
         return _Store(None, schema=name, root=self._root)
 
+    def rpc(self, fn, params):
+        # A signed-in team member reads agreements through this function;
+        # the table itself returns them nothing (RLS on, no policy).
+        assert fn == "map_agreements", fn
+        rows = [dict(r) for r in self._root.tables.get("rpc:map_agreements", [])
+                if r.get("project_id") == params["p_project_id"]]
+        return SimpleNamespace(execute=lambda: SimpleNamespace(data=rows))
+
     def table(self, name):
         root = self._root
         key = name if self._schema == "public" else f"{self._schema}.{name}"
+        assert key != "agreements", "agreements must be read through map_agreements"
         state = {"rows": list(root.tables.get(key, [])), "write": None}
 
         class _Q:
@@ -156,7 +165,7 @@ MEETINGS = [
 @pytest.fixture
 def env(server, monkeypatch):
     store = _Store({
-        "agreements": AGREEMENTS,
+        "rpc:map_agreements": AGREEMENTS,
         "estimator.phases": [{"id": "ph-1", "agreement_id": None}, {"id": "ph-2", "agreement_id": None}],
         "work_item_deliverables": [],
         "spine_map_marks": [],

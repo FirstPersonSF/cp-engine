@@ -2360,14 +2360,7 @@ def set_phase_agreement(project_code: str, phase: str, agreement: str) -> dict[s
         return refusal
     try:
         ph = spine_map.find_phase(estimate, phase)
-        agreements = (
-            client.table(Tables.AGREEMENTS)
-            .select(spine_map.AGREEMENT_COLUMNS)
-            .eq("project_id", pid)
-            .execute()
-            .data
-            or []
-        )
+        agreements = spine_map.read_agreements(client, pid)
         chosen = spine_map.find_agreement(agreements, agreement) if agreement.strip() else None
         client.schema("estimator").table(Tables.EST_PHASES).update(
             {spine_map.PHASE_AGREEMENT: chosen["id"] if chosen else None}).eq("id", ph.id).execute()

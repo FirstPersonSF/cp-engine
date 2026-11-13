@@ -205,8 +205,16 @@ class _Client:
         c._schema = name
         return c
 
+    def rpc(self, fn, params):
+        assert fn == "map_agreements", fn
+        rows = [dict(r) for r in self.tables.get("rpc:map_agreements", [])
+                if r.get("project_id") == params["p_project_id"]]
+        return SimpleNamespace(execute=lambda: SimpleNamespace(data=rows))
+
     def table(self, name):
         key = name if self._schema == "public" else f"{self._schema}.{name}"
+        # The table itself admits no signed-in reader; reading it is the bug.
+        assert key != "agreements", "agreements must be read through map_agreements"
         rows = [dict(r) for r in self.tables.get(key, [])]
 
         class _Q:
@@ -230,7 +238,7 @@ class _Client:
 
 def _state(**over):
     tables = {
-        "agreements": [dict(a, project_id="p-1") for a in AGREEMENTS],
+        "rpc:map_agreements": [dict(a, project_id="p-1") for a in AGREEMENTS],
         "estimator.phases": [{"id": "ph-1", "agreement_id": None}, {"id": "ph-2", "agreement_id": "ag-6"}],
         "work_item_deliverables": [
             {"id": "w1", "project_id": "p-1", "work_item_id": "act-arch", "deliverable_id": "del-system-1",
@@ -293,6 +301,13 @@ def test_state_reports_card_marks_in_the_maps_words_oldest_first():
 
 
 def test_state_with_no_estimate_is_empty_not_an_error():
-    out = spine_map.read_state(_Client({"agreements": [dict(a, project_id="p-1") for a in AGREEMENTS]}),
-                               "p-1", None)
+    rows = [dict(a, project_id="p-1") for a in AGREEMENTS]
+    out = spine_map.read_state(_Client({"rpc:map_agreements": rows}), "p-1", None)
     assert out["phases"] == [] and len(out["agreements"]) == 3
+
+
+def test_agreements_come_through_the_function_oldest_first_and_only_this_jobs():
+    rows = [dict(a, project_id="p-1") for a in reversed(AGREEMENTS)]
+    rows.append({"id": "ag-x", "number": "SOW-1", "signed_date": "2025-01-01", "project_id": "p-2"})
+    got = spine_map.read_agreements(_Client({"rpc:map_agreements": rows}), "p-1")
+    assert [a["number"] for a in got] == ["SOW-4", "CO-1", "SOW-6"]
