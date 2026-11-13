@@ -585,7 +585,7 @@ toml = [
 
 [[package]]
 name = "cp-engine"
-version = "0.137.2"
+version = "0.137.3"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
