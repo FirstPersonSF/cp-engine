@@ -476,7 +476,9 @@ serve places everything hanging off it.
   `meeting:<id>`: `shared_on` (`YYYY-MM-DD`, a date someone told you or a
   record states, never a guess) puts it under Shared; `column` shows it
   under another column than its kind implies. For a deliverable: `status`
-  is Done, Replaced (a later scope took it over) or Not approved. Anything
+  is In progress, Done, Replaced (a later scope took it over) or Not
+  approved; pass `note` with who said so. The last three also stop the SOW
+  card and sprint prep warning that the deliverable is past due. Anything
   left out stays as it is; `""` clears that one thing.
 - `set_phase_agreement(project_code, phase, agreement)` — the agreement a
   phase was sold under, when a reset or add-on was added as a new phase of

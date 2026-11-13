@@ -171,7 +171,7 @@ def test_a_column_and_a_status_are_said_in_the_maps_own_words():
     assert spine_map.merge_mark(None, status="replaced")["status_key"] == "replaced"
     with pytest.raises(MapError, match="Background, Work sessions, Shared, Feedback"):
         spine_map.merge_mark(None, column="middle")
-    with pytest.raises(MapError, match="Done, Replaced, Not approved"):
+    with pytest.raises(MapError, match="In progress, Done, Replaced, Not approved"):
         spine_map.merge_mark(None, status="finished")
 
 
@@ -311,3 +311,51 @@ def test_agreements_come_through_the_function_oldest_first_and_only_this_jobs():
     rows.append({"id": "ag-x", "number": "SOW-1", "signed_date": "2025-01-01", "project_id": "p-2"})
     got = spine_map.read_agreements(_Client({"rpc:map_agreements": rows}), "p-1")
     assert [a["number"] for a in got] == ["SOW-4", "CO-1", "SOW-6"]
+
+
+# --- what is settled, and "in progress" --------------------------------------
+
+
+def _settled(marks, pairings):
+    client = _Client({
+        "spine_map_marks": [dict(m, project_id="p-1") for m in marks],
+        "work_item_deliverables": [dict(p, project_id="p-1") for p in pairings],
+    })
+    return spine_map.settled_items(client, "p-1")
+
+
+def test_a_finished_deliverable_settles_the_work_that_serves_only_it():
+    out = _settled(
+        [{"item_key": "del-a", "status_key": "done"}, {"item_key": "del-b", "status_key": "replaced"},
+         {"item_key": "del-c", "status_key": "in_progress"}],
+        [{"work_item_id": "act-1", "deliverable_id": "del-a"},
+         {"work_item_id": "act-2", "deliverable_id": "del-a"},
+         {"work_item_id": "act-2", "deliverable_id": "del-b"},
+         {"work_item_id": "act-3", "deliverable_id": "del-a"},
+         {"work_item_id": "act-3", "deliverable_id": "del-c"}],
+    )
+    assert out == {"del-a": "Done", "del-b": "Replaced", "act-1": "Done", "act-2": "Closed"}
+
+
+def test_in_progress_settles_nothing_and_a_card_mark_is_not_a_status():
+    assert _settled([{"item_key": "del-c", "status_key": "in_progress"},
+                     {"item_key": "_authored/recap", "status_key": None}], []) == {}
+
+
+def test_in_progress_is_a_status_a_person_can_give():
+    assert spine_map.merge_mark(None, status="In progress")["status_key"] == "in_progress"
+    assert spine_map.merge_mark(None, status="in-progress")["status_key"] == "in_progress"
+    with pytest.raises(MapError, match="In progress, Done, Replaced, Not approved"):
+        spine_map.merge_mark(None, status="started")
+
+
+def test_state_carries_who_set_a_status_and_why():
+    out = _state(**{"spine_map_marks": [
+        {"id": "m1", "project_id": "p-1", "item_key": "del-workshop", "shared_on": None, "shared_to": None,
+         "column_key": None, "status_key": "replaced", "note": "taken over by the reset", "set_by": "drew@x"},
+    ]})
+    workshop = next(d for p in out["phases"] for d in p["deliverables"] if d["id"] == "del-workshop")
+    assert (workshop["status"], workshop["status_note"], workshop["status_set_by"]) == (
+        "Replaced", "taken over by the reset", "drew@x")
+    system = next(d for p in out["phases"] for d in p["deliverables"] if d["id"] == "del-system-1")
+    assert system["status_note"] is None

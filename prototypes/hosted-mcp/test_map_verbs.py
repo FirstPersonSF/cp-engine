@@ -326,6 +326,17 @@ def test_a_status_marks_a_deliverable_in_the_maps_words(pt, env):
     assert row["item_key"] == "del-campaign" and row["status_key"] == "replaced"
 
 
+def test_in_progress_is_a_status_and_it_reads_back(pt, env):
+    out = pt.set_map_mark("ibx-5153", "Campaign System", status="In progress",
+                          note="Drew: under way since the 11-12 review")
+    assert out["mark"]["status"] == "In progress"
+    state = pt.get_map_state("ibx-5153")
+    campaign = next(d for p in state["phases"] for d in p["deliverables"] if d["id"] == "del-campaign")
+    assert campaign["status"] == "In progress"
+    assert campaign["status_note"] == "Drew: under way since the 11-12 review"
+    assert campaign["status_set_by"] == "drew@example.com"
+
+
 def test_a_meeting_can_be_marked_by_its_key(pt, env):
     out = pt.set_map_mark("ibx-5153", "meeting:m-review", shared_on="2026-11-12")
     assert out["item"] == "meeting:m-review" and out["name"] == "AI Campaign Review"
@@ -337,7 +348,7 @@ def test_mark_refusals_write_nothing(pt, env):
     assert "say what to record" in pt.set_map_mark("ibx-5153", "recap")["error"]
     assert "YYYY-MM-DD" in pt.set_map_mark("ibx-5153", "recap", shared_on="last week")["error"]
     assert "no live card" in pt.set_map_mark("ibx-5153", "nothing like this", column="Shared")["error"]
-    assert "Done, Replaced, Not approved" in pt.set_map_mark(
+    assert "In progress, Done, Replaced, Not approved" in pt.set_map_mark(
         "ibx-5153", "Campaign System", status="finished")["error"]
     assert env.store.writes == []
 

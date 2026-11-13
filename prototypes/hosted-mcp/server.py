@@ -1963,9 +1963,21 @@ def _compose_agreement_projection(
                     "meetings read failed — the meeting-divergence drift rule "
                     f"did not run: {type(exc).__name__}: {exc}"
                 )
-            drift = drift_warnings(est, bars, meetings, today=tenant_today())
+            # What the Spine Map says is finished with. Best-effort like the
+            # meetings read: without it the block is still true, only noisier.
+            try:
+                from cp_engine.spine_map import settled_items
+
+                settled = settled_items(client, project_id)
+            except Exception as exc:  # noqa: BLE001
+                settled = {}
+                result.setdefault("warnings", []).append(
+                    "Spine Map statuses could not be read, so a deliverable marked "
+                    f"Done there may still be flagged past due: {type(exc).__name__}: {exc}"
+                )
+            drift = drift_warnings(est, bars, meetings, today=tenant_today(), settled=settled)
             result["body"] = (result.get("body") or "") + "\n\n" + \
-                render_engagement_block(est, bars, drift=drift)
+                render_engagement_block(est, bars, drift=drift, settled=settled)
             result["derived_block"] = True
             if drift:
                 result["drift_warnings"] = drift
