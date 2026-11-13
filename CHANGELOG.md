@@ -13,6 +13,8 @@ Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automat
 - `--facts-docx` adds the margin rows and a "Costs by payee" table. When the money could not be read it says "NOT READ — do not state a margin".
 - `/cp-wrap` asks for the margin first in the Commercial section. "Actual profitability %" is no longer a blank for a person to fill when the margin is measured.
 - Before this the `slt-5196` wrap said the margin could not be told, while Mission Control held every invoice and cost.
+- `cxp wrap` finds the project when given its full code. It joined every digit in the code, so `slt-5196-brand-campaign-26` looked up job 519626 and wrote a report with every fact blank.
+
 ## v0.137.1 — 2026-11-13
 
 **The Map verbs can see a job's agreements.** Patch: no new verbs; MC-2 mig 224 (already applied).
