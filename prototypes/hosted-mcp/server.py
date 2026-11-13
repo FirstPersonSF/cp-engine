@@ -616,7 +616,7 @@ mcp_server = MCPServer(
         "sequence for a session like this one, which has no `cxp` and no file "
         "editing. Read `master-cp.md` for the project index; get each "
         "project's path from there rather than constructing it.\n\n"
-        "MOST TOOLS READ; 37 OF THEM WRITE. The writers are the `create_*`, `set_*`, "
+        "MOST TOOLS READ; 41 OF THEM WRITE. The writers are the `create_*`, `set_*`, "
         "`add_*`, `remove_*`, `promote_*`, `retire_*`, `resolve_*`, "
         "`route_*`, `rotate_*`, `seal_to_*` and `capture_*` verbs, plus "
         "`log_improvement`, `log_lesson`, `review_freelancer`, `push_to_dropbox` and `ingest_url` — a name that "
@@ -8742,6 +8742,57 @@ def _derive_workset_members(
     return sorted(found), None
 
 
+def call_mc2_set_meeting_work_item(
+    recording_id: int, work_item_id: str | None
+) -> dict[str, Any]:
+    """PATCH a meeting's work item via mc-2, under the CALLER'S OWN JWT.
+
+    Through mc-2 rather than a column write here because the assignment has a
+    side effect mc-2 owns: on a project set to promote every assigned meeting,
+    assigning one promotes its transcript. On 2026-11-13, 29 meetings on
+    ibx-5153 were assigned by direct SQL, which skips that. `None` detaches.
+
+    Never raises — returns `{ok: False, reason}` like its siblings.
+    """
+    if not MC2_API_BASE:
+        return {
+            "ok": False,
+            "reason": "meeting update unavailable: MC2_API_BASE not configured",
+            "degraded": True,
+        }
+    try:
+        token = caller_jwt()
+    except RuntimeError as exc:
+        return {"ok": False, "reason": f"no authenticated caller: {exc}"}
+    try:
+        resp = httpx.patch(
+            f"{MC2_API_BASE}/api/meetings/{recording_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"work_item_id": work_item_id},
+            timeout=MC2_TIMEOUT_SECONDS,
+        )
+    except httpx.TimeoutException:
+        return {
+            "ok": False,
+            "reason": (
+                f"mc-2 did not respond within {MC2_TIMEOUT_SECONDS}s. The meeting "
+                "may or may not have been attached — read the Map state before retrying."
+            ),
+        }
+    except httpx.HTTPError as exc:
+        return {"ok": False, "reason": f"could not reach mc-2: {exc}"}
+    if resp.status_code >= 400:
+        return {
+            "ok": False,
+            "reason": f"mc-2 refused the update ({resp.status_code}): {resp.text[:300]}",
+        }
+    try:
+        data = resp.json()
+    except ValueError:
+        data = {}
+    return {"ok": True, "auto_promote": (data or {}).get("auto_promote")}
+
+
 def call_mc2_set_commitment_date(
     commitment_id: str, due_date: str, date_status: str | None
 ) -> dict[str, Any]:
@@ -11560,6 +11611,7 @@ READ_ONLY_TOOLS: dict[str, str] = {
     "list_rfp_respondents": "SELECT rfp_respondents + vendors (team-gated)",
     "list_lessons": "SELECT lessons / rpc match_lessons (team-gated)",
     "list_freelancers": "SELECT entities, freelancer_reviews, contractor_hours (team-gated)",
+    "get_map_state": "SELECT agreements, estimator.*, work_item_deliverables, spine_map_marks, fathom_meetings (team-gated)",
 }
 
 # name -> what it writes (the reason it is NOT on `/mcp/read`).
@@ -11607,6 +11659,10 @@ MAIN_ONLY_TOOLS: dict[str, str] = {
     # learning phase 5: freelancer reviews and contractor hours
     "review_freelancer": "INSERT/UPDATE freelancer_reviews",
     "set_contractor_hours": "INSERT contractor_hours",
+    "set_work_item_deliverable": "INSERT/UPDATE/DELETE work_item_deliverables",
+    "set_map_mark": "INSERT/UPDATE/DELETE spine_map_marks",
+    "set_phase_agreement": "UPDATE estimator.phases.agreement_id",
+    "set_meeting_work_item": "PATCH mc-2 /api/meetings/{recording_id} (caller's JWT)",
 }
 
 READ_INSTRUCTIONS = (

@@ -2015,3 +2015,432 @@ def list_freelancers(
     _srv.audit(client, tool, {"project_code": project_code, "need": need},
                len(out.get("ranked") or []))
     return out
+
+
+# ── the Spine Map: what a person says about it ────────────────────────
+#
+# Mission Control's Map is read-only. These verbs are how it is kept right:
+# a person says where things go and Claude records it, under the person's
+# own identity. Validation lives in `cp_engine.spine_map`; the writes are
+# here so the read-only endpoint's derivation can see them.
+
+
+def _map_estimate(client, tool: str, project_code: str):
+    """`(project_id, estimate, None)` or `(None, None, refusal)`."""
+    from cp_engine.estimate import fetch_estimate
+
+    found = _resolve(client, project_code)
+    if found is None:
+        return None, None, _not_found(client, tool, project_code)
+    pid, _cid = found
+    try:
+        return pid, fetch_estimate(client, pid), None
+    except Exception as exc:  # noqa: BLE001 — MCP boundary
+        _srv.audit(client, tool, {"project_code": project_code, "result": "error"}, 0)
+        return None, None, {"project_code": project_code,
+                            "error": f"could not read the estimate: {type(exc).__name__}: {str(exc)[:200]}"}
+
+
+def _map_refuse(client, tool: str, project_code: str, message: str) -> dict[str, Any]:
+    _srv.audit(client, tool, {"project_code": project_code, "result": "error"}, 0)
+    return {"project_code": project_code, "error": message}
+
+
+def _map_caller() -> str:
+    return _srv.caller_email() or _srv.caller_subject()
+
+
+def _find_meeting(client, project_id: str, ref: str) -> tuple[dict | None, str | None]:
+    """ONE meeting on this project: its id, its recording id, or a distinct
+    part of its title (add the date as `YYYY-MM-DD <title>` when a title
+    repeats, as daily calls do)."""
+    from cp_engine.mc2_db import Tables
+
+    want = (ref or "").strip()
+    if want.startswith("meeting:"):
+        want = want[len("meeting:"):]
+    if not want:
+        return None, "name the meeting"
+    rows = (
+        client.table(Tables.FATHOM_MEETINGS)
+        .select("id, recording_id, title, meeting_date, work_item_id, ignored, duplicate_of")
+        .eq("project_id", project_id)
+        .execute()
+        .data
+        or []
+    )
+    rows = [r for r in rows if not r.get("ignored") and not r.get("duplicate_of")]
+    hits = [r for r in rows if r.get("id") == want or str(r.get("recording_id")) == want]
+    if not hits:
+        day, _, rest = want.partition(" ")
+        dated = len(day) == 10 and day[4] == "-" and day[7] == "-"
+        needle = " ".join((rest if dated else want).lower().split())
+        hits = [
+            r for r in rows
+            if needle in " ".join((r.get("title") or "").lower().split())
+            and (not dated or (r.get("meeting_date") or "").startswith(day))
+        ]
+    if len(hits) == 1:
+        return hits[0], None
+    if not hits:
+        return None, f"no meeting on this project matches {ref!r}"
+    listed = "; ".join(
+        f"{(r.get('meeting_date') or '')[:10]} {(r.get('title') or '').strip()!r} (id {r['id']})"
+        for r in sorted(hits, key=lambda r: r.get("meeting_date") or "")[:8]
+    )
+    return None, (f"{len(hits)} meetings match {ref!r}: {listed}. "
+                  "Say which by id, or as \"YYYY-MM-DD <title>\".")
+
+
+@hosted_tool
+def get_map_state(project_code: str) -> dict[str, Any]:
+    """What is recorded about a project's Spine Map, with names attached.
+
+    The Map in Mission Control is one line per deliverable on the scope of
+    work. This returns what a person has said about it: each phase and the
+    agreement it sits under, each work item and the deliverable(s) it serves
+    (suggested or confirmed), each deliverable's status, what was marked as
+    shared with the client and when, and any column override. Also what is
+    missing: work items that serve nothing, meetings on no work item, and
+    rows that point at something no longer on the estimate.
+
+    Read this before a `set_*` Map verb: names repeat across phases, and the
+    ids here settle which one you mean. Team members only.
+    """
+    tool = "get_map_state"
+    refused = _team_gate(tool, project_code)
+    if refused:
+        return refused
+    from cp_engine import spine_map
+    from cp_engine.mc2_db import Tables
+
+    client = _srv.user_client()
+    pid, estimate, refusal = _map_estimate(client, tool, project_code)
+    if refusal:
+        return refusal
+    try:
+        state = spine_map.read_state(client, pid, estimate)
+        meetings = (
+            client.table(Tables.FATHOM_MEETINGS)
+            .select("id, work_item_id, ignored, duplicate_of")
+            .eq("project_id", pid)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as exc:  # noqa: BLE001 — MCP boundary
+        return _map_refuse(client, tool, project_code, f"{type(exc).__name__}: {str(exc)[:300]}")
+    live = [m for m in meetings if not m.get("ignored") and not m.get("duplicate_of")]
+    state["meetings"] = {
+        "on_a_work_item": sum(1 for m in live if m.get("work_item_id")),
+        "on_no_work_item": sum(1 for m in live if not m.get("work_item_id")),
+    }
+    if estimate is None:
+        state["note"] = ("this job has no estimate, so the Map has no lines: "
+                         "work items and deliverables come from the scope of work")
+    _srv.audit(client, tool, {"project_code": project_code}, len(state["phases"]))
+    return {"project_code": project_code, **state}
+
+
+@hosted_tool
+def set_work_item_deliverable(
+    project_code: str,
+    work_item: str,
+    deliverable: str,
+    status: str = "suggested",
+    note: str = "",
+) -> dict[str, Any]:
+    """Record which deliverable a work item serves, on the Spine Map.
+
+    Every work item should serve a deliverable, so the Map can fold it inside
+    that deliverable's line; one may serve several (call once for each).
+
+    `status`: `suggested` (default) is Claude's proposal, drawn dashed.
+    `confirmed` is for a pairing a PERSON has agreed to, in chat or on a
+    belief-check page; it is stamped with your name and the time, so never
+    pass it on your own judgement. `removed` takes the pairing away.
+
+    `work_item` and `deliverable` are a name, a distinct part of one, an id,
+    or `"<phase> / <name>"` when two phases share a name. A name matching
+    more than one is refused with the candidates. Calling again for the same
+    pair changes its status. Team members only.
+    """
+    tool = "set_work_item_deliverable"
+    refused = _team_gate(tool, project_code)
+    if refused:
+        return refused
+    from datetime import UTC, datetime
+
+    from cp_engine import spine_map
+    from cp_engine.mc2_db import Tables
+
+    client = _srv.user_client()
+    pid, estimate, refusal = _map_estimate(client, tool, project_code)
+    if refusal:
+        return refusal
+    if status not in spine_map.PAIRING_STATUSES:
+        return _map_refuse(client, tool, project_code,
+                           f"status is one of {', '.join(spine_map.PAIRING_STATUSES)}")
+    try:
+        act = spine_map.find_item(estimate, work_item, "activity")
+        deliv = spine_map.find_item(estimate, deliverable, "deliverable")
+        existing = (
+            client.table(Tables.WORK_ITEM_DELIVERABLES)
+            .select(spine_map.PAIRING_COLUMNS)
+            .eq("work_item_id", act.id)
+            .eq("deliverable_id", deliv.id)
+            .execute()
+            .data
+            or []
+        )
+        was = existing[0]["status"] if existing else None
+        if status == "removed":
+            if existing:
+                client.table(Tables.WORK_ITEM_DELIVERABLES).delete().eq(
+                    "id", existing[0]["id"]).execute()
+        else:
+            row = spine_map.pairing_row(
+                project_id=pid, work_item_id=act.id, deliverable_id=deliv.id,
+                status=status, confirmed_by=_map_caller(),
+                now_iso=datetime.now(UTC).isoformat(), note=note)
+            if existing:
+                patch = {k: row[k] for k in ("status", "confirmed_by", "confirmed_at")}
+                if note.strip():
+                    patch["note"] = row["note"]
+                client.table(Tables.WORK_ITEM_DELIVERABLES).update(patch).eq(
+                    "id", existing[0]["id"]).execute()
+            else:
+                client.table(Tables.WORK_ITEM_DELIVERABLES).insert(row).execute()
+    except spine_map.MapError as exc:
+        return _map_refuse(client, tool, project_code, str(exc))
+    except Exception as exc:  # noqa: BLE001 — MCP boundary
+        return _map_refuse(client, tool, project_code, f"{type(exc).__name__}: {str(exc)[:300]}")
+    changed = was != (None if status == "removed" else status)
+    _srv.audit(client, tool, {"project_code": project_code, "work_item": act.name,
+                              "deliverable": deliv.name, "status": status}, 1 if changed else 0)
+    return {"project_code": project_code,
+            "work_item": {"id": act.id, "name": act.name},
+            "deliverable": {"id": deliv.id, "name": deliv.name},
+            "status": status, "was": was, "changed": changed,
+            "caller": _map_caller()}
+
+
+@hosted_tool
+def set_map_mark(
+    project_code: str,
+    item: str,
+    shared_on: str | None = None,
+    shared_to: str | None = None,
+    column: str | None = None,
+    status: str | None = None,
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Record what a person said about ONE item on the Spine Map.
+
+    Two different kinds of thing, told apart by what you pass:
+
+    - **A card or a meeting** (`shared_on`, `shared_to`, `column`): "the
+      client saw this on <date>" puts it under Shared, dated by when it went
+      out. `shared_on` is `YYYY-MM-DD` and must be a date someone told you or
+      a record states, never a guess. `column` shows a card under Background,
+      Work sessions, Shared or Feedback instead of the column its kind
+      implies. `item` is a card's key or a distinct part of its title, or
+      `meeting:<id>`.
+    - **A deliverable** (`status`): Done, Replaced (a later scope took it
+      over; it will not be delivered here) or Not approved. `item` is the
+      deliverable's name, id, or `"<phase> / <name>"`.
+
+    Pass only what you mean to change: anything left out stays as it is, and
+    `""` clears that one thing. A mark with nothing left is removed. Nothing
+    here changes the card itself; layer, serves and versions are untouched.
+    Team members only.
+    """
+    tool = "set_map_mark"
+    refused = _team_gate(tool, project_code)
+    if refused:
+        return refused
+    from cp_engine import spine_map
+    from cp_engine.mc2_db import Tables
+
+    client = _srv.user_client()
+    pid, estimate, refusal = _map_estimate(client, tool, project_code)
+    if refusal:
+        return refusal
+    about_item = any(v is not None for v in (shared_on, shared_to, column))
+    if status is not None and about_item:
+        return _map_refuse(client, tool, project_code,
+                           "status is about a deliverable; shared_on, shared_to and column are "
+                           "about a card or a meeting. Make two calls.")
+    if status is None and not about_item and note is None:
+        return _map_refuse(client, tool, project_code,
+                           "say what to record: shared_on, column, or status")
+    try:
+        if status is not None:
+            deliv = spine_map.find_item(estimate, item, "deliverable")
+            item_key, label = deliv.id, deliv.name
+        elif (item or "").strip().startswith("meeting:"):
+            meeting, problem = _find_meeting(client, pid, item)
+            if meeting is None:
+                return _map_refuse(client, tool, project_code, problem or "no such meeting")
+            item_key = f"meeting:{meeting['id']}"
+            label = (meeting.get("title") or "Meeting").strip()
+        else:
+            est_item_id, err = _srv.resolve_live_element_id(client, pid, item)
+            if err is not None:
+                _srv.audit(client, tool, {"project_code": project_code, "result": "error"}, 0)
+                return {"project_code": project_code, **err}
+            if est_item_id is None:
+                return _map_refuse(client, tool, project_code,
+                                   f"no live card on this project matches {item!r}")
+            item_key = label = est_item_id
+        existing = (
+            client.table(Tables.SPINE_MAP_MARKS)
+            .select(spine_map.MARK_COLUMNS)
+            .eq("project_id", pid)
+            .eq("item_key", item_key)
+            .execute()
+            .data
+            or []
+        )
+        before = existing[0] if existing else None
+        after = spine_map.merge_mark(
+            before, shared_on=shared_on, shared_to=shared_to, column=column,
+            status=status, note=note, set_by=_map_caller())
+        if after is None:
+            if before:
+                client.table(Tables.SPINE_MAP_MARKS).delete().eq("id", before["id"]).execute()
+        elif before:
+            client.table(Tables.SPINE_MAP_MARKS).update(after).eq("id", before["id"]).execute()
+        else:
+            client.table(Tables.SPINE_MAP_MARKS).insert(
+                {"project_id": pid, "item_key": item_key, **after}).execute()
+    except spine_map.MapError as exc:
+        return _map_refuse(client, tool, project_code, str(exc))
+    except Exception as exc:  # noqa: BLE001 — MCP boundary
+        return _map_refuse(client, tool, project_code, f"{type(exc).__name__}: {str(exc)[:300]}")
+    _srv.audit(client, tool, {"project_code": project_code, "item": item_key}, 1)
+    mark = None
+    if after is not None:
+        mark = {
+            "shared_on": after.get("shared_on"),
+            "shared_to": after.get("shared_to"),
+            "column": spine_map.COLUMNS.get(after.get("column_key") or ""),
+            "status": spine_map.STATUSES.get(after.get("status_key") or ""),
+            "note": after.get("note"),
+        }
+    return {"project_code": project_code, "item": item_key, "name": label,
+            "mark": mark, "removed": after is None and before is not None,
+            "caller": _map_caller()}
+
+
+@hosted_tool
+def set_phase_agreement(project_code: str, phase: str, agreement: str) -> dict[str, Any]:
+    """Say which agreement a phase of the estimate was sold under.
+
+    The Map groups deliverables by agreement. A phase follows its estimate's
+    agreement unless it names its own, which is what a reset or add-on signed
+    later needs when it was added as a new phase of the same estimate (on
+    ibx-5153, SOW-6 is the third phase of the job's one estimate).
+
+    `phase` is its name, a distinct part of it, or its id. `agreement` is its
+    number ("SOW-6"), a part of its title, or its id; a change order puts the
+    phase in its parent SOW's group. `""` clears it, so the phase follows its
+    estimate again. Team members only.
+    """
+    tool = "set_phase_agreement"
+    refused = _team_gate(tool, project_code)
+    if refused:
+        return refused
+    from cp_engine import spine_map
+    from cp_engine.mc2_db import Tables
+
+    client = _srv.user_client()
+    pid, estimate, refusal = _map_estimate(client, tool, project_code)
+    if refusal:
+        return refusal
+    try:
+        ph = spine_map.find_phase(estimate, phase)
+        agreements = (
+            client.table(Tables.AGREEMENTS)
+            .select(spine_map.AGREEMENT_COLUMNS)
+            .eq("project_id", pid)
+            .execute()
+            .data
+            or []
+        )
+        chosen = spine_map.find_agreement(agreements, agreement) if agreement.strip() else None
+        client.schema("estimator").table(Tables.EST_PHASES).update(
+            {spine_map.PHASE_AGREEMENT: chosen["id"] if chosen else None}).eq("id", ph.id).execute()
+    except spine_map.MapError as exc:
+        return _map_refuse(client, tool, project_code, str(exc))
+    except Exception as exc:  # noqa: BLE001 — MCP boundary
+        return _map_refuse(client, tool, project_code, f"{type(exc).__name__}: {str(exc)[:300]}")
+    root = spine_map.root_agreement(agreements, chosen["id"]) if chosen else None
+    _srv.audit(client, tool, {"project_code": project_code, "phase": ph.name,
+                              "agreement": (chosen or {}).get("number")}, 1)
+    return {"project_code": project_code,
+            "phase": {"id": ph.id, "name": ph.name},
+            "agreement": (chosen or {}).get("number") or (chosen or {}).get("title"),
+            "grouped_under": (root or {}).get("number") or (root or {}).get("title"),
+            "follows_its_estimate": chosen is None,
+            "caller": _map_caller()}
+
+
+@hosted_tool
+def set_meeting_work_item(project_code: str, meeting: str, work_item: str) -> dict[str, Any]:
+    """Attach a meeting to the work item it belongs to, or detach it.
+
+    The Map shows a meeting under Work sessions on the deliverable its work
+    item serves. An internal call belongs on the work item in hand at the
+    time; a client review on the work it reviewed.
+
+    `meeting` is its id, its recording id, or a distinct part of its title;
+    daily calls share a title, so add the date: `"2026-11-06 team"`.
+    `work_item` is a work item's or a deliverable's name, id, or
+    `"<phase> / <name>"`; `""` detaches the meeting. Goes through Mission
+    Control, which also promotes the transcript when the project is set to
+    promote every assigned meeting. Team members only.
+    """
+    tool = "set_meeting_work_item"
+    refused = _team_gate(tool, project_code)
+    if refused:
+        return refused
+    from cp_engine import spine_map
+
+    client = _srv.user_client()
+    pid, estimate, refusal = _map_estimate(client, tool, project_code)
+    if refusal:
+        return refusal
+    found, problem = _find_meeting(client, pid, meeting)
+    if found is None:
+        return _map_refuse(client, tool, project_code, problem or "no such meeting")
+    target = None
+    if work_item.strip():
+        try:
+            try:
+                target = spine_map.find_item(estimate, work_item, "activity")
+            except spine_map.MapError as first:
+                try:
+                    target = spine_map.find_item(estimate, work_item, "deliverable")
+                except spine_map.MapError:
+                    raise first from None
+        except spine_map.MapError as exc:
+            return _map_refuse(client, tool, project_code, str(exc))
+    if found.get("recording_id") is None:
+        return _map_refuse(client, tool, project_code,
+                           "that meeting has no recording id, so Mission Control cannot address it")
+    result = _srv.call_mc2_set_meeting_work_item(
+        int(found["recording_id"]), target.id if target else None)
+    _srv.audit(client, tool, {"project_code": project_code, "meeting": found["id"],
+                              "work_item": target.name if target else None},
+               1 if result.get("ok") else 0)
+    if not result.get("ok"):
+        return {"project_code": project_code, **result}
+    return {"project_code": project_code,
+            "meeting": {"id": found["id"], "title": (found.get("title") or "").strip(),
+                        "date": (found.get("meeting_date") or "")[:10] or None},
+            "work_item": {"id": target.id, "name": target.name, "kind": target.kind} if target else None,
+            "was": found.get("work_item_id"),
+            "transcript_promotion": result.get("auto_promote"),
+            "caller": _map_caller()}
+
