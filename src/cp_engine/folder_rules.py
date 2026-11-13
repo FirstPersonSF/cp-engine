@@ -158,13 +158,14 @@ def list_subfolders(source: str, connector: Any, folder: str) -> list[tuple[str,
                 break
             result = connector.dbx.files_list_folder_continue(result.cursor)
         return out
-    from cp_engine.asset_ingest import _DRIVE_FOLDER_MIME
+    from cp_engine.asset_ingest import _DRIVE_FOLDER_MIME, DRIVE_LIST_ALL_DRIVES
 
     items = connector._list_files_with_pagination(
         query=(f"'{folder}' in parents and mimeType='{_DRIVE_FOLDER_MIME}' "
                "and trashed=false"),
         fields="files(id,name)",
         page_size=100,
+        **DRIVE_LIST_ALL_DRIVES,
     )
     return [(i.get("name") or "", i.get("id")) for i in items if i.get("id")]
 
