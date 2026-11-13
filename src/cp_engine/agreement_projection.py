@@ -8,11 +8,12 @@ change order edited in the estimate is instantly true in every SOW read and
 nothing hand-retyped can rot.
 
 Design: cp tenant `docs/plans/2026-07-11-sow-as-projection-design.md`.
-`drift_warnings` is consumed by `prep_planning`. The engagement block
-(`render_engagement_block`, `sow_attach_nudge`) was composed into the stdio
-`pull_spine_element`, retired in step 5b; the hosted verb does not compose it
-yet, so it has no MCP caller today. Pure functions: plain data in, markdown
-out. Fail-soft at the call site, never here.
+`drift_warnings` is consumed by `prep_planning` and by the hosted
+`pull_spine_element`, which composes the engagement block
+(`render_engagement_block`, `sow_attach_nudge`) onto every Agreement element.
+Both pass `settled` (`spine_map.settled_items`) so neither warns about what a
+person has said is finished. Pure functions: plain data in, markdown out.
+Fail-soft at the call site, never here.
 """
 
 from __future__ import annotations
@@ -47,7 +48,7 @@ def _bar_index(bars) -> dict:
     return {"by_id": by_id, "by_label": by_label}
 
 
-def _item_line(item, estimate, idx) -> str:
+def _item_line(item, estimate, idx, settled=None) -> str:
     bar = idx["by_id"].get(str(item.id)) or idx["by_label"].get(item.name.strip().lower())
     when = week_to_date(estimate.start_date, bar.start_week) if bar else None
     parts = [item.name]
@@ -55,6 +56,9 @@ def _item_line(item, estimate, idx) -> str:
         parts.append(f"due ~{when.isoformat()}")
     if bar is not None and bar.done:
         parts.append("done ✓")
+    elif settled and str(item.id) in settled:
+        # What a person said on the Spine Map, where the schedule has no mark.
+        parts.append(f"{settled[str(item.id)]} (Spine Map)")
     return " · ".join(parts)
 
 
@@ -63,7 +67,8 @@ DRIFT_HEADER = "**⚠ Drift (estimate vs linked reality)**"
 
 
 def drift_warnings(estimate, bars, meetings=None, *, today=None,
-                   threshold_days: int = DRIFT_THRESHOLD_DAYS) -> list[str]:
+                   threshold_days: int = DRIFT_THRESHOLD_DAYS,
+                   settled=None) -> list[str]:
     """Flag undone items whose estimate date has lost touch with reality.
 
     Two rules, one warning per item (the meeting rule wins — it names the
@@ -76,7 +81,11 @@ def drift_warnings(estimate, bars, meetings=None, *, today=None,
       - the item is past due (`today` given, estimated date behind it) with
         no done-mark.
 
-    Done items are settled truth and never flagged. `meetings` rows need only
+    Done items are settled truth and never flagged. Neither is an item in
+    `settled` (`spine_map.settled_items`): one a person marked Done, Replaced
+    or Not approved on the Spine Map, or a work item serving only those. The
+    schedule's done-mark is rarely kept; on ibx-5153 the SOW card warned that
+    deliverables the Map read Done were months overdue. `meetings` rows need only
     `work_item_id` + `meeting_date` (list_project_meetings' shape). Returns
     display-ready strings; empty when nothing drifts (or without inputs —
     no `today` disables the past-due rule, no `meetings` the divergence rule).
@@ -99,6 +108,8 @@ def drift_warnings(estimate, bars, meetings=None, *, today=None,
                or idx["by_label"].get(item.name.strip().lower()))
         if bar is None or bar.done:
             continue
+        if settled and str(item.id) in settled:
+            continue
         due = week_to_date(estimate.start_date, bar.start_week)
         if due is None:
             continue
@@ -117,7 +128,7 @@ def drift_warnings(estimate, bars, meetings=None, *, today=None,
     return out
 
 
-def render_engagement_block(estimate, bars, *, drift=None) -> str:
+def render_engagement_block(estimate, bars, *, drift=None, settled=None) -> str:
     """The Agreement projection: phases → deliverables (dated, done-marked)
     and activities, rendered from live estimator data. `drift` is an optional
     pre-computed `drift_warnings` list, rendered as its own sub-block so the
@@ -129,10 +140,10 @@ def render_engagement_block(estimate, bars, *, drift=None) -> str:
         deliverables = [i for i in phase.items if i.kind == "deliverable"]
         activities = [i for i in phase.items if i.kind == "activity"]
         for d in deliverables:
-            lines.append(f"- Deliverable: {_item_line(d, estimate, idx)}")
+            lines.append(f"- Deliverable: {_item_line(d, estimate, idx, settled)}")
         if activities:
             lines.append("- Activities: "
-                         + " · ".join(_item_line(a, estimate, idx) for a in activities))
+                         + " · ".join(_item_line(a, estimate, idx, settled) for a in activities))
         lines.append("")
     if drift:
         lines.append(DRIFT_HEADER)

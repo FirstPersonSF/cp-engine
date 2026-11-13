@@ -777,7 +777,14 @@ def _fetch_drift_warnings(
             return ()
         bars = fetch_schedule(supabase_client, est.estimate_ids)
         meetings = list_project_meetings(supabase_client, mc_project_id)
-        return tuple(drift_warnings(est, bars, meetings, today=today))
+        try:
+            from cp_engine.spine_map import settled_items
+
+            settled = settled_items(supabase_client, mc_project_id)
+        except Exception as exc:  # noqa: BLE001 — without it, only noisier
+            log.warning("spine map statuses unreadable for %s: %s", project.code, exc)
+            settled = {}
+        return tuple(drift_warnings(est, bars, meetings, today=today, settled=settled))
     except Exception as exc:  # noqa: BLE001 — drift is best-effort
         log.warning("drift fetch failed for %s: %s", project.code, exc)
         return ()

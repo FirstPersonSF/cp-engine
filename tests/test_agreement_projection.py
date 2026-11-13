@@ -135,3 +135,36 @@ def test_attach_nudge_none_when_no_sow_doc():
     assert sow_attach_nudge([{"title": "Kickoff deck"}]) is None
 
 
+
+
+# --- what the Spine Map says is finished with --------------------------------
+# The schedule's done-mark is rarely kept. A deliverable a person marked Done,
+# Replaced or Not approved on the Map is settled, and so is its work.
+
+def test_drift_is_silent_for_what_the_map_settled():
+    bars = [_bar("i", "a1", week=2, done=False), _bar("r", "d1", week=3, done=False)]
+    today = date(2026, 9, 1)
+    assert len(drift_warnings(_estimate(), bars, [], today=today)) == 2
+    assert drift_warnings(_estimate(), bars, [], today=today,
+                          settled={"d1": "Done", "a1": "Done"}) == []
+    only_deliverable = drift_warnings(_estimate(), bars, [], today=today, settled={"d1": "Replaced"})
+    assert only_deliverable == ["⚠ 1:1 Stakeholder Interviews — past due ~2026-06-29, "
+                                "no done-mark"]
+
+
+def test_a_settled_item_with_a_diverging_meeting_is_not_flagged_either():
+    bars = [_bar("i", "a1", week=2, done=False)]
+    meetings = [{"work_item_id": "a1", "meeting_date": "2026-09-20"}]
+    assert drift_warnings(_estimate(), bars, meetings, today=date(2026, 7, 11))
+    assert drift_warnings(_estimate(), bars, meetings, today=date(2026, 7, 11),
+                          settled={"a1": "Done"}) == []
+
+
+def test_block_shows_the_maps_word_where_the_schedule_has_no_mark():
+    bars = [_bar("Perspectives & Possibilities Report", "d1", week=10),
+            _bar("1:1 Stakeholder Interviews", "a1", week=2, done=True)]
+    out = render_engagement_block(_estimate(), bars, settled={"d1": "Replaced", "a1": "Done"})
+    assert "Perspectives & Possibilities Report · due ~2026-08-24 · Replaced (Spine Map)" in out
+    # The schedule's own mark wins where it exists.
+    assert "1:1 Stakeholder Interviews · due ~2026-06-29 · done ✓" in out
+    assert "Done (Spine Map)" not in out

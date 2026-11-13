@@ -2246,9 +2246,11 @@ def set_map_mark(
       Work sessions, Shared or Feedback instead of the column its kind
       implies. `item` is a card's key or a distinct part of its title, or
       `meeting:<id>`.
-    - **A deliverable** (`status`): Done, Replaced (a later scope took it
-      over; it will not be delivered here) or Not approved. `item` is the
-      deliverable's name, id, or `"<phase> / <name>"`.
+    - **A deliverable** (`status`): In progress, Done, Replaced (a later
+      scope took it over; it will not be delivered here) or Not approved.
+      Pass `note` with who said so and why. `item` is the deliverable's
+      name, id, or `"<phase> / <name>"`. Done, Replaced and Not approved
+      also stop the SOW card and sprint prep warning that it is past due.
 
     Pass only what you mean to change: anything left out stays as it is, and
     `""` clears that one thing. A mark with nothing left is removed. Nothing

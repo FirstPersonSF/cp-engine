@@ -51,10 +51,14 @@ COLUMNS: dict[str, str] = {
 }
 # Deliverable status key -> the word the Map shows.
 STATUSES: dict[str, str] = {
+    "in_progress": "In progress",
     "done": "Done",
     "replaced": "Replaced",
     "not_approved": "Not approved",
 }
+# Statuses that settle a deliverable: nothing more is expected of it here, so
+# a date it has passed is not a warning. "In progress" does not settle one.
+SETTLED = ("done", "replaced", "not_approved")
 PAIRING_STATUSES = ("suggested", "confirmed", "removed")
 
 _COLUMN_WORDS = {
@@ -67,6 +71,8 @@ _STATUS_WORDS = {
     **{k: k for k in STATUSES},
     **{v.lower(): k for k, v in STATUSES.items()},
     "not-approved": "not_approved",
+    "in-progress": "in_progress",
+    "under way": "in_progress",
 }
 
 PAIRING_COLUMNS = "id, work_item_id, deliverable_id, status, confirmed_by, confirmed_at, note"
@@ -315,6 +321,52 @@ def read_agreements(client, project_id: str) -> list[dict]:
     return sorted(rows, key=lambda a: (a.get("signed_date") or "9999", a.get("number") or ""))
 
 
+def settled_items(client, project_id: str) -> dict[str, str]:
+    """`{estimate item id: word}` for what the Map says is finished with.
+
+    A deliverable marked Done, Replaced or Not approved is settled. So is a
+    work item when EVERY deliverable it serves is settled: the work that led
+    to a finished deliverable is finished too. The word is the deliverable's
+    status, or "Closed" for a work item whose deliverables ended differently.
+
+    Read by the Agreement projection and by sprint prep, so neither warns
+    "past due, no done-mark" about something a person has said is done. On
+    ibx-5153 the two disagreed: the Map read Done while the SOW card warned
+    the same deliverable was months overdue. In progress settles nothing.
+    """
+    marks = (
+        client.table(Tables.SPINE_MAP_MARKS)
+        .select("item_key, status_key")
+        .eq("project_id", project_id)
+        .execute()
+        .data
+        or []
+    )
+    out = {
+        m["item_key"]: STATUSES[m["status_key"]]
+        for m in marks
+        if m.get("status_key") in SETTLED
+    }
+    if not out:
+        return {}
+    pairings = (
+        client.table(Tables.WORK_ITEM_DELIVERABLES)
+        .select("work_item_id, deliverable_id")
+        .eq("project_id", project_id)
+        .execute()
+        .data
+        or []
+    )
+    serves: dict[str, list[str]] = {}
+    for p in pairings:
+        serves.setdefault(p["work_item_id"], []).append(p["deliverable_id"])
+    for act, delivs in serves.items():
+        if all(d in out for d in delivs):
+            words = {out[d] for d in delivs}
+            out[act] = words.pop() if len(words) == 1 else "Closed"
+    return out
+
+
 def read_state(client, project_id: str, estimate: Estimate | None) -> dict[str, Any]:
     """Everything recorded about one project's Map, read with names attached.
 
@@ -390,10 +442,15 @@ def read_state(client, project_id: str, estimate: Estimate | None) -> dict[str, 
                 if not entry["serves"]:
                     unpaired.append({"id": it.id, "name": it.name, "phase": ph.name})
             else:
-                status = (mark_of.get(it.id) or {}).get("status_key")
+                mark = mark_of.get(it.id) or {}
+                status = mark.get("status_key")
                 deliverables.append({
                     "id": it.id, "name": it.name,
                     "status": STATUSES.get(status) if status else None,
+                    # Who said so and why: a status with no reason behind it
+                    # is one a later reader cannot check.
+                    "status_note": mark.get("note") if status else None,
+                    "status_set_by": mark.get("set_by") if status else None,
                     "work_items": served_by.get(it.id, []),
                 })
         phases_out.append({
