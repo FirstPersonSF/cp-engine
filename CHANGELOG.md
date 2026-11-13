@@ -4,6 +4,13 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## Unreleased
+
+**cp reads project folders that live in a Shared Drive.** Patch: no new verbs, no migration.
+
+- **Why:** on 2026-11-13 the active project folders moved into the `1P_Project_Files` Shared Drive. Drive answers a folder listing there with an empty list and no error unless the call asks for Shared Drive items, so ingest and the folder rules saw every project's Drive folder as empty.
+- **Fix:** both Drive folder listings (ingest's tree walk, the folder rules' subfolder read) now pass `supportsAllDrives` and `includeItemsFromAllDrives`. Folders still in My Drive list as before.
+
 ## v0.137.2 — 2026-11-13
 
 **The Map can say a deliverable is in progress, and SOW cards stop warning about what the Map says is done.** Patch: no new verbs; MC-2 mig 225 (already applied).

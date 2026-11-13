@@ -385,6 +385,12 @@ def _coerce_size(v) -> int | None:
 # Drive folders carry this mimeType; everything else is a leaf file.
 _DRIVE_FOLDER_MIME = "application/vnd.google-apps.folder"
 
+# Every Drive `files.list` passes these. Without them Drive answers a listing
+# of a folder that lives in a Shared Drive with an EMPTY list and no error, so
+# a project moved there reads as a project with no files. They change nothing
+# for a folder in My Drive.
+DRIVE_LIST_ALL_DRIVES = {"supportsAllDrives": True, "includeItemsFromAllDrives": True}
+
 # Recursion safety rail for the Drive tree-walk. Real client folder trees are a
 # handful of levels deep; 10 is generous headroom. The cap (alongside a visited-
 # set of folder ids) guarantees termination even on a pathological/cyclic tree —
@@ -623,6 +629,7 @@ def _list_drive(connector, folder_id: str) -> list[FileRef]:
             query=f"'{fid}' in parents and trashed=false",
             fields="files(id,name,mimeType,size,modifiedTime,md5Checksum)",
             page_size=100,
+            **DRIVE_LIST_ALL_DRIVES,
         )
         for item in items:
             if item.get("mimeType") == _DRIVE_FOLDER_MIME:
