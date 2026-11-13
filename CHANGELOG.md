@@ -4,6 +4,13 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.137.1 — 2026-11-13
+
+**The Map verbs can see a job's agreements.** Patch: no new verbs; MC-2 mig 224 (already applied).
+
+- `get_map_state` showed every phase with no agreement, and `set_phase_agreement` refused "SOW-6" as matching nothing. A signed-in team member reads no rows from `agreements` (the table has no read policy). Agreements now come through `map_agreements`, a team-gated function that returns no amounts (mc-2 #472, #449).
+- Found on the first real run of v0.137.0, on `ibx-5153`. The other four verbs passed that run.
+
 ## v0.137.0 — 2026-11-13
 
 **cp can keep Mission Control's Spine Map right: five verbs for what a person says about it.** Minor: five new cp-hosted verbs; no MC-2 migration (220–223 are already applied).
