@@ -449,6 +449,47 @@ To find an email or note you authored into a project's (or initiative's) spine,
 `list_spine_elements(project_code)` then `pull_spine_element(project_code, <key>)` — don't grep
 the `spine/` mirror, which may lag the live MC-2 row.
 
+## The Spine Map: what a person says about it
+
+Mission Control's Map is a read-only list: one line per deliverable on the
+scope of work, its work items folded inside, and four columns (Background,
+Work sessions, Shared, Feedback). Nobody files into it by hand. A person says
+where things go, in chat or on a belief-check page, and you record it with
+these verbs. Where a CARD sits is still `set_spine_element(serves=...)`:
+route it to a work item or a deliverable, and filing one card that others
+serve places everything hanging off it.
+
+- `get_map_state(project_code)` — read this first. Each phase and the
+  agreement it sits under; each work item and the deliverable(s) it serves
+  (suggested or confirmed); each deliverable's status; what is marked as
+  shared and when; column overrides. Also what is missing: work items that
+  serve nothing, meetings on no work item, rows pointing at something no
+  longer on the estimate. Names repeat across phases; the ids here settle
+  which one you mean.
+- `set_work_item_deliverable(project_code, work_item, deliverable, status?, note?)`
+  — which deliverable a work item serves. One work item may serve several
+  (one call each). `status`: `suggested` (default; yours, drawn dashed),
+  `confirmed` (a PERSON agreed; stamped with the caller and the time, so
+  never pass it on your own judgement), `removed`.
+- `set_map_mark(project_code, item, shared_on?, shared_to?, column?, status?, note?)`
+  — two kinds of thing, told apart by what you pass. For a card or
+  `meeting:<id>`: `shared_on` (`YYYY-MM-DD`, a date someone told you or a
+  record states, never a guess) puts it under Shared; `column` shows it
+  under another column than its kind implies. For a deliverable: `status`
+  is Done, Replaced (a later scope took it over) or Not approved. Anything
+  left out stays as it is; `""` clears that one thing.
+- `set_phase_agreement(project_code, phase, agreement)` — the agreement a
+  phase was sold under, when a reset or add-on was added as a new phase of
+  the same estimate. `""` makes the phase follow its estimate again.
+- `set_meeting_work_item(project_code, meeting, work_item)` — attach a
+  meeting to the work item (or deliverable) it belongs to; `""` detaches.
+  Daily calls share a title, so name one as `"YYYY-MM-DD <title>"`. An
+  internal call belongs on the work item in hand at the time.
+
+A work item, deliverable or phase is named by its name, a distinct part of
+it, its id, or `"<phase> / <name>"`. A name that fits more than one is
+refused with the candidates; nothing is guessed.
+
 ## Proposing journey steps at wrap up
 
 **A content-write already journals itself.** `add_spine_version` and

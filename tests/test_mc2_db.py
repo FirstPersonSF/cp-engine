@@ -328,6 +328,10 @@ def test_registry_covers_known_tables() -> None:
         "project_types", "lesson_moments", "lessons",
         # Phase 5 (mc-2 mig 218): freelancer reviews and contractor hours.
         "freelancer_reviews", "contractor_hours", "payables",
+        # The Spine Map's stores (mc-2 migs 220-223): which deliverable a
+        # work item serves, what a person said about one Map item, and the
+        # agreements a phase can be sold under (read-only).
+        "work_item_deliverables", "spine_map_marks", "agreements",
     }
     names = {
         v
