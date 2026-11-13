@@ -4,7 +4,7 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
-## v0.137.3 — 2026-11-13
+## Unreleased
 
 **cp knows where each kind of file is kept, on Dropbox and on Google Drive.** One new cp-hosted verb (`where_is`) and one new argument (`push_to_dropbox(kind=…)`); no MC-2 migration.
 
@@ -15,7 +15,9 @@ Every project's Dropbox folder and Drive folder are laid out the same way, but c
 - **`push_to_dropbox(kind=…)`** files an upload in the right Dropbox folder for its kind. A kind that is kept on Drive is refused before anything is uploaded, with the Drive folder named, because cp cannot write to Google Drive yet. Calls without `kind` behave as before.
 - **Tenant `CLAUDE.md`** gains a short "Where files live" section, generated from the same map, telling a session to call `where_is` before uploading a file or saying one is missing.
 - The map lives in one place, `cp_engine/file_map.py`. The folder names the hosted server and the wrap-report publisher used to carry are now read from it.
-- Not in this release: writing to Google Drive. cp's Drive account can only read.
+- Not in this release: writing to Google Drive. The service account can now upload there (the projects are in a Shared Drive), but no verb does it yet.
+
+## v0.137.3 — 2026-11-13
 
 **cp reads project folders that live in a Shared Drive.** Patch: no new verbs, no migration.
 
