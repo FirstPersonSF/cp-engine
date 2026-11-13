@@ -65,6 +65,10 @@ Fields you will use:
 | `duration_weeks`, `start_date` | span; end falls back to the last meeting (MC-2 has no `end_date`) |
 | `budget`, `target_profit_pct`, `budget_per_hour` | the commercial frame |
 | `effort.by_person`, `effort.total_hours`, `effort.verified` | **allocated** hours per person |
+| `financials.billed`, `.collected`, `.planned_forward` | invoices: sent, paid, still to send |
+| `financials.costs.total`, `financials.costs.by_payee`, `financials.costs.through` | recorded costs, who was paid, and the date of the latest one |
+| `financials.margin_to_date_pct`, `financials.projected_margin_pct` | margin on what is billed, and once the planned invoices go out |
+| `financials.verified` | false when the money could not be read |
 | `meetings.tail_share`, `.heaviest_days`, `.count` | cadence — and WHERE it fell |
 | `deliverables` | live Deliverables-layer spine elements |
 | `feedback_artifacts` | worklists in `feedback-on-deck/` — a count that means something |
@@ -107,8 +111,13 @@ so two wrap reports are comparable:
    could actually END a round (often not the person giving feedback),
    relationship strength, maintenance needed. **This is the axis that
    compounds across engagements and the one a hand-written retro skips.**
-7. **Commercial** — budget, target margin, allocated hours, budget÷hours.
-   Say plainly whether the project made money or whether you cannot tell.
+7. **Commercial** — lead with the margin: `financials.projected_margin_pct`
+   against `target_profit_pct`, in one sentence. Then revenue (billed,
+   collected, still to bill), a table of costs by payee, and
+   `financials.margin_to_date_pct` when an invoice is still to go out. Say
+   what the margin leaves out: costs not yet entered (name
+   `financials.costs.through`) and partner time, which is never costed.
+   Allocated hours and budget÷hours follow, as context.
 8. **Not assessed** — every field in `not_assessable_from_data`, named as
    an open question. **Never guess these.**
 9. **Open at close** — a table: item, owner, note. What survives the
@@ -164,9 +173,21 @@ because a blank prompts a human and a guess does not.
 timesheets. Presenting an allocation as an actual overstates precision on
 the one number a scope conversation turns on.
 
-**If `effort.verified` is false, say hours are unread — do not state a
-margin.** An unread table must never render as "this project used no
-hours."
+**State the margin, and what it leaves out.** Every wrap report gives the
+final project margin from `financials`: the projected figure, the target,
+and the profit in dollars. It is margin on RECORDED costs, before partner
+time. A cost that has not been entered is not in it, so give the date the
+costs run through and name any you know are still to come.
+
+**If `financials.verified` is false, say the money is unread — do not state
+a margin**, and do not work one out from figures in the sprint files. The
+slt-5196 wrap of 2026-11-13 said the margin "cannot be told" while
+Mission Control held the invoices and every cost; the fix is to read them,
+not to estimate.
+
+**If `effort.verified` is false, say hours are unread — do not state
+hours or budget÷hours.** An unread table must never render as "this project
+used no hours."
 
 **Quote the client verbatim where you have it.** "The decks are now
 complete, make sense and look amazing" carries more than any paraphrase.
