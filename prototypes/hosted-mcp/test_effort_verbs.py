@@ -243,8 +243,8 @@ def test_an_update_that_changes_nothing_writes_nothing(pt, env):
 
 
 @pytest.mark.parametrize("code,kwargs,needle", [
-    ("ibx-5153", {"name": "An effort"}, "has an estimate"),                 # lines come from the scope
-    ("ibx-5153", {"effort_id": "ef-map", "status": "done"}, "has an estimate"),
+    ("ibx-5153", {"name": "An effort"}, "has an agreement"),                 # lines come from the scope
+    ("ibx-5153", {"effort_id": "ef-map", "status": "done"}, "has an agreement"),
     ("1pi-9005", {"effort_id": "ef-elsewhere", "status": "done"}, "no effort"),  # not on this project
     ("1pi-9005", {"effort_id": "ef-map"}, "say what to change"),            # nothing passed
     ("1pi-9005", {}, "needs a name"),                                       # new, unnamed
@@ -307,3 +307,40 @@ def test_a_status_mark_before_any_effort_says_to_name_one(pt, env):
 def test_a_deliverable_status_on_a_job_still_reads_the_estimate(pt, env):
     out = pt.set_map_mark("ibx-5153", "Campaign System", status="Done")
     assert out["item"] == "del-campaign" and env.gets == []
+
+
+# --- which workstreams have efforts: Mission Control's rule, not "no estimate" ---
+
+
+def _shape(env, monkeypatch, project, company_kind="self-fpsf", estimate=ESTIMATE):
+    """Give the project a row (and a company), and an estimate for EVERY project."""
+    import cp_engine.estimate as estimate_mod
+
+    env.store.tables["projects"] = [{"id": PID, "company_id": "co-1", **project}]
+    env.store.tables["companies"] = [{"id": "co-1", "kind": company_kind}]
+    monkeypatch.setattr(estimate_mod, "fetch_estimate", lambda c, pid: estimate)
+
+
+def test_an_initiative_with_an_empty_estimate_still_has_efforts(pt, env, monkeypatch):
+    # 1pi-9005 on 2026-11-13: an empty estimate appeared, and the tools said
+    # "this workstream has an estimate" while the Map drew its efforts.
+    _shape(env, monkeypatch, {"deal_stage": None, "parent_id": None})
+    out = pt.get_map_state("1pi-9005")
+    assert [e["name"] for e in out["efforts"]] == ["Learning from projects", "Spine Map"]
+    made = pt.set_effort("1pi-9005", name="Basic Map")
+    assert made.get("created") is True, made
+
+
+def test_a_job_has_no_efforts_even_with_no_estimate(pt, env, monkeypatch):
+    _shape(env, monkeypatch, {"deal_stage": "Won", "parent_id": None},
+           company_kind="client", estimate=None)
+    assert "efforts" not in pt.get_map_state("1pi-9005")
+    refused = pt.set_effort("1pi-9005", name="Basic Map")
+    assert "agreement" in refused["error"] and env.sends == []
+
+
+def test_a_clients_account_node_has_no_efforts(pt, env, monkeypatch):
+    _shape(env, monkeypatch, {"deal_stage": None, "parent_id": None},
+           company_kind="client", estimate=None)
+    assert "efforts" not in pt.get_map_state("1pi-9005")
+    assert "error" in pt.set_effort("1pi-9005", name="Basic Map") and env.sends == []

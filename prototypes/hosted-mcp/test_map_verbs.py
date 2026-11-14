@@ -431,4 +431,5 @@ def test_state_reads_back_what_the_verbs_wrote(pt, env):
 def test_state_on_a_job_with_no_estimate_says_so(server, pt, env, monkeypatch):
     monkeypatch.setattr(server, "resolve_project_id", lambda c, code: "p-none")
     out = pt.get_map_state("init-1")
-    assert out["phases"] == [] and "no estimate" in out["note"]
+    # Its lines are efforts (no agreement), and it says so.
+    assert out["phases"] == [] and "no agreement" in out["note"]
