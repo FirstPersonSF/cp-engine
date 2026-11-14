@@ -502,18 +502,18 @@ serve places everything hanging off it.
   shared and when; column overrides. Also what is missing: work items that
   serve nothing, meetings on no work item, rows pointing at something no
   longer on the estimate. Names repeat across phases; the ids here settle
-  which one you mean. A workstream with NO estimate has no deliverables:
+  which one you mean. A workstream with NO agreement has no deliverables:
   its lines are its efforts, under `efforts` (id, name, overview, position,
   status, due date, and `cards`: live cards naming it in `serves`). With no
   effort named, the Map shows one default line that holds every card.
 - `set_effort(project_code, name?, effort_id?, status?, overview?, position?)`
-  — name or change an effort, on a workstream with no estimate only. No
+  — name or change an effort, on a workstream with no agreement only. No
   `effort_id`: a new effort (`name` required; it goes after the last one).
   With `effort_id`: pass only what changes (rename, `status` `open` or
   `done`, `position` to reorder, `overview`; `""` clears it). No delete: a
   finished or dropped effort is closed with `status="done"`. Place a card on
   one with `set_spine_element(serves=[<effort id>])`. Refused on a
-  workstream that has an estimate: its lines come from the scope of work.
+  workstream that has an agreement: its lines come from the scope of work.
 - `set_work_item_deliverable(project_code, work_item, deliverable, status?, note?)`
   — which deliverable a work item serves. One work item may serve several
   (one call each). `status`: `suggested` (default; yours, drawn dashed),
@@ -527,7 +527,7 @@ serve places everything hanging off it.
   is In progress, Done, Replaced (a later scope took it over) or Not
   approved; pass `note` with who said so. The last three also stop the SOW
   card and sprint prep warning that the deliverable is past due. On a
-  workstream with no estimate, `item` is an effort's id or name. Anything
+  workstream with no agreement, `item` is an effort's id or name. Anything
   left out stays as it is; `""` clears that one thing.
 - `set_phase_agreement(project_code, phase, agreement)` — the agreement a
   phase was sold under, when a reset or add-on was added as a new phase of

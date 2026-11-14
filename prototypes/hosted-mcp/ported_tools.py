@@ -3002,7 +3002,7 @@ def get_map_state(project_code: str) -> dict[str, Any]:
     missing: work items that serve nothing, meetings on no work item, and
     rows that point at something no longer on the estimate.
 
-    A workstream with NO estimate has no deliverables. Its lines are its
+    A workstream with NO agreement (an initiative) has no deliverables. Its lines are its
     efforts, returned under `efforts`: each one's id, name, overview,
     position, status, due date, and `cards`, the number of live cards that
     name it in `serves`. With no effort named yet the Map shows one default
@@ -3039,7 +3039,7 @@ def get_map_state(project_code: str) -> dict[str, Any]:
         "on_a_work_item": sum(1 for m in live if m.get("work_item_id")),
         "on_no_work_item": sum(1 for m in live if not m.get("work_item_id")),
     }
-    if estimate is None:
+    if _lines_are_efforts(client, pid, estimate):
         state.update(_efforts_state(client, pid))
     _srv.audit(client, tool, {"project_code": project_code},
                len(state["phases"]) or len(state.get("efforts") or []))
@@ -3155,7 +3155,7 @@ def set_map_mark(
       Pass `note` with who said so and why. `item` is the deliverable's
       name, id, or `"<phase> / <name>"`. Done, Replaced and Not approved
       also stop the SOW card and sprint prep warning that it is past due.
-      On a workstream with no estimate the lines are its efforts, so
+      On a workstream with no agreement the lines are its efforts, so
       `item` is an effort's id or name (`get_map_state` lists them).
 
     Pass only what you mean to change: anything left out stays as it is, and
@@ -3183,7 +3183,7 @@ def set_map_mark(
         return _map_refuse(client, tool, project_code,
                            "say what to record: shared_on, column, or status")
     try:
-        if status is not None and estimate is None:
+        if status is not None and _lines_are_efforts(client, pid, estimate):
             # No estimate: the Map's lines are this workstream's efforts.
             listed = _effort_rows(pid)
             if not listed.get("ok"):
@@ -3715,9 +3715,9 @@ def restore_spine_element(project_code: str, key: str = "") -> dict[str, Any]:
             "caller": _map_caller()}
 
 
-# ── efforts: the Map's lines on a workstream with no estimate ─────────
+# ── efforts: the Map's lines on a workstream with no agreement ─────────
 #
-# A workstream with no estimate has no deliverables to draw a line for. Its
+# A workstream with no agreement has no deliverables to draw a line for. Its
 # lines are the efforts a person named: rows of mc-2's `project_milestones`.
 # mc-2 owns that table and its routes, so both the read and the writes go
 # through it under the caller's JWT. A card lands on an effort when its
@@ -3725,6 +3725,52 @@ def restore_spine_element(project_code: str, key: str = "") -> dict[str, Any]:
 
 EFFORT_STATUSES = ("open", "done")
 _EFFORT_NAME_MAX = 200  # mc-2's own limit on a milestone name
+
+
+def _lines_are_efforts(client, project_id: str, estimate) -> bool:
+    """True when this workstream's Map lines are efforts, not deliverables.
+
+    Mission Control's rule, read here rather than restated loosely
+    (`mc-2/backend/src/workstreams.py` `is_initiative`): a workstream with no
+    agreement (`deal_stage` null) that is not a client's account node. It is
+    NOT "has no estimate": an initiative can carry an empty estimate, and
+    Mission Control's Map still draws efforts for it. 1pi-9005 gained one the
+    day this shipped, and the tools refused a workstream the screen was
+    drawing efforts for.
+
+    When the project row cannot be read, fall back to whether an estimate
+    exists: wrong only for that empty-estimate case, and never a write on a
+    workstream that has a real scope.
+    """
+    from cp_engine.mc2_db import Tables
+
+    try:
+        rows = (
+            client.table(Tables.PROJECTS)
+            .select("id, deal_stage, parent_id, company_id")
+            .eq("id", project_id)
+            .execute()
+            .data
+            or []
+        )
+        if not rows:
+            return estimate is None
+        row = rows[0]
+        if row.get("deal_stage") is not None:
+            return False
+        if row.get("parent_id") is not None or not row.get("company_id"):
+            return True
+        company = (
+            client.table(Tables.COMPANIES)
+            .select("id, kind")
+            .eq("id", row["company_id"])
+            .execute()
+            .data
+            or []
+        )
+        return not (company and company[0].get("kind") == "client")
+    except Exception:  # noqa: BLE001 — a failed shape read must not fail the verb
+        return estimate is None
 
 
 def _efforts_path(project_id: str) -> str:
@@ -3764,7 +3810,7 @@ def _find_effort(efforts: list[dict[str, Any]], ref: str) -> dict[str, Any]:
     if not want:
         raise MapError("name the effort")
     if not efforts:
-        raise MapError("this workstream has no estimate and no efforts yet, so the Map has "
+        raise MapError("this workstream has no agreement and no efforts yet, so the Map has "
                        "one default line and nothing to mark; name an effort with set_effort")
     by_id = [e for e in efforts if e["id"] == want]
     if by_id:
@@ -3803,21 +3849,21 @@ def _cards_per_effort(client, project_id: str, effort_ids: list[str]) -> dict[st
     return {eid: len(keys) for eid, keys in on.items()}
 
 
-_EFFORTS_NOTE = ("this workstream has no estimate: the Map's lines are its efforts. "
+_EFFORTS_NOTE = ("this workstream has no agreement: the Map's lines are its efforts. "
                  "Place a card on one with set_spine_element(serves=[<effort id>])")
 
 
 def _efforts_state(client, project_id: str) -> dict[str, Any]:
-    """What `get_map_state` adds for a workstream with no estimate."""
+    """What `get_map_state` adds for a workstream with no agreement."""
     listed = _effort_rows(project_id)
     if not listed.get("ok"):
         return {"efforts": [], "efforts_error": listed.get("reason") or "mc-2 call failed",
-                "note": ("this workstream has no estimate, so its Map lines are its efforts; "
+                "note": ("this workstream has no agreement, so its Map lines are its efforts; "
                          "they could not be read just now")}
     efforts = listed["efforts"]
     if not efforts:
         return {"efforts": [],
-                "note": ("this workstream has no estimate and no efforts yet: the Map shows one "
+                "note": ("this workstream has no agreement and no efforts yet: the Map shows one "
                          "default line that holds every card, until an effort is named with "
                          "set_effort")}
     try:
@@ -3839,9 +3885,9 @@ def set_effort(
     overview: str | None = None,
     position: int | None = None,
 ) -> dict[str, Any]:
-    """Name or change an effort: a line on the Map of a workstream with no estimate.
+    """Name or change an effort: a line on the Map of a workstream with no agreement.
 
-    A workstream with no estimate (an initiative) has no deliverables, so its
+    A workstream with no agreement (an initiative) has no deliverables, so its
     Map lines are the efforts a person names. Until one is named, the Map
     shows one default line that holds every card.
 
@@ -3857,7 +3903,7 @@ def set_effort(
     on it. Put a card on an effort with
     `set_spine_element(serves=[<effort id>])`.
 
-    Refused, with nothing written: a workstream that has an estimate (its
+    Refused, with nothing written: a workstream that has an agreement (its
     lines come from the scope of work), an `effort_id` that is not on this
     workstream, a new effort whose name is already taken, and a call that
     passes nothing to change. Team members only.
@@ -3889,8 +3935,8 @@ def set_effort(
     pid, estimate, refusal = _map_estimate(client, tool, project_code)
     if refusal:
         return refusal
-    if estimate is not None:
-        return refuse("this workstream has an estimate, so its Map lines come from the scope "
+    if not _lines_are_efforts(client, pid, estimate):
+        return refuse("this workstream has an agreement, so its Map lines come from the scope "
                       "of work, not from efforts. Set a deliverable's status with set_map_mark.")
     listed = _effort_rows(pid)
     if not listed.get("ok"):

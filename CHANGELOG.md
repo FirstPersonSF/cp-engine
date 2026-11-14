@@ -4,6 +4,15 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.141.1 — 2026-11-13
+
+**The effort tools use Mission Control's rule for which workstreams have efforts.**
+
+v0.141.0 asked "does this workstream have an estimate?". Mission Control asks "does it have an agreement?". The two differ when an initiative carries an empty estimate, which 1pi-9005 gained the same evening: the Map drew its efforts while `set_effort` refused it and `get_map_state` listed none. Found on the first live call.
+
+- `get_map_state`, `set_effort` and `set_map_mark` now read the workstream's shape: no agreement, and not a client's account node. If that row cannot be read they fall back to the old test.
+- A job with an agreement and no estimate has no efforts, as on the screen.
+
 ## v0.141.0 — 2026-11-13
 
 **cp can name the lines on the Map of a workstream with no estimate.** One new cp-hosted verb (`set_effort`); no MC-2 migration.
