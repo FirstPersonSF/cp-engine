@@ -91,6 +91,37 @@ Next up ≤ 6 bullets; Blockers ≤ 5 bullets). It also flags a summary that
 was never authored although meetings have been ingested ("N meetings
 ingested since <date>") — author that one from its sprint files.
 
+## 1b — Belief check, when the tenant has one
+
+**Check for the skill before anything else: `.claude/skills/belief-check/SKILL.md`
+in the tenant.** If it is not there, say "no belief-check skill in this tenant"
+in one line and go to step 2. The skill is the tenant's; this step only says
+when to run it.
+
+If it is there, run it **once for each project the session touched**, after
+that project's Exec Summary is refreshed (the check reads the summary you just
+wrote). One project per run. Never sweep the tenant.
+
+A belief check states what a session with no history would believe about the
+project (the brief, what we last shared, what the client said, what we owe,
+who decides), makes only the filing changes the record proves, and gives the
+person a short page to correct. It is how the spine is kept right without
+asking anyone to sort, route or link.
+
+Three cases where you do less, and say so in one line each:
+
+- **The session already settled the five answers with the user in
+  conversation.** Skip the page for that project and say that you did.
+- **A belief check ran on that project earlier in this session.** Do not run
+  a second one; name the earlier page.
+- **The session only read the project.** A project you did not write to is not
+  "touched".
+
+Do not wait at wrap up for the person to answer the page. Give them the link,
+open a commitment for their check if the skill says to, and carry on with
+step 2. Their answers are applied when they say they are done, which may be
+another session.
+
 ## 2 — Sweep the cross-cutting decisions
 
 Cross-cutting decisions live on the parent that owns them: the hand-written
@@ -305,6 +336,27 @@ backdated) at the top of the log; the old entries stay. The CLI path also
 rolls off entries older than ~4 weeks; here the verb only REPORTS them
 (`roll_off`, under `backend`). When `roll_off.count` is non-zero, h5's
 `rotate_word_count` performs the trim.
+
+### h1b — Belief check, when the tenant has one
+
+**`list_skills` first.** If it names no `belief-check` skill, say "no
+belief-check skill in this tenant" in one line and go to h2. If it does, load
+it with `load_skill` (name `belief-check`) and follow it **once for each
+project the session touched**, after h1 has refreshed that project's Exec Summary. One project per
+run. Never sweep the tenant.
+
+The same three cases as the CLI path apply: skip the page and say so when the
+session already settled the five answers with the user in conversation, when a
+belief check already ran on that project in this session, or when the session
+only read the project.
+
+**The page needs a tool this session may not have.** The skill publishes its
+page with the Artifact tool. If this session has no way to publish a page, do
+not skip the check and do not invent a link: give the five answers, the
+changes you made and the questions in the conversation, in the same order,
+and record the person's replies as the skill says. Say that there is no page.
+
+Do not wait for the person to answer before h2.
 
 ### h2 — Spine checks
 
