@@ -60,7 +60,7 @@ spine note that the client confirmed the Q4 date". Under the hood:
 |---|---|
 | Project state | `get_project_state` (Exec Summary + current sprint file), `read_project_file` |
 | Search | `semantic_search` (vector search over the ingested corpus) |
-| Sources & meetings | `list_project_sources`, `pull_project_source`, `fetch_project_source` (the original file), `compare_project_sources`, `pull_document_comments`, `where_is` (where a kind of file is kept on Dropbox or Drive, and what is in that folder), `push_to_dropbox`, `ingest_url` (a web page into the store, gating flagged), `add_project_link` (a Figma file, Artifact or repo recorded as a source or deliverable, not fetched), `list_project_meetings` |
+| Sources & meetings | `list_project_sources`, `pull_project_source`, `fetch_project_source` (the original file), `compare_project_sources`, `pull_document_comments`, `where_is` (where a kind of file is kept on Dropbox or Drive, and what is in that folder), `push_to_dropbox`, `push_to_drive` (file a document in the project's Google Drive folder by kind), `ingest_url` (a web page into the store, gating flagged), `add_project_link` (a Figma file, Artifact or repo recorded as a source or deliverable, not fetched), `list_project_meetings` |
 | Drafting readiness | `preflight` (run before an RFP/SOW/brief/estimate), `list_vendors`, `list_rfp_respondents`, `create_vendor` (add a shop to the registry), `add_rfp_respondent` (invite a registry vendor to a project's RFP) |
 | Spine — read | `list_spine_elements`, `pull_spine_element` |
 | Spine — author | `create_spine_element`, `set_spine_element`, `add_spine_version`, `add_spine_document`, `promote_spine_transcript` |
@@ -115,6 +115,6 @@ URL `https://cp.mc-2.1p.is/mcp` (alias: `mcp.mc-2.1p.is`). Source:
 JWTs verified against the project JWKS. No service-role credentials anywhere
 in the hosted path; the Drive/Dropbox connector credentials that
 `fetch_project_source`, `pull_document_comments`, `where_is`, `push_to_dropbox`,
-`ingest_url` and `add_project_link` need are the service's own, and those verbs are team-members
+`push_to_drive`, `ingest_url` and `add_project_link` need are the service's own, and those verbs are team-members
 only. An ingest those verbs queue goes upstream under YOUR identity (mc-2 →
 cp-engine-webhook), never with a key held here.*
