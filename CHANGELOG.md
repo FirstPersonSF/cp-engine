@@ -4,6 +4,19 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.140.0 — 2026-11-13
+
+**cp can work the queues Mission Control's retired tabs held.** Six new cp-hosted verbs and one new argument; no MC-2 migration.
+
+mc-2 #475 removes the Inputs, Suggestions and Archive tabs from the spine workbench (Drew's audit, 11-12). Four things were reachable only there. Drew, before merging it: "let's build the cp tools first to be safe".
+
+- **Unrouted emails:** `list_unrouted_emails()` shows mail sent to cp that matched no project. `route_unrouted_email(email_id, project_code)` ingests one on a workstream as if it had been addressed there; `dismiss=true` marks it as not for cp.
+- **Cards waiting to be framed:** `list_inbox_cards(project_code)` shows what meeting ingest drafted and could not place. `resolve_inbox_card` frames one onto a work item (the one ingest guessed, unless you name another) or dismisses it. Framing runs in the background for a minute or two.
+- **Suggested links:** `list_spine_relations` takes `status` (`active`, `proposed`, `dismissed`). `resolve_spine_proposals(project_code, ids, outcome)` confirms or dismisses the proposed ones.
+- **Archived cards:** `restore_spine_element(project_code, key)` brings an archived card back, every version at once. With no key it lists what is archived. A retired card is listed as not restorable.
+- Every decision is a call to Mission Control under the caller's own sign-in; nothing here is a second copy of its rules. The two lists are on the read-only endpoint; the four deciders are not.
+- Hosted tools 75 → 81.
+
 ## v0.139.0 — 2026-11-13
 
 **cp can file a document in a project's Google Drive folder.** One new cp-hosted verb (`push_to_drive`); no MC-2 migration.
