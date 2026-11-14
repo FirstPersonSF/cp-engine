@@ -3002,6 +3002,12 @@ def get_map_state(project_code: str) -> dict[str, Any]:
     missing: work items that serve nothing, meetings on no work item, and
     rows that point at something no longer on the estimate.
 
+    A workstream with NO estimate has no deliverables. Its lines are its
+    efforts, returned under `efforts`: each one's id, name, overview,
+    position, status, due date, and `cards`, the number of live cards that
+    name it in `serves`. With no effort named yet the Map shows one default
+    line that holds every card. Name or change an effort with `set_effort`.
+
     Read this before a `set_*` Map verb: names repeat across phases, and the
     ids here settle which one you mean. Team members only.
     """
@@ -3034,9 +3040,9 @@ def get_map_state(project_code: str) -> dict[str, Any]:
         "on_no_work_item": sum(1 for m in live if not m.get("work_item_id")),
     }
     if estimate is None:
-        state["note"] = ("this job has no estimate, so the Map has no lines: "
-                         "work items and deliverables come from the scope of work")
-    _srv.audit(client, tool, {"project_code": project_code}, len(state["phases"]))
+        state.update(_efforts_state(client, pid))
+    _srv.audit(client, tool, {"project_code": project_code},
+               len(state["phases"]) or len(state.get("efforts") or []))
     return {"project_code": project_code, **state}
 
 
@@ -3149,6 +3155,8 @@ def set_map_mark(
       Pass `note` with who said so and why. `item` is the deliverable's
       name, id, or `"<phase> / <name>"`. Done, Replaced and Not approved
       also stop the SOW card and sprint prep warning that it is past due.
+      On a workstream with no estimate the lines are its efforts, so
+      `item` is an effort's id or name (`get_map_state` lists them).
 
     Pass only what you mean to change: anything left out stays as it is, and
     `""` clears that one thing. A mark with nothing left is removed. Nothing
@@ -3175,7 +3183,14 @@ def set_map_mark(
         return _map_refuse(client, tool, project_code,
                            "say what to record: shared_on, column, or status")
     try:
-        if status is not None:
+        if status is not None and estimate is None:
+            # No estimate: the Map's lines are this workstream's efforts.
+            listed = _effort_rows(pid)
+            if not listed.get("ok"):
+                return _queue_error(client, tool, project_code, listed)
+            effort = _find_effort(listed["efforts"], item)
+            item_key, label = effort["id"], effort["name"]
+        elif status is not None:
             deliv = spine_map.find_item(estimate, item, "deliverable")
             item_key, label = deliv.id, deliv.name
         elif (item or "").strip().startswith("meeting:"):
@@ -3698,3 +3713,237 @@ def restore_spine_element(project_code: str, key: str = "") -> dict[str, Any]:
     return {"project_code": project_code, "restored": True,
             "card": {"key": card["key"], "framing": card.get("framing"), "layer": card.get("layer")},
             "caller": _map_caller()}
+
+
+# ── efforts: the Map's lines on a workstream with no estimate ─────────
+#
+# A workstream with no estimate has no deliverables to draw a line for. Its
+# lines are the efforts a person named: rows of mc-2's `project_milestones`.
+# mc-2 owns that table and its routes, so both the read and the writes go
+# through it under the caller's JWT. A card lands on an effort when its
+# `serves` names the effort's id (`set_spine_element`).
+
+EFFORT_STATUSES = ("open", "done")
+_EFFORT_NAME_MAX = 200  # mc-2's own limit on a milestone name
+
+
+def _efforts_path(project_id: str) -> str:
+    return f"/api/jobs/{quote(project_id, safe='')}/milestones"
+
+
+def _effort_out(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row.get("id"),
+        "name": row.get("name"),
+        "overview": row.get("overview"),
+        "position": row.get("position"),
+        "status": row.get("status") or "open",
+        "due_date": row.get("due_date"),
+    }
+
+
+def _norm_name(text: str | None) -> str:
+    return " ".join((text or "").lower().split())
+
+
+def _effort_rows(project_id: str) -> dict[str, Any]:
+    """`{ok, efforts}` in position order, or `{ok: False, reason}`. Reads only."""
+    result = _srv.call_mc2_get(_efforts_path(project_id), "the efforts")
+    if not result.get("ok"):
+        return result
+    rows = [_effort_out(r) for r in (result.get("data") or []) if r.get("id")]
+    rows.sort(key=lambda e: e["position"] if e["position"] is not None else 0)
+    return {"ok": True, "efforts": rows}
+
+
+def _find_effort(efforts: list[dict[str, Any]], ref: str) -> dict[str, Any]:
+    """The ONE effort `ref` names: its id, its exact name, or a distinct part."""
+    from cp_engine.spine_map import MapError
+
+    want = (ref or "").strip()
+    if not want:
+        raise MapError("name the effort")
+    if not efforts:
+        raise MapError("this workstream has no estimate and no efforts yet, so the Map has "
+                       "one default line and nothing to mark; name an effort with set_effort")
+    by_id = [e for e in efforts if e["id"] == want]
+    if by_id:
+        return by_id[0]
+    hits = ([e for e in efforts if _norm_name(e["name"]) == _norm_name(want)]
+            or [e for e in efforts if _norm_name(want) in _norm_name(e["name"])])
+    if len(hits) == 1:
+        return hits[0]
+    if not hits:
+        raise MapError(f"no effort on this workstream matches {want!r}")
+    listed = "; ".join(f"{e['name']!r} (id {e['id']})" for e in hits)
+    raise MapError(f"{len(hits)} efforts match {want!r}: {listed}. Say which by id.")
+
+
+def _cards_per_effort(client, project_id: str, effort_ids: list[str]) -> dict[str, int]:
+    """`{effort id: live, non-archived cards naming it in serves}`."""
+    from cp_engine.mc2_db import Tables
+
+    rows = (
+        client.table(Tables.SPINE_SUBSTANCE)
+        .select("est_item_id, serves, status, archived")
+        .eq("project_id", project_id)
+        .eq("status", "live")
+        .execute()
+        .data
+        or []
+    )
+    on: dict[str, set[str]] = {eid: set() for eid in effort_ids}
+    for r in rows:
+        serves = r.get("serves")
+        if r.get("archived") or not r.get("est_item_id") or not isinstance(serves, list):
+            continue
+        for target in serves:
+            if isinstance(target, str) and target in on:
+                on[target].add(r["est_item_id"])
+    return {eid: len(keys) for eid, keys in on.items()}
+
+
+_EFFORTS_NOTE = ("this workstream has no estimate: the Map's lines are its efforts. "
+                 "Place a card on one with set_spine_element(serves=[<effort id>])")
+
+
+def _efforts_state(client, project_id: str) -> dict[str, Any]:
+    """What `get_map_state` adds for a workstream with no estimate."""
+    listed = _effort_rows(project_id)
+    if not listed.get("ok"):
+        return {"efforts": [], "efforts_error": listed.get("reason") or "mc-2 call failed",
+                "note": ("this workstream has no estimate, so its Map lines are its efforts; "
+                         "they could not be read just now")}
+    efforts = listed["efforts"]
+    if not efforts:
+        return {"efforts": [],
+                "note": ("this workstream has no estimate and no efforts yet: the Map shows one "
+                         "default line that holds every card, until an effort is named with "
+                         "set_effort")}
+    try:
+        counts = _cards_per_effort(client, project_id, [e["id"] for e in efforts])
+    except Exception as exc:  # noqa: BLE001 — MCP boundary
+        return {"efforts": [{**e, "cards": None} for e in efforts],
+                "efforts_error": f"could not count cards: {type(exc).__name__}: {str(exc)[:200]}",
+                "note": _EFFORTS_NOTE}
+    return {"efforts": [{**e, "cards": counts.get(e["id"], 0)} for e in efforts],
+            "note": _EFFORTS_NOTE}
+
+
+@hosted_tool
+def set_effort(
+    project_code: str,
+    name: str = "",
+    effort_id: str = "",
+    status: str = "",
+    overview: str | None = None,
+    position: int | None = None,
+) -> dict[str, Any]:
+    """Name or change an effort: a line on the Map of a workstream with no estimate.
+
+    A workstream with no estimate (an initiative) has no deliverables, so its
+    Map lines are the efforts a person names. Until one is named, the Map
+    shows one default line that holds every card.
+
+    - **New effort:** pass `name` and no `effort_id`. It goes after the last
+      one unless you pass `position`.
+    - **Change one:** pass `effort_id` (from `get_map_state`) and only what
+      changes: `name` renames it, `status` closes or reopens it, `position`
+      moves it (lines sort by position, lowest first), `overview` is a line
+      on what it covers (`""` clears it).
+
+    `status` is `open` or `done`. There is no delete: an effort that is
+    finished or dropped is closed with `status="done"`, and its cards stay
+    on it. Put a card on an effort with
+    `set_spine_element(serves=[<effort id>])`.
+
+    Refused, with nothing written: a workstream that has an estimate (its
+    lines come from the scope of work), an `effort_id` that is not on this
+    workstream, a new effort whose name is already taken, and a call that
+    passes nothing to change. Team members only.
+    """
+    tool = "set_effort"
+    refused = _team_gate(tool, project_code)
+    if refused:
+        return refused
+    client = _srv.user_client()
+    eid = (effort_id or "").strip()
+    new_name = " ".join((name or "").split())
+    new_status = (status or "").strip().lower()
+
+    def refuse(reason: str) -> dict[str, Any]:
+        return _queue_error(client, tool, project_code, {"reason": reason})
+
+    if new_status and new_status not in EFFORT_STATUSES:
+        return refuse(f"status is one of {', '.join(EFFORT_STATUSES)}")
+    if len(new_name) > _EFFORT_NAME_MAX:
+        return refuse(f"an effort's name is at most {_EFFORT_NAME_MAX} characters")
+    if position is not None and (isinstance(position, bool) or not isinstance(position, int)
+                                 or position < 0):
+        return refuse("position is a whole number, 0 or more")
+    if not eid and not new_name:
+        return refuse("a new effort needs a name; to change one, pass its effort_id")
+    if eid and not new_name and not new_status and overview is None and position is None:
+        return refuse("say what to change: name, status, overview or position")
+
+    pid, estimate, refusal = _map_estimate(client, tool, project_code)
+    if refusal:
+        return refusal
+    if estimate is not None:
+        return refuse("this workstream has an estimate, so its Map lines come from the scope "
+                      "of work, not from efforts. Set a deliverable's status with set_map_mark.")
+    listed = _effort_rows(pid)
+    if not listed.get("ok"):
+        return _queue_error(client, tool, project_code, listed)
+    efforts = listed["efforts"]
+    hint = "place a card on it with set_spine_element(serves=[<effort id>])"
+
+    if not eid:
+        same = [e for e in efforts if _norm_name(e["name"]) == _norm_name(new_name)]
+        if same:
+            return refuse(f"an effort named {same[0]['name']!r} is already on this workstream "
+                          f"(id {same[0]['id']}); pass effort_id to change it")
+        after_last = max((e["position"] or 0 for e in efforts), default=-1) + 1
+        body: dict[str, Any] = {
+            "name": new_name,
+            "position": position if position is not None else after_last,
+            "status": new_status or "open",
+        }
+        if overview is not None and overview.strip():
+            body["overview"] = overview.strip()
+        result = _srv.call_mc2_send("POST", _efforts_path(pid), body, "naming the effort")
+        if not result.get("ok"):
+            return _queue_error(client, tool, project_code, result)
+        effort = _effort_out({**body, **(result.get("data") or {})})
+        _srv.audit(client, tool, {"project_code": project_code, "effort": effort["name"],
+                                  "outcome": "created"}, 1)
+        return {"project_code": project_code, "effort": effort, "created": True,
+                "changed": sorted(body), "note": hint, "caller": _map_caller()}
+
+    current = next((e for e in efforts if e["id"] == eid), None)
+    if current is None:
+        return refuse(f"no effort {eid!r} on this workstream; get_map_state lists them")
+    patch: dict[str, Any] = {}
+    if new_name and new_name != current["name"]:
+        patch["name"] = new_name
+    if new_status and new_status != current["status"]:
+        patch["status"] = new_status
+    if overview is not None and (overview.strip() or None) != (current["overview"] or None):
+        patch["overview"] = overview.strip() or None
+    if position is not None and position != current["position"]:
+        patch["position"] = position
+    if not patch:
+        _srv.audit(client, tool, {"project_code": project_code, "effort_id": eid,
+                                  "outcome": "unchanged"}, 0)
+        return {"project_code": project_code, "effort": current, "created": False,
+                "changed": [], "note": "already as asked; nothing written",
+                "caller": _map_caller()}
+    result = _srv.call_mc2_send("PATCH", f"{_efforts_path(pid)}/{quote(eid, safe='')}",
+                                patch, "changing the effort")
+    if not result.get("ok"):
+        return _queue_error(client, tool, project_code, result)
+    effort = _effort_out({**current, **patch, **(result.get("data") or {})})
+    _srv.audit(client, tool, {"project_code": project_code, "effort_id": eid,
+                              "outcome": "updated", "changed": sorted(patch)}, 1)
+    return {"project_code": project_code, "effort": effort, "created": False,
+            "changed": sorted(patch), "note": hint, "caller": _map_caller()}
