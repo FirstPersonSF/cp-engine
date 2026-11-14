@@ -616,9 +616,9 @@ mcp_server = MCPServer(
         "sequence for a session like this one, which has no `cxp` and no file "
         "editing. Read `master-cp.md` for the project index; get each "
         "project's path from there rather than constructing it.\n\n"
-        "MOST TOOLS READ; 42 OF THEM WRITE. The writers are the `create_*`, `set_*`, "
+        "MOST TOOLS READ; 46 OF THEM WRITE. The writers are the `create_*`, `set_*`, "
         "`add_*`, `remove_*`, `promote_*`, `retire_*`, `resolve_*`, "
-        "`route_*`, `rotate_*`, `seal_to_*` and `capture_*` verbs, plus "
+        "`route_*`, `rotate_*`, `restore_*`, `seal_to_*` and `capture_*` verbs, plus "
         "`log_improvement`, `log_lesson`, `review_freelancer`, `push_to_dropbox`, `push_to_drive` and `ingest_url` — a name that "
         "sounds like a mutation is one (a read-only endpoint, `/mcp/read`, "
         "carries none of them). Every tenant write is delegated upstream under "
@@ -1653,7 +1653,7 @@ def list_spine_elements(
 
 @mcp_server.tool()
 def list_spine_relations(
-    project_code: str, element_key: str | None = None
+    project_code: str, element_key: str | None = None, status: str = "active"
 ) -> dict[str, Any]:
     """List the typed edges of a project's spine graph (#125).
 
@@ -1668,6 +1668,11 @@ def list_spine_relations(
     verbatim as an est_item_id so a retired element's surviving edges stay
     auditable. Without `element_key`, returns every active edge in the project.
 
+    `status="proposed"` lists the SUGGESTED links instead: edges ingest or
+    routing proposed that nobody has decided. Each carries its `relation_id`,
+    which is what `resolve_spine_proposals` takes. `status="dismissed"` lists
+    the ones turned down (a dismissed suggestion is never proposed again).
+
     Each edge carries `from_framing` / `to_framing` (the live endpoint titles,
     `null` for a retired endpoint) so the graph is readable without a second
     lookup.
@@ -1676,8 +1681,16 @@ def list_spine_relations(
         project_code: engagement, initiative, or standalone-repo code.
         element_key: optional — one element's edges (est_item_id or unique
                      framing substring); omit for the whole project.
+        status: active (default) | proposed | dismissed.
     """
     client = user_client()
+    if status not in ("active", "proposed", "dismissed"):
+        return {
+            "project_code": project_code,
+            "caller": caller_subject(),
+            "error": f"status is one of active, proposed, dismissed (got {status!r})",
+            "relations": [],
+        }
     project_id = resolve_project_id(client, project_code)
     if project_id is None:
         return {
@@ -1702,7 +1715,7 @@ def list_spine_relations(
         client.table("spine_relations")
         .select("id, kind, from_item_id, to_item_id, note, status, source, created_by, created_at")
         .eq("project_id", project_id)
-        .eq("status", "active")
+        .eq("status", status)
     )
     if eid is not None:
         query = query.or_(f"from_item_id.eq.{eid},to_item_id.eq.{eid}")
@@ -1738,6 +1751,7 @@ def list_spine_relations(
                 "from_framing": framings.get(r.get("from_item_id")),
                 "to_framing": framings.get(r.get("to_item_id")),
                 "note": r.get("note"),
+                "status": r.get("status"),
                 "source": r.get("source"),
                 "created_by": r.get("created_by"),
                 "created_at": r.get("created_at"),
@@ -1751,7 +1765,7 @@ def list_spine_relations(
     audit(
         client,
         "list_spine_relations",
-        {"project_code": project_code, "element_key": element_key},
+        {"project_code": project_code, "element_key": element_key, "status": status},
         len(relations),
     )
     return {
@@ -8808,6 +8822,92 @@ def call_mc2_set_meeting_work_item(
     return {"ok": True, "auto_promote": (data or {}).get("auto_promote")}
 
 
+def _mc2_reply(resp, what: str) -> dict[str, Any]:
+    """An mc-2 response as `{ok, data}` or `{ok: False, reason, status}`."""
+    if resp.status_code >= 400:
+        return {
+            "ok": False,
+            "status": resp.status_code,
+            "reason": f"mc-2 refused {what} ({resp.status_code}): {resp.text[:300]}",
+        }
+    try:
+        return {"ok": True, "data": resp.json()}
+    except ValueError:
+        return {"ok": False, "reason": f"mc-2 returned a non-JSON response for {what}"}
+
+
+def call_mc2_get(path: str, what: str) -> dict[str, Any]:
+    """GET `path` from mc-2 under the CALLER'S OWN JWT. Reads only.
+
+    For the queues mc-2 owns and this server has no table grant on (unrouted
+    emails, the to-frame cards). Kept apart from `call_mc2_send` so a read
+    tool can never reach a write: the read-only endpoint's derivation follows
+    calls, and one helper holding both would make every caller a writer.
+
+    Never raises — returns `{ok: False, reason}` like its siblings.
+    """
+    if not MC2_API_BASE:
+        return {"ok": False, "degraded": True,
+                "reason": f"{what} unavailable: MC2_API_BASE not configured"}
+    try:
+        token = caller_jwt()
+    except RuntimeError as exc:
+        return {"ok": False, "reason": f"no authenticated caller: {exc}"}
+    try:
+        resp = httpx.get(
+            f"{MC2_API_BASE}{path}",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=MC2_TIMEOUT_SECONDS,
+        )
+    except httpx.TimeoutException:
+        return {"ok": False,
+                "reason": f"mc-2 did not respond within {MC2_TIMEOUT_SECONDS}s reading {what}"}
+    except httpx.HTTPError as exc:
+        return {"ok": False, "reason": f"could not reach mc-2: {exc}"}
+    return _mc2_reply(resp, what)
+
+
+def call_mc2_send(method: str, path: str, body: dict[str, Any] | None, what: str) -> dict[str, Any]:
+    """POST or PATCH `path` on mc-2 under the CALLER'S OWN JWT.
+
+    For the decisions mc-2 owns end to end: routing an unrouted email (it
+    signs the hop to the webhook, which runs the ingest), framing or
+    dismissing a to-frame card, confirming or dismissing a suggested link,
+    and un-archiving a card (element-level there, never one version). A
+    second copy of any of those rules here is how two systems come to
+    disagree.
+
+    Never raises — returns `{ok: False, reason}` like its siblings.
+    """
+    if method not in ("POST", "PATCH"):
+        return {"ok": False, "reason": f"unsupported method {method!r}"}
+    if not MC2_API_BASE:
+        return {"ok": False, "degraded": True,
+                "reason": f"{what} unavailable: MC2_API_BASE not configured"}
+    try:
+        token = caller_jwt()
+    except RuntimeError as exc:
+        return {"ok": False, "reason": f"no authenticated caller: {exc}"}
+    url = f"{MC2_API_BASE}{path}"
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        if method == "POST":
+            resp = httpx.post(url, headers=headers, json=body or {}, timeout=MC2_TIMEOUT_SECONDS)
+        else:
+            resp = httpx.patch(url, headers=headers, json=body or {}, timeout=MC2_TIMEOUT_SECONDS)
+    except httpx.TimeoutException:
+        return {
+            "ok": False,
+            "reason": (
+                f"mc-2 did not respond within {MC2_TIMEOUT_SECONDS}s. {what} may or "
+                "may not have happened — read the list again before retrying."
+            ),
+        }
+    except httpx.HTTPError as exc:
+        return {"ok": False, "reason": f"could not reach mc-2: {exc}"}
+    return _mc2_reply(resp, what)
+
+
 def call_mc2_set_commitment_date(
     commitment_id: str, due_date: str, date_status: str | None
 ) -> dict[str, Any]:
@@ -11597,6 +11697,8 @@ READ_ONLY_TOOLS: dict[str, str] = {
     "whoami": "echoes the verified token + build; `probe_alerting` sends one Sentry test event, no tenant write",
     "list_spine_elements": "SELECT spine_substance/relations",
     "list_spine_relations": "SELECT spine_relations",
+    "list_unrouted_emails": "GET mc-2 unrouted emails",
+    "list_inbox_cards": "GET mc-2 to-frame cards",
     "pull_spine_element": "SELECT spine_substance",
     "list_commitments": "SELECT commitments",
     "list_services": "SELECT Service Library",
@@ -11632,6 +11734,10 @@ READ_ONLY_TOOLS: dict[str, str] = {
 
 # name -> what it writes (the reason it is NOT on `/mcp/read`).
 MAIN_ONLY_TOOLS: dict[str, str] = {
+    "route_unrouted_email": "POST/PATCH mc-2 unrouted email (route runs the ingest)",
+    "resolve_inbox_card": "POST mc-2 inbox card (frame-promote or dismiss)",
+    "resolve_spine_proposals": "POST mc-2 relations confirm/dismiss",
+    "restore_spine_element": "PATCH mc-2 substance (un-archive)",
     "set_source_status": "rpc rag_asset_set_status",
     "rename_project_source": "rpc rag_asset_rename",
     "create_spine_relation": "INSERT spine_relations",
