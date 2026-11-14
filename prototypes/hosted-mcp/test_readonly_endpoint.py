@@ -56,8 +56,10 @@ TABLE_MUTATIONS = {"insert", "update", "upsert", "delete"}
 HTTP_WRITES = {"post", "put", "patch", "delete"}
 # Writes that leave through a storage SDK rather than PostgREST or httpx: the
 # engine's Dropbox upload, the connector's, and a minted upload link (whose
-# holder can write without asking again).
-EXTERNAL_WRITES = {"push_to_dropbox", "upload_file", "files_get_temporary_upload_link"}
+# holder can write without asking again). The `drive_*` three are the Drive
+# writer's: an upload, a replace, and a resumable-upload link.
+EXTERNAL_WRITES = {"push_to_dropbox", "upload_file", "files_get_temporary_upload_link",
+                   "drive_upload", "drive_replace", "drive_upload_link"}
 
 
 @pytest.fixture(scope="module")

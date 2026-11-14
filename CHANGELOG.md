@@ -4,6 +4,19 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## Unreleased
+
+**cp can file a document in a project's Google Drive folder.** One new cp-hosted verb (`push_to_drive`); no MC-2 migration.
+
+Half of the file map is on Google Drive (invoices, SOWs, estimates, the wrap report, research) and cp could only read it. Until 11-13 the service account could not hold a file there at all; the project folders now live in the `1P_Project_Files` Shared Drive, where it can. Drew: "Let's build the verb to write to drive".
+
+- **`push_to_drive(project_code, filename, kind)`** files a document by its kind. The kind decides the folder; there is no free-form destination, and a kind kept on Dropbox is refused. Send the bytes inline (up to 10 MB), or leave them out to get an upload link and a `curl` line.
+- **No duplicates:** Drive allows two files with one name; this verb does not. An existing name is refused with its link. `overwrite=true` replaces the contents and keeps the file's id and link.
+- **No new folders:** a folder that is not on the project is reported by the part of the path that is missing, as `where_is` reports it.
+- **No ingest queued:** the result says whether ingest reads that folder; if it does, the next run picks the file up.
+- `push_to_dropbox` now answers a Drive kind with the `push_to_drive` call to make instead of "ask a person". `/cp-wrap` files the wrap report in Drive `Management/04 Wrap`.
+- cp still cannot delete or move a Drive file.
+
 ## v0.138.0 — 2026-11-13
 
 **cp knows where each kind of file is kept, on Dropbox and on Google Drive.** One new cp-hosted verb (`where_is`) and one new argument (`push_to_dropbox(kind=…)`); no MC-2 migration.

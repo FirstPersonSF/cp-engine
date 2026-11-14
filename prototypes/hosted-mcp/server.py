@@ -616,17 +616,20 @@ mcp_server = MCPServer(
         "sequence for a session like this one, which has no `cxp` and no file "
         "editing. Read `master-cp.md` for the project index; get each "
         "project's path from there rather than constructing it.\n\n"
-        "MOST TOOLS READ; 41 OF THEM WRITE. The writers are the `create_*`, `set_*`, "
+        "MOST TOOLS READ; 42 OF THEM WRITE. The writers are the `create_*`, `set_*`, "
         "`add_*`, `remove_*`, `promote_*`, `retire_*`, `resolve_*`, "
         "`route_*`, `rotate_*`, `seal_to_*` and `capture_*` verbs, plus "
-        "`log_improvement`, `log_lesson`, `review_freelancer`, `push_to_dropbox` and `ingest_url` — a name that "
+        "`log_improvement`, `log_lesson`, `review_freelancer`, `push_to_dropbox`, `push_to_drive` and `ingest_url` — a name that "
         "sounds like a mutation is one (a read-only endpoint, `/mcp/read`, "
         "carries none of them). Every tenant write is delegated upstream under "
         "YOUR identity; the server holds no MC-2 write key, which is why "
         "authorship is real and why nothing here can be undone by the server on "
         "your behalf. The one exception is the Dropbox upload in "
-        "`push_to_dropbox`, `ingest_url` and `add_project_link`, made with the "
-        "service's own credentials (team members only). An upload is NOT an "
+        "`push_to_dropbox`, `ingest_url` and `add_project_link`, and the "
+        "Google Drive upload in `push_to_drive`, made with the "
+        "service's own credentials (team members only). Call `where_is` "
+        "before either push: it says which store a kind of file is kept in. "
+        "An upload is NOT an "
         "ingest: a pushed file reaches the source store only when its ingest is "
         "queued (`ingest_url` and `add_project_link` always queue it; "
         "`push_to_dropbox` with `ingest=True`). Work behind a login (Figma, a "
@@ -11660,6 +11663,7 @@ MAIN_ONLY_TOOLS: dict[str, str] = {
     # ported (step 5b): the Dropbox writers, with the service's Dropbox credentials
     "push_to_dropbox": "Dropbox upload / upload link (service credentials) "
                        "+ optional POST mc-2 -> asset ingest",
+    "push_to_drive": "Google Drive upload / upload link (service credentials)",
     "ingest_url": "Dropbox upload (service credentials) + POST mc-2 -> asset ingest",
     "add_project_link": "Dropbox upload of a link card (service credentials) + POST "
                         "mc-2 -> asset ingest + optional INSERT spine_substance",

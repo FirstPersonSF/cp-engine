@@ -461,7 +461,7 @@ def test_push_with_a_drive_kind_is_refused_before_any_upload(pt, env, server, mo
     out = pt.push_to_dropbox("slt-5196", "INV-1043.pdf", _b64(), kind="invoice")
     assert "Nothing was uploaded" in out["error"]
     assert "Google Drive" in out["error"] and f"`{INVOICES}`" in out["error"]
-    assert "cannot write to Google Drive yet" in out["error"]
+    assert "push_to_drive(" in out["error"]
     assert out["kind"] == "invoices" and out["store"] == "drive" and out["path"] == INVOICES
     assert env.pushes == [] and env.dbx.calls == 0
     assert env.audit == [("push_to_dropbox",

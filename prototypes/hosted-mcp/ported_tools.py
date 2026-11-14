@@ -475,10 +475,9 @@ def _kind_for_push(kind: str, name: str, dest_name: str | None,
     if filed.store == file_map.DRIVE:
         return None, {
             "error": (f"Nothing was uploaded. {filed.label[:1].upper()}{filed.label[1:]} "
-                      f"are kept on Google Drive, in `{filed.path}`, and cp cannot "
-                      "write to Google Drive yet. Ask a person to file "
-                      f"{name!r} there. `where_is(project_code, \"{filed.key}\")` "
-                      "gives the folder's link and what is already in it."),
+                      f"are kept on Google Drive, in `{filed.path}`. Use "
+                      f"`push_to_drive(project_code, {name!r}, kind=\"{filed.key}\")` "
+                      "to file it there."),
             **_kind_summary(filed),
         }
     homes = {filed.path.casefold()}
@@ -741,7 +740,7 @@ def where_is(project_code: str, kind: str = "") -> dict[str, Any]:
     A workstream with no folder of its own uses its subfolder of a parent's
     folder when exactly one exists, as ingest does; `inherited_from` then
     names the parent. This verb only reads. To file something on Dropbox use
-    `push_to_dropbox(kind=...)`; cp cannot write to Google Drive yet. Needs
+    `push_to_dropbox(kind=...)`, and on Google Drive `push_to_drive`. Needs
     team membership, because the folders are read with the service's own
     Dropbox and Drive credentials.
     """
@@ -1071,8 +1070,8 @@ def push_to_dropbox(
     all) and the file goes to the folder that kind of file is kept in, as
     `<folder>/<filename>`. A kind that is kept on Google Drive (invoices,
     SOWs, estimates, research and the rest of the Drive half of the map) is
-    refused before anything is uploaded: cp cannot write to Drive yet, and
-    the refusal names the Drive folder so a person can file it there. `kind`
+    refused before anything is uploaded: `push_to_drive` files those, and
+    the refusal names the call. `kind`
     replaces `dest_name` and `dest_path`; passing one of them as well is
     refused unless it names the same folder.
 
@@ -1246,6 +1245,350 @@ def push_to_dropbox(
                               "path": result.get("dropbox_path"),
                               "ingest": bool(out.get("ingest", {}).get("queued"))}, 1)
     return out
+
+
+# ── the Drive writer ──────────────────────────────────────────────────
+
+# The read connector asks for Drive's read-only scope. Writing needs the
+# full one, so the writer builds its own client from the same credential.
+DRIVE_WRITE_SCOPE = "https://www.googleapis.com/auth/drive"
+_DRIVE_UPLOAD_URL = "https://www.googleapis.com/upload/drive/v3/files"
+
+
+class _DriveWriter:
+    """The three Drive writes `push_to_drive` makes, and the one read that
+    guards them. Every call passes the Shared Drive flags: the project
+    folders live in one, and a call without them answers "not found" or an
+    empty list for a folder that is plainly there."""
+
+    def __init__(self) -> None:
+        import json
+
+        from google.auth.transport.requests import AuthorizedSession
+        from googleapiclient.discovery import build
+
+        scopes = [DRIVE_WRITE_SCOPE]
+        raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+        sa_file = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
+        oauth = os.environ.get("GOOGLE_CREDENTIALS_PATH")
+        if raw:
+            from google.oauth2 import service_account
+
+            creds = service_account.Credentials.from_service_account_info(
+                json.loads(raw), scopes=scopes)
+        elif sa_file and os.path.exists(sa_file):
+            from google.oauth2 import service_account
+
+            creds = service_account.Credentials.from_service_account_file(
+                sa_file, scopes=scopes)
+        elif oauth and os.path.exists(oauth):
+            from google.oauth2.credentials import Credentials
+
+            creds = Credentials.from_authorized_user_file(oauth, scopes=scopes)
+        else:
+            raise RuntimeError("no usable Google Drive credential in the environment")
+        self.account = getattr(creds, "service_account_email", None)
+        self.service = build("drive", "v3", credentials=creds, cache_discovery=False)
+        self._session = AuthorizedSession(creds)
+
+    def find(self, folder_id: str, name: str) -> list[dict[str, Any]]:
+        """Files (not folders, not trashed) named exactly `name` in the folder.
+
+        Lists the folder and matches the name here. A `name = '...'` query is
+        answered from Drive's search index, which lags a write by seconds: a
+        file uploaded a moment ago is missing from it (seen live, 2026-11-13),
+        and the duplicate guard would let a second copy through."""
+        from cp_engine.asset_ingest import _DRIVE_FOLDER_MIME, DRIVE_LIST_ALL_DRIVES
+
+        found: list[dict[str, Any]] = []
+        token = None
+        while True:
+            page = self.service.files().list(
+                q=(f"'{folder_id}' in parents and trashed=false "
+                   f"and mimeType != '{_DRIVE_FOLDER_MIME}'"),
+                fields="nextPageToken,files(id,name,size,modifiedTime,webViewLink)",
+                pageSize=1000, pageToken=token, **DRIVE_LIST_ALL_DRIVES,
+            ).execute()
+            found.extend(f for f in page.get("files", []) if f.get("name") == name)
+            token = page.get("nextPageToken")
+            if not token:
+                return found
+
+    def drive_upload(self, folder_id: str, name: str, data: bytes, mime: str) -> dict[str, Any]:
+        import io
+
+        from googleapiclient.http import MediaIoBaseUpload
+
+        return self.service.files().create(
+            body={"name": name, "parents": [folder_id]},
+            media_body=MediaIoBaseUpload(io.BytesIO(data), mimetype=mime),
+            fields="id,name,size,webViewLink", supportsAllDrives=True,
+        ).execute()
+
+    def drive_replace(self, file_id: str, data: bytes, mime: str) -> dict[str, Any]:
+        import io
+
+        from googleapiclient.http import MediaIoBaseUpload
+
+        return self.service.files().update(
+            fileId=file_id,
+            media_body=MediaIoBaseUpload(io.BytesIO(data), mimetype=mime),
+            fields="id,name,size,webViewLink", supportsAllDrives=True,
+        ).execute()
+
+    def drive_upload_link(self, folder_id: str, name: str, mime: str,
+                    replace_id: str | None = None) -> str:
+        """A resumable-upload session URL. Whoever holds it can PUT the file's
+        bytes to it with no other credential; Drive expires it in about a week."""
+        headers = {"X-Upload-Content-Type": mime,
+                   "Content-Type": "application/json; charset=UTF-8"}
+        params = {"uploadType": "resumable", "supportsAllDrives": "true"}
+        if replace_id:
+            resp = self._session.patch(f"{_DRIVE_UPLOAD_URL}/{replace_id}",
+                                       params=params, headers=headers, json={})
+        else:
+            resp = self._session.post(_DRIVE_UPLOAD_URL, params=params, headers=headers,
+                                      json={"name": name, "parents": [folder_id]})
+        link = resp.headers.get("Location")
+        if resp.status_code >= 300 or not link:
+            raise RuntimeError(f"Drive answered {resp.status_code}: {resp.text[:300]}")
+        return link
+
+
+def _new_drive_writer() -> _DriveWriter:
+    return _DriveWriter()
+
+
+def _drive_mime(name: str) -> str:
+    import mimetypes
+
+    return mimetypes.guess_type(name)[0] or "application/octet-stream"
+
+
+def _existing_summary(found: dict[str, Any]) -> dict[str, Any]:
+    return {"id": found.get("id"), "url": found.get("webViewLink"),
+            "modified": found.get("modifiedTime")}
+
+
+@hosted_tool
+def push_to_drive(
+    project_code: str,
+    filename: str,
+    kind: str,
+    content_base64: str = "",
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """Put a file INTO a project's Google Drive folder, filed by its kind.
+
+    The Drive half of the write-back path. Invoices, SOWs, estimates,
+    purchase orders, vendor paperwork, research, trackers and the wrap
+    report are kept on Google Drive; `push_to_dropbox` refuses them. This
+    verb files them where the people look.
+
+    **`kind` is required and decides the folder.** Pass a kind from
+    `where_is(project_code)` (`wrap`, `invoices`, `sows`, `estimates`,
+    `research` and the rest of the Drive half of the map) or a plain word
+    for one. There is no free-form destination: the file goes to
+    `<kind's folder>/<filename>` in the project's own Drive folder. A kind
+    that is kept on Dropbox is refused before anything is read or sent;
+    use `push_to_dropbox(kind=...)` for it. A client's file goes to Drive
+    (`client-inputs-google`) only when it is a Google Doc, Sheet or Slides
+    deck; everything else the client sends goes on Dropbox.
+
+    Two ways to send the bytes:
+
+    - **`content_base64`**: the file itself, base64-encoded (max 10 MB).
+      Uploaded now; returns `id`, `url`, `drive_path`, `folder_url`, `size`
+      and `overwrote`.
+    - **omit it**: returns an `upload_url` for the same destination and the
+      `curl` line to PUT the file to it. Use this from a shell for anything
+      but a small file, so the bytes never pass through the conversation.
+      The link works for about a week and needs no other credential, so
+      treat it like a password. Nothing exists in Drive until the PUT
+      finishes.
+
+    **It never makes a second file with the same name.** Drive allows
+    duplicates; this verb does not. If a file called `filename` is already
+    in the folder the call is refused and `existing` gives its link. Pass
+    `overwrite=True` to replace that file's contents: it keeps its id, its
+    link and its sharing, and Drive keeps the earlier version in the file's
+    version history. Two files already sharing the name are refused even
+    with `overwrite`, because cp cannot tell which one is meant.
+
+    **It never creates a folder.** If the kind's folder, or one above it,
+    is not on this project the call is refused with `missing_segment` and
+    `folders_there`, exactly as `where_is` reports it.
+
+    **An upload is not an ingest.** The file is in Drive, not in the source
+    store. `ingest_reads_it` says whether cp's ingest reads that folder; if
+    it does, the next ingest run picks the file up, and until then
+    `list_project_sources` will not show it. This verb queues nothing.
+
+    cp cannot delete or move a Drive file, so a misfiled one is removed by
+    hand: when you are not sure of the kind, call `where_is` first or ASK.
+    A WRITE with the service's Drive credentials, so it needs team
+    membership and is not served on the read-only endpoint.
+    """
+    tool = "push_to_drive"
+    refused = _team_gate(tool, project_code)
+    if refused:
+        return refused
+    client = _srv.user_client()
+
+    def _fail(error: str, **extra: Any) -> dict[str, Any]:
+        _srv.audit(client, tool, {"project_code": project_code, "result": "error"}, 0)
+        return {"project_code": project_code, "error": error, **extra}
+
+    name = (filename or "").strip()
+    if not name or "/" in name or "\\" in name or name in (".", ".."):
+        return _fail("filename must be a bare file name (no folders): the folder "
+                     "comes from `kind`")
+    asked = (kind or "").strip()
+    if not asked:
+        refusal = _kind_not_found("")
+        refusal["error"] = ("Nothing was uploaded. `kind` is required: it decides "
+                            "the folder. Pass one of the `candidates` kept on Google "
+                            "Drive by its `kind`.")
+        refusal["candidates"] = [c for c in refusal["candidates"]
+                                 if c["store"] == file_map.DRIVE]
+        return _fail(refusal.pop("error"), **refusal)
+    found = file_map.find(asked)
+    if found.kind is None:
+        refusal = _kind_not_found(asked)
+        return _fail(refusal.pop("error"), **refusal)
+    filed = found.kind
+    if filed.store != file_map.DRIVE:
+        return _fail(
+            f"Nothing was uploaded. {filed.label[:1].upper()}{filed.label[1:]} are kept "
+            f"on Dropbox, in `{filed.path}`. Use "
+            f"`push_to_dropbox(project_code, filename, kind=\"{filed.key}\")`.",
+            **_kind_summary(filed))
+    gap = drive_credential_gap()
+    if gap:
+        return _fail(gap, **_kind_summary(filed))
+
+    data = None
+    if content_base64:
+        try:
+            data = base64.b64decode(content_base64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            return _fail(f"content_base64 is not valid base64: {exc}")
+        if len(data) > MAX_PUSH_BYTES:
+            return _fail(f"{len(data)} bytes exceeds the {MAX_PUSH_BYTES}-byte inline "
+                         "cap. Omit content_base64 to get an upload_url instead.")
+
+    resolved = _resolve(client, project_code)
+    if resolved is None:
+        return _not_found(client, tool, project_code)
+    pid, _cid = resolved
+    try:
+        folders, connectors, notes = _project_stores(client, pid)
+    except Exception as exc:  # noqa: BLE001 — an MC-2 read error: a named error
+        return _fail(f"could not read the project's folders from MC-2: "
+                     f"{type(exc).__name__}: {exc}")
+    drive_id = getattr(folders, "google_drive_folder_id", None)
+    if not drive_id:
+        return _fail(_no_store_folder(project_code, file_map.DRIVE, notes),
+                     **_kind_summary(filed))
+    inherited = dict(getattr(folders, "inherited_from", None) or {}).get(file_map.DRIVE)
+
+    base: dict[str, Any] = {
+        "project_code": project_code, **_kind_summary(filed), "name": name,
+        "drive_path": f"{filed.path}/{name}",
+        **_ingest_fields(folders, file_map.DRIVE, drive_segments=filed.segments),
+    }
+    if inherited:
+        base["folder_inherited"] = inherited
+
+    writer = None
+    try:
+        reader = connectors.get("drive") or _new_drive_connector()
+        folder_id, problem = _drive_walk(reader, drive_id, filed.segments)
+        if problem is None:
+            writer = _new_drive_writer()
+            existing = writer.find(folder_id, name)
+    except Exception as exc:  # noqa: BLE001 — Drive/auth: a named error
+        account = getattr(writer, "account", None)
+        return _fail(f"could not read the project's Google Drive folder: "
+                     f"{type(exc).__name__}: {exc}"
+                     + (f" [as {account}; is the folder shared with it?]"
+                        if account else ""), **_kind_summary(filed))
+    if problem is not None:
+        where = (f"`{problem['found_path']}`" if problem["found_path"]
+                 else "the project's Drive folder")
+        if problem["duplicates"]:
+            missing = (f"{where} holds {problem['duplicates']} folders named "
+                       f"`{problem['segment']}`, so cp cannot tell which one is meant.")
+        else:
+            missing = (f"There is no `{problem['segment']}` folder in {where} on this "
+                       f"project, so `{filed.path}` does not exist here.")
+        return _fail(f"Nothing was uploaded. {missing} cp does not create folders: "
+                     "add the folder in Drive, then push again.",
+                     **_kind_summary(filed), missing_segment=problem["segment"],
+                     found_path=problem["found_path"],
+                     found_url=_drive_folder_url(problem["found_id"]),
+                     folders_there=problem["folders_there"])
+    base["folder_id"] = folder_id
+    base["folder_url"] = _drive_folder_url(folder_id)
+
+    if len(existing) > 1:
+        return _fail(f"Nothing was uploaded. `{filed.path}` already holds "
+                     f"{len(existing)} files named {name!r}, so cp cannot tell which "
+                     "one to replace. Remove the extra copy in Drive, or use "
+                     "another filename.",
+                     **_kind_summary(filed), folder_url=base["folder_url"],
+                     existing=[_existing_summary(f) for f in existing])
+    if existing and not overwrite:
+        return _fail(f"Nothing was uploaded. {name!r} is already in `{filed.path}`. "
+                     "Pass overwrite=True to replace its contents (it keeps its "
+                     "link), or use another filename.",
+                     **_kind_summary(filed), folder_url=base["folder_url"],
+                     existing=_existing_summary(existing[0]))
+    replace_id = existing[0]["id"] if existing else None
+    mime = _drive_mime(name)
+
+    if data is None:
+        try:
+            link = writer.drive_upload_link(folder_id, name, mime, replace_id)
+        except Exception as exc:  # noqa: BLE001
+            return _fail(f"could not create an upload link: {type(exc).__name__}: {exc}",
+                         **_kind_summary(filed))
+        _srv.audit(client, tool, {"project_code": project_code, "kind": "upload_link",
+                                  "path": base["drive_path"], "folder_id": folder_id}, 0)
+        return {
+            **base,
+            "upload_url": link,
+            "upload_url_expires": "about a week",
+            "overwrite": bool(replace_id),
+            "how": "curl -X PUT '<upload_url>' --data-binary @<local file>",
+            "ingested": False,
+            "next": ("Nothing is in Drive yet. PUT the file to upload_url; Drive "
+                     "answers with the new file's id. Then "
+                     f"where_is(project_code, \"{filed.key}\") shows it."),
+        }
+
+    try:
+        sent = (writer.drive_replace(replace_id, data, mime) if replace_id
+                else writer.drive_upload(folder_id, name, data, mime))
+    except Exception as exc:  # noqa: BLE001
+        return _fail(f"Drive upload failed: {type(exc).__name__}: {exc}",
+                     **_kind_summary(filed))
+    _srv.audit(client, tool, {"project_code": project_code, "path": base["drive_path"],
+                              "folder_id": folder_id, "file_id": sent.get("id"),
+                              "overwrote": bool(replace_id)}, 1)
+    return {
+        **base,
+        "id": sent.get("id"),
+        "url": sent.get("webViewLink"),
+        "size": len(data),
+        "overwrote": bool(replace_id),
+        "ingested": False,
+        "next": ("In Drive, not in the source store. "
+                 + ("The next ingest run reads this folder and picks it up."
+                    if base.get("ingest_reads_it")
+                    else "Ingest does not read this folder, so it stays out of "
+                         "the source store.")),
+    }
 
 
 @hosted_tool
