@@ -4,6 +4,19 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.141.0 — 2026-11-13
+
+**cp can name the lines on the Map of a workstream with no estimate.** One new cp-hosted verb (`set_effort`); no MC-2 migration.
+
+A workstream with no estimate, such as Mission Control, has no deliverables to draw a Map line for. Its lines are its efforts, which are Mission Control's milestones. `get_map_state` told every such workstream "the Map has no lines", which was false once a milestone existed, and nothing in cp could name one. Drew, 11-13: a basic Map "so that there is always a place for the spine". mc-2 #477 is the Mission Control side.
+
+- **`set_effort(project_code, name)`** names a new effort; it goes after the last one. With `effort_id` it changes one: rename, `status` (`open` or `done`), `position`, `overview`. There is no delete: a finished or dropped effort is closed, and keeps its cards. Refused on a workstream that has an estimate.
+- **`get_map_state`** on a workstream with no estimate returns `efforts`, each with the number of live cards that name it in `serves`. With none named, it says the Map shows one default line that holds every card.
+- **`set_map_mark`** takes an effort's id or name as `item` for a status, on a workstream with no estimate.
+- A card is placed on an effort the usual way: `set_spine_element(serves=[<effort id>])`.
+- Efforts are read and written through Mission Control under the caller's own sign-in.
+- Hosted tools 81 → 82.
+
 ## v0.140.0 — 2026-11-13
 
 **cp can work the queues Mission Control's retired tabs held.** Six new cp-hosted verbs and one new argument; no MC-2 migration.
