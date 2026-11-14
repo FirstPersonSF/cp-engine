@@ -4,7 +4,7 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
-## Unreleased
+## v0.139.0 — 2026-11-13
 
 **cp can file a document in a project's Google Drive folder.** One new cp-hosted verb (`push_to_drive`); no MC-2 migration.
 
