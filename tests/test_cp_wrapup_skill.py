@@ -97,6 +97,8 @@ def test_every_hosted_verb_it_names_is_registered(hosted_half: str, hosted_tools
         "add_element_source",
         "list_spine_elements",
         "pull_spine_element",
+        "list_skills",
+        "load_skill",
     }
     import re
 
@@ -253,3 +255,72 @@ def test_commit_step_resolves_by_region_and_runs_merge_check(skill: str) -> None
     assert f"`--ref {ref.default}`" in step, "the default the skill cites must be real"
     for opt in (o for o in ref.opts if o.startswith("--")):
         assert opt in step
+
+
+def _cli_half(skill: str) -> str:
+    return skill[: skill.index("## The hosted path")]
+
+
+def test_both_paths_run_the_tenants_belief_check_after_the_summary(
+    skill: str, hosted_half: str
+) -> None:
+    """#446. The check reads the Exec Summary the wrap-up just wrote, so it
+    sits after step 1 on each path and before the sweeps."""
+    cli = _cli_half(skill)
+    assert cli.index("## 1 —") < cli.index("## 1b — Belief check") < cli.index("## 2 —")
+    assert (
+        hosted_half.index("### h1 —")
+        < hosted_half.index("### h1b — Belief check")
+        < hosted_half.index("### h2 —")
+    )
+    for half in (cli, hosted_half):
+        flat = " ".join(half.replace("**", "").split())
+        assert "once for each project the session touched" in flat
+        assert "Never sweep the tenant" in flat
+
+
+def test_a_tenant_without_the_skill_is_skipped_not_improvised(
+    skill: str, hosted_half: str
+) -> None:
+    """The skill is the tenant's. Where it is absent the step must say so and
+    move on: a model that improvises a belief check from this one paragraph
+    files things with none of the skill's limits (never retire, never bulk
+    route, never change the brief)."""
+    cli = _cli_half(skill)
+    assert ".claude/skills/belief-check/SKILL.md" in cli
+    for half in (cli, hosted_half):
+        assert "no belief-check skill in this tenant" in " ".join(half.split())
+
+
+def test_the_hosted_path_finds_the_skill_through_the_server(hosted_half: str) -> None:
+    """A hosted session cannot see `.claude/skills/`; the tree exposes skills
+    through two verbs. Naming a file path here would send it to a file it
+    cannot read."""
+    step = hosted_half[
+        hosted_half.index("### h1b — Belief check") : hosted_half.index("### h2 —")
+    ]
+    assert "`list_skills`" in step and "`load_skill`" in step
+    assert ".claude/skills" not in step
+
+
+def test_no_page_tool_means_answers_in_conversation_not_a_skipped_check(
+    hosted_half: str,
+) -> None:
+    """The page needs the Artifact tool, which a hosted session may lack. The
+    check still runs; only the page is dropped, and no link is invented."""
+    step = " ".join(
+        hosted_half[
+            hosted_half.index("### h1b — Belief check") : hosted_half.index("### h2 —")
+        ].split()
+    )
+    assert "do not skip the check and do not invent a link" in step
+    assert "Say that there is no page" in step
+
+
+def test_wrap_up_does_not_wait_on_the_persons_answers(skill: str, hosted_half: str) -> None:
+    """A wrap-up that blocks on a person is a wrap-up that does not finish."""
+    assert "Do not wait at wrap up for the person to answer the page" in " ".join(
+        _cli_half(skill).split()
+    )
+    assert "Do not wait for the person to answer before h2" in " ".join(hosted_half.split())
+
