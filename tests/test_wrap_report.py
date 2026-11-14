@@ -13,8 +13,12 @@ from cp_engine.wrap_report import (
     HUMAN_ENTRY_FIELDS,
     LEARNING_AXES,
     EffortSummary,
+    Financials,
     WrapBundle,
+    financials_payload,
+    job_number,
     summarize_effort,
+    summarize_financials,
     summarize_meetings,
     unanswerable_fields,
 )
@@ -214,3 +218,117 @@ def test_effort_verified_flag_distinguishes_unread_from_empty():
     read_and_empty = summarize_effort([], {})
     assert read_and_empty.total_hours == 0.0
     assert read_and_empty.verified is True
+
+
+# ── margin ────────────────────────────────────────────────────────────
+#
+# slt-5196's 2026-11-13 wrap said the margin "cannot be told" while MC-2's
+# invoices and actual_costs held every figure. These use that job's real
+# numbers: $156,666.41 billed, $50,000 still planned, $78,314.25 of costs.
+
+_SLT_FIN = {
+    "group_key": "ec42e640",
+    "billed": 156666.41,
+    "collected": 100000.00,
+    "planned_forward": 50000.00,
+    "external_costs": 75635.37,
+    "internal_labor": 2678.88,
+    "software_costs": 0.0,
+    "planned_costs": 45000.00,
+}
+_SLT_COSTS = [
+    {"entity_id": "trilogy", "amount": 22500.00, "cost_date": "2026-09-08"},
+    {"entity_id": "trilogy", "amount": 26779.00, "cost_date": "2026-10-26"},
+    {"entity_id": "jess", "amount": 3875.40, "cost_date": "2026-11-05"},
+    {"entity_id": "nobody", "amount": 59.00, "cost_date": "2026-10-26"},
+]
+
+
+def test_margin_is_computed_from_invoices_and_recorded_costs():
+    f = summarize_financials(_SLT_FIN, _SLT_COSTS, {"trilogy": "Trilogy Studios"})
+    assert f.verified is True
+    assert f.costs_total == 78314.25
+    assert f.revenue_at_completion == 206666.41
+    assert f.outstanding == 56666.41
+    # On what is billed so far, with every cost bucket subtracted. MC-2's
+    # `actual_margin_pct` says 51.7 because it leaves out the $2,678.88 of
+    # travel filed as internal labor; that is real money, so it counts here.
+    assert f.margin_to_date_pct == 50.0
+    # Once the last invoice goes out.
+    assert f.projected_margin_pct == 62.1
+    assert f.projected_profit == 128352.16
+
+
+def test_costs_are_grouped_by_payee_and_dated():
+    f = summarize_financials(
+        _SLT_FIN, _SLT_COSTS, {"trilogy": "Trilogy Studios", "jess": "Jessica Schorer"}
+    )
+    assert f.by_payee[0] == ("Trilogy Studios", 49279.00)
+    assert ("unattributed", 59.00) in f.by_payee
+    # The freshness of the total: a margin on costs entered through October
+    # is a different claim from one entered through last week.
+    assert f.costs_through == dt.date(2026, 11, 5)
+
+
+def test_no_financial_row_is_read_and_empty_not_unread():
+    """The function returns no row for a job with no invoices or costs. That
+    was read. It must not look like a failed read, and it has no margin."""
+    f = summarize_financials(None, [])
+    assert f.verified is True
+    assert f.margin_to_date_pct is None
+    assert f.projected_margin_pct is None
+
+
+def test_an_unread_financials_block_never_yields_a_margin():
+    unread = Financials(billed=100.0, external_costs=10.0, verified=False)
+    assert unread.margin_to_date_pct is None
+    assert unread.projected_margin_pct is None
+    assert financials_payload(unread)["verified"] is False
+
+
+def test_a_bundle_built_without_the_read_is_unread_by_default():
+    """A default of zeros would render as a job with no money in it."""
+    assert WrapBundle(code="x").financials.verified is False
+
+
+def test_margin_before_the_first_invoice_uses_the_planned_ones():
+    f = summarize_financials(
+        {"billed": 0, "planned_forward": 40000.0, "external_costs": 10000.0}, []
+    )
+    assert f.margin_to_date_pct is None
+    assert f.projected_margin_pct == 75.0
+
+
+def test_profitability_stops_being_a_blank_once_the_margin_is_measured():
+    measured = WrapBundle(
+        code="slt-5196", financials=summarize_financials(_SLT_FIN, _SLT_COSTS)
+    )
+    missing = unanswerable_fields(measured)
+    assert not any(f.startswith("Actual profitability") for f in missing)
+    assert "Project rating (1-5)" in missing
+    # ...and stays a blank when the read failed.
+    assert "Actual profitability %" in unanswerable_fields(WrapBundle(code="x"))
+
+
+def test_payload_carries_both_margins_and_what_the_costs_are_made_of():
+    pay = financials_payload(
+        summarize_financials(_SLT_FIN, _SLT_COSTS, {"trilogy": "Trilogy Studios"})
+    )
+    assert pay["margin_to_date_pct"] == 50.0
+    assert pay["projected_margin_pct"] == 62.1
+    assert pay["costs"]["total"] == 78314.25
+    assert pay["costs"]["through"] == "2026-11-05"
+    assert pay["costs"]["by_payee"][0] == {"name": "Trilogy Studios", "amount": 49279.0}
+    assert "partner time" in pay["note"]
+
+
+def test_job_number_is_the_segment_after_the_company_not_every_digit():
+    """`slt-5196-brand-campaign-26` is job 5196. Joining all digits gave
+    519626, which matches no project: a wrap run with the full code read
+    nothing and rendered every fact as blank."""
+    assert job_number("slt-5196-brand-campaign-26") == "5196"
+    assert job_number("slt-5196") == "5196"
+    # The company prefix can hold a digit; the number is the second segment.
+    assert job_number("1pi-9005-mission-control") == "9005"
+    assert job_number("5196") == "5196"
+    assert job_number("no-digits") == ""

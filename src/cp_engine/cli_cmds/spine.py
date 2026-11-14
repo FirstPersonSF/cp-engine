@@ -805,6 +805,7 @@ def wrap_cmd(
         from cp_engine.wrap_docx import (
             WrapSection,
             build_wrap_docx,
+            cost_table,
             effort_table,
             facts_table,
         )
@@ -817,6 +818,14 @@ def wrap_cmd(
                 body="Allocated hours from MC-2's planning record — NOT "
                      "timesheet actuals.",
                 table=eff_rows,
+            ))
+        cost_rows = cost_table(payload)
+        if cost_rows:
+            sections.append(WrapSection(
+                "Costs by payee",
+                body="Costs recorded in Mission Control. A cost not yet "
+                     "entered, and partner time, are not in this total.",
+                table=cost_rows,
             ))
         if payload["not_assessable_from_data"]:
             sections.append(WrapSection(
@@ -855,7 +864,21 @@ def wrap_cmd(
         if b.budget_per_hour:
             click.echo(f"  $/hour        : ${b.budget_per_hour}")
     else:
-        click.echo("  hours         : UNREAD — do not report a margin")
+        click.echo("  hours         : UNREAD")
+    fin = b.financials
+    if not fin.verified:
+        click.echo("  margin        : UNREAD — do not report a margin")
+    elif fin.projected_margin_pct is None:
+        click.echo("  margin        : nothing billed or planned")
+    else:
+        click.echo(f"  billed        : ${fin.billed:,.0f} "
+                   f"(+ ${fin.planned_forward:,.0f} still to bill)")
+        click.echo(f"  costs         : ${fin.costs_total:,.0f} recorded"
+                   + (f" through {fin.costs_through}" if fin.costs_through else ""))
+        if fin.margin_to_date_pct is not None:
+            click.echo(f"  margin so far : {fin.margin_to_date_pct}%")
+        click.echo(f"  margin (proj) : {fin.projected_margin_pct}% "
+                   "· partner time not costed")
     click.echo(f"  meetings      : {b.meetings.count} · "
                f"{b.meetings.total_hours}h total · "
                f"{b.meetings.tail_share:.0%} in the last "
