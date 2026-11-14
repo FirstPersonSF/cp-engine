@@ -4,6 +4,20 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.142.0 — 2026-11-14
+
+**Wrap up runs the tenant's belief check for each project the session touched.** No new verbs; no MC-2 migration.
+
+A belief check states what a session with no history would believe about a project (the brief, what we last shared, what the client said, what we owe, who decides), makes the filing changes the record proves, and gives a person a short page to correct. It had two triggers, on demand and at wrap up, and only the first worked: `/cp-wrapup` is a plugin skill and did not know the tenant's skill existed (#446).
+
+- **`/cp-wrapup` step 1b (Claude Code) and h1b (hosted):** when the tenant has a `belief-check` skill, run it once for each touched project, after that project's Exec Summary is refreshed.
+- The Claude Code path looks for `.claude/skills/belief-check/SKILL.md`. The hosted path finds the skill with `list_skills` and `load_skill`.
+- A tenant with no such skill is skipped in one line. Nothing is improvised.
+- The step does less, and says so, when the session already settled the five answers in conversation, when a check already ran on that project in the session, or when the session only read the project.
+- A session with no way to publish a page gives the answers, changes and questions in the conversation and says there is no page.
+- Wrap up does not wait for the person to answer.
+- The skill itself stays in the tenant.
+
 ## v0.141.1 — 2026-11-13
 
 **The effort tools use Mission Control's rule for which workstreams have efforts.**
