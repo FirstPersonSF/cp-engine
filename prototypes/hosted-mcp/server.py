@@ -616,7 +616,7 @@ mcp_server = MCPServer(
         "sequence for a session like this one, which has no `cxp` and no file "
         "editing. Read `master-cp.md` for the project index; get each "
         "project's path from there rather than constructing it.\n\n"
-        "MOST TOOLS READ; 47 OF THEM WRITE. The writers are the `create_*`, `set_*`, "
+        "MOST TOOLS READ; 48 OF THEM WRITE. The writers are the `create_*`, `set_*`, "
         "`add_*`, `remove_*`, `promote_*`, `retire_*`, `resolve_*`, "
         "`route_*`, `rotate_*`, `restore_*`, `seal_to_*` and `capture_*` verbs, plus "
         "`log_improvement`, `log_lesson`, `review_freelancer`, `push_to_dropbox`, `push_to_drive` and `ingest_url` — a name that "
@@ -11729,7 +11729,7 @@ READ_ONLY_TOOLS: dict[str, str] = {
     "list_lessons": "SELECT lessons / rpc match_lessons (team-gated)",
     "list_freelancers": "SELECT entities, freelancer_reviews, contractor_hours (team-gated)",
     "where_is": "the file map + SELECT projects/project_integrations + lists one Dropbox or Drive folder (team-gated)",
-    "get_map_state": "SELECT agreements, estimator.*, work_item_deliverables, spine_map_marks, fathom_meetings, spine_substance; GET mc-2 milestones (team-gated)",
+    "get_map_state": "SELECT agreements, estimator.*, work_item_deliverables, spine_map_marks, fathom_meetings, spine_substance, project_belief_pages; GET mc-2 milestones (team-gated)",
 }
 
 # name -> what it writes (the reason it is NOT on `/mcp/read`).
@@ -11784,6 +11784,7 @@ MAIN_ONLY_TOOLS: dict[str, str] = {
     "set_contractor_hours": "INSERT contractor_hours",
     "set_work_item_deliverable": "INSERT/UPDATE/DELETE work_item_deliverables",
     "set_map_mark": "INSERT/UPDATE/DELETE spine_map_marks",
+    "set_belief_page": "INSERT/UPDATE project_belief_pages",
     "set_phase_agreement": "UPDATE estimator.phases.agreement_id",
     "set_meeting_work_item": "PATCH mc-2 /api/meetings/{recording_id} (caller's JWT)",
     "set_effort": "POST/PATCH mc-2 /api/jobs/{project_id}/milestones (caller's JWT)",
