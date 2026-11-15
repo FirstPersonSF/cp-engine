@@ -28,6 +28,22 @@
     "source": "commands/cp-prep.md"
   },
   {
+    "name": "knowledge-check",
+    "kind": "skill",
+    "label": "knowledge check",
+    "summary": "State what Claude believes about a project, ask a few questions, and apply the answers.",
+    "triggers": [
+      "knowledge check <code>",
+      "check <code>",
+      "what do you know about <code>",
+      "is the spine right for <code>",
+      "belief check <code>"
+    ],
+    "example": "knowledge check ibx-5153",
+    "hint": true,
+    "source": "skills/knowledge-check/SKILL.md"
+  },
+  {
     "name": "build-stakeholder",
     "kind": "skill",
     "label": "build a stakeholder",

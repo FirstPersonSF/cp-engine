@@ -3009,10 +3009,10 @@ def get_map_state(project_code: str) -> dict[str, Any]:
     name it in `serves`. With no effort named yet the Map shows one default
     line that holds every card. Name or change an effort with `set_effort`.
 
-    `belief_pages` lists the belief-check pages published for this
+    `knowledge_pages` lists the knowledge-check pages published for this
     workstream, newest first: each one's `url`, `published_on`,
     `answered_on` (empty until a person has answered it), `note` and
-    `set_by`. Record one with `set_belief_page`.
+    `set_by`. Record one with `set_knowledge_page`.
 
     Read this before a `set_*` Map verb: names repeat across phases, and the
     ids here settle which one you mean. Team members only.
@@ -3047,7 +3047,7 @@ def get_map_state(project_code: str) -> dict[str, Any]:
     }
     if _lines_are_efforts(client, pid, estimate):
         state.update(_efforts_state(client, pid))
-    state.update(_belief_pages_state(client, pid))
+    state.update(_knowledge_pages_state(client, pid))
     _srv.audit(client, tool, {"project_code": project_code},
                len(state["phases"]) or len(state.get("efforts") or []))
     return {"project_code": project_code, **state}
@@ -3068,7 +3068,7 @@ def set_work_item_deliverable(
 
     `status`: `suggested` (default) is Claude's proposal, drawn dashed.
     `confirmed` is for a pairing a PERSON has agreed to, in chat or on a
-    belief-check page; it is stamped with your name and the time, so never
+    knowledge-check page; it is stamped with your name and the time, so never
     pass it on your own judgement. `removed` takes the pairing away.
 
     `work_item` and `deliverable` are a name, a distinct part of one, an id,
@@ -3255,21 +3255,22 @@ def set_map_mark(
             "caller": _map_caller()}
 
 
-# ── belief-check pages: the page a belief check publishes ─────────────
+# ── knowledge-check pages: the page a knowledge check publishes ─────────────
 #
-# One row of `project_belief_pages` (mc-2 mig 226) per page per workstream:
+# One row of `project_knowledge_pages` per page per workstream (mc-2 mig 226
+# made the table as `project_belief_pages`; mig 227 renamed it, 2026-11-15):
 # its link, the day it was published, and the day a person answered it.
 
-_BELIEF_PAGE_COLUMNS = "id, url, published_on, answered_on, note, set_by, created_at"
-_BELIEF_PAGE_FIELDS = ("url", "published_on", "answered_on", "note", "set_by")
+_KNOWLEDGE_PAGE_COLUMNS = "id, url, published_on, answered_on, note, set_by, created_at"
+_KNOWLEDGE_PAGE_FIELDS = ("url", "published_on", "answered_on", "note", "set_by")
 _ISO_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
-def _belief_page_out(row: dict[str, Any]) -> dict[str, Any]:
-    return {k: row.get(k) for k in _BELIEF_PAGE_FIELDS}
+def _knowledge_page_out(row: dict[str, Any]) -> dict[str, Any]:
+    return {k: row.get(k) for k in _KNOWLEDGE_PAGE_FIELDS}
 
 
-def _belief_day(value: str, what: str) -> str:
+def _knowledge_day(value: str, what: str) -> str:
     """`value` as `YYYY-MM-DD`, or a `MapError` saying what was passed."""
     from datetime import date
 
@@ -3284,44 +3285,44 @@ def _belief_day(value: str, what: str) -> str:
         raise MapError(f"{what} must be a date as YYYY-MM-DD (got {value!r})") from exc
 
 
-def _belief_pages_state(client, project_id: str) -> dict[str, Any]:
-    """What `get_map_state` adds: the workstream's belief-check pages, newest
+def _knowledge_pages_state(client, project_id: str) -> dict[str, Any]:
+    """What `get_map_state` adds: the workstream's knowledge-check pages, newest
     first. A failed read is reported beside an empty list, never raised."""
     from cp_engine.mc2_db import Tables
 
     try:
         rows = (
-            client.table(Tables.PROJECT_BELIEF_PAGES)
-            .select(_BELIEF_PAGE_COLUMNS)
+            client.table(Tables.PROJECT_KNOWLEDGE_PAGES)
+            .select(_KNOWLEDGE_PAGE_COLUMNS)
             .eq("project_id", project_id)
             .execute()
             .data
             or []
         )
     except Exception as exc:  # noqa: BLE001 — a partial read, not a failed verb
-        return {"belief_pages": [],
-                "belief_pages_error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+        return {"knowledge_pages": [],
+                "knowledge_pages_error": f"{type(exc).__name__}: {str(exc)[:200]}"}
     rows.sort(key=lambda r: (str(r.get("published_on") or ""), str(r.get("created_at") or "")),
               reverse=True)
-    return {"belief_pages": [_belief_page_out(r) for r in rows]}
+    return {"knowledge_pages": [_knowledge_page_out(r) for r in rows]}
 
 
 @hosted_tool
-def set_belief_page(
+def set_knowledge_page(
     project_code: str,
     url: str,
     published_on: str | None = None,
     answered_on: str | None = None,
     note: str | None = None,
 ) -> dict[str, Any]:
-    """Record a belief-check page for a workstream, or change what is recorded.
+    """Record a knowledge-check page for a workstream, or change what is recorded.
 
-    A belief check publishes a page of what Claude believes about a project
+    A knowledge check publishes a page of what Claude believes about a project
     for a person to correct. This keeps the link with the workstream, so the
     next session finds the page and knows whether it was answered.
 
-    - **First call for a `url`:** records the page. `published_on` is today
-      unless you pass the day it went out.
+    - **First call for a `url`:** records the page. Pass `published_on`;
+      the default is the UTC day, which is tomorrow's date on a US evening.
     - **A later call for the same `url`:** changes only what you pass.
       `answered_on` is the day a person answered the page; `""` clears it.
       `note` is one line on the page; `""` clears it.
@@ -3329,12 +3330,12 @@ def set_belief_page(
     `url` is the page's full `https://` link. Dates are `YYYY-MM-DD`, and a
     date someone told you or a record states, never a guess. Works on any
     workstream, with or without an agreement. `get_map_state` lists the
-    pages under `belief_pages`.
+    pages under `knowledge_pages`.
 
     Refused, with nothing written: a `url` that is not `https://`, a date
     that is not `YYYY-MM-DD`, and clearing `published_on`. Team members only.
     """
-    tool = "set_belief_page"
+    tool = "set_knowledge_page"
     refused = _team_gate(tool, project_code)
     if refused:
         return refused
@@ -3359,15 +3360,15 @@ def set_belief_page(
             if not published_on.strip():
                 raise spine_map.MapError(
                     "published_on cannot be cleared; pass the day as YYYY-MM-DD")
-            passed["published_on"] = _belief_day(published_on, "published_on")
+            passed["published_on"] = _knowledge_day(published_on, "published_on")
         if answered_on is not None:
-            passed["answered_on"] = (_belief_day(answered_on, "answered_on")
+            passed["answered_on"] = (_knowledge_day(answered_on, "answered_on")
                                      if answered_on.strip() else None)
         if note is not None:
             passed["note"] = note.strip() or None
         existing = (
-            client.table(Tables.PROJECT_BELIEF_PAGES)
-            .select(_BELIEF_PAGE_COLUMNS)
+            client.table(Tables.PROJECT_KNOWLEDGE_PAGES)
+            .select(_KNOWLEDGE_PAGE_COLUMNS)
             .eq("project_id", pid)
             .eq("url", link)
             .execute()
@@ -3380,14 +3381,17 @@ def set_belief_page(
                    "published_on": datetime.now(UTC).date().isoformat(),
                    "answered_on": None, "note": None,
                    **passed, "set_by": _map_caller()}
-            client.table(Tables.PROJECT_BELIEF_PAGES).insert(row).execute()
+            client.table(Tables.PROJECT_KNOWLEDGE_PAGES).insert(row).execute()
             saved, changed = row, sorted(passed)
         else:
             patch = {k: v for k, v in passed.items() if before.get(k) != v}
             changed = sorted(patch)
             if patch:
                 patch["set_by"] = _map_caller()
-                client.table(Tables.PROJECT_BELIEF_PAGES).update(patch).eq(
+                # The update never set this column, so a page answered today
+                # still read as last touched the day it was recorded.
+                patch["updated_at"] = datetime.now(UTC).isoformat()
+                client.table(Tables.PROJECT_KNOWLEDGE_PAGES).update(patch).eq(
                     "id", before["id"]).execute()
             saved = {**before, **patch}
     except spine_map.MapError as exc:
@@ -3399,7 +3403,7 @@ def set_belief_page(
                               "outcome": ("created" if before is None
                                           else "updated" if changed else "unchanged")},
                1 if wrote else 0)
-    return {"project_code": project_code, "belief_page": _belief_page_out(saved),
+    return {"project_code": project_code, "knowledge_page": _knowledge_page_out(saved),
             "created": before is None, "changed": changed,
             "level": _srv._level_for(project_code)}
 

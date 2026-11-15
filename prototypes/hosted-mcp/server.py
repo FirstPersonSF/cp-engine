@@ -649,10 +649,14 @@ mcp_server = MCPServer(
         "from content that an item belongs to the account or program above; "
         "to move one up, call `promote_uphill`, which copies it to the parent "
         "and leaves a step.\n\n"
-        "TENANT SKILLS LIVE IN THE TREE TOO. A Claude Code session discovers "
-        "`.claude/skills/*/SKILL.md` on its own; this client cannot, so the "
-        "tree exposes them: `list_skills()` names each skill with the task "
-        "it is for, `load_skill(name)` returns its instructions, and "
+        "SKILLS ARE SERVED HERE, FROM TWO PLACES. A Claude Code session gets "
+        "cp-engine's skills from its plugin and discovers the tenant's "
+        "`.claude/skills/*/SKILL.md` on its own; this client can do neither, "
+        "so the server exposes both: `list_skills()` names each skill with "
+        "the task it is for and its `source` (`engine`: shipped with this "
+        "server, there even when the tenant tree is not; `tenant`: in the "
+        "tree, and the one served when both have the name), "
+        "`load_skill(name)` returns its instructions, and "
         "`load_skill(name, reference=...)` returns one of its reference "
         "documents. When a task matches a skill's description, load it "
         "BEFORE doing the work, the way a Claude Code session would."
@@ -8511,7 +8515,7 @@ def read_project_file(path: str) -> dict[str, Any]:
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  Tenant skills (#299)
+#  Skills: the tenant's (#299) and the engine's own
 # ──────────────────────────────────────────────────────────────────────
 #
 # A Claude Code session finds `.claude/skills/<name>/SKILL.md` in the
@@ -8521,10 +8525,39 @@ def read_project_file(path: str) -> dict[str, Any]:
 # know is not a path you can ask for. Measured 2026-09-23 with the
 # `canonic-layers` skill — Marcello works only through this server. Same gap
 # as CLAUDE.md on 09-17, same fix: make the available thing discoverable.
+#
+# 2026-11-15: the engine's own skills (`plugin/skills/*`) are served too. A
+# Claude Code session gets them from the plugin; a hosted session had no
+# plugin, so a skill the engine shipped (the knowledge check) existed for it
+# only if a tenant kept a copy. They ship in the image beside server.py, so
+# they are readable with no tenant tree at all. A tenant skill of the same
+# name wins: the tenant's copy is the one its people edited.
 
 SKILLS_DIR = ".claude/skills"
+ENGINE_SKILLS_REL = "plugin/skills"
 _SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _SKILL_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ -]{0,127}$")
+
+
+def engine_skills_dir() -> Path | None:
+    """The directory holding the engine's shipped skills, or None.
+
+    `ENGINE_SKILLS_DIR` when set (and only that: a wrong override is reported,
+    not papered over by a fallback). Otherwise `plugin/skills` beside
+    server.py (the image: the Dockerfile COPYs it to `/app/plugin/skills`),
+    then at the repo root (a checkout: server.py is two levels down)."""
+    override = os.environ.get("ENGINE_SKILLS_DIR", "").strip()
+    if override:
+        cand = Path(override)
+        return cand.resolve() if cand.is_dir() else None
+    here = Path(__file__).resolve().parent
+    candidates = [here / ENGINE_SKILLS_REL]
+    if len(here.parents) > 1:
+        candidates.append(here.parents[1] / ENGINE_SKILLS_REL)
+    for cand in candidates:
+        if cand.is_dir():
+            return cand.resolve()
+    return None
 
 
 def _skill_frontmatter(text: str) -> dict[str, str]:
@@ -8544,86 +8577,166 @@ def _skill_frontmatter(text: str) -> dict[str, str]:
     return out
 
 
+def _skills_under(base: Path, source: str, shown_base: str) -> dict[str, dict[str, Any]]:
+    """Every skill directory under `base`, keyed by DIRECTORY name (what
+    `load_skill` takes). A directory without a SKILL.md is not a skill."""
+    found: dict[str, dict[str, Any]] = {}
+    if not base.is_dir():
+        return found
+    for d in sorted(base.iterdir()):
+        md = d / "SKILL.md"
+        if not d.is_dir() or not md.is_file():
+            continue
+        try:
+            head = md.read_text(encoding="utf-8", errors="replace")[:8192]
+        except OSError:
+            continue
+        fm = _skill_frontmatter(head)
+        refs_dir = d / "references"
+        refs = (
+            sorted(f.name for f in refs_dir.iterdir() if f.is_file())
+            if refs_dir.is_dir()
+            else []
+        )
+        found[d.name] = {
+            "name": fm.get("name") or d.name,
+            "description": fm.get("description", ""),
+            "source": source,
+            "path": f"{shown_base}/{d.name}/SKILL.md",
+            "references": refs,
+        }
+    return found
+
+
+def _tenant_skills_root() -> tuple[Path | None, str]:
+    """(the tenant tree's `.claude/skills`, "") or (None, why not). The caller
+    has already passed the team gate."""
+    usable, reason = tree_available()
+    if not usable:
+        return None, reason
+    try:
+        return tree_root().resolve() / SKILLS_DIR, ""
+    except Exception as exc:  # noqa: BLE001
+        return None, f"tree clone failed: {type(exc).__name__}: {str(exc)[:300]}"
+
+
 @mcp_server.tool()
 def list_skills() -> dict[str, Any]:
-    """Name every tenant skill in the tree, with the task each one is for.
+    """Name every skill this session can load, with the task each one is for.
 
-    A skill is a directory under `.claude/skills/` holding a `SKILL.md`
-    (instructions, with a `name` and `description` header) and optionally a
-    `references/` folder of source documents. This lists them the way a
-    Claude Code session would see them, so a hosted session can load one when
-    its task matches — `canonic-layers` for anything structured for Canonic,
-    for example.
+    Two sources, and each skill says which under `source`:
+
+    - `engine`: the skills cp-engine ships (`plugin/skills/` in its repo),
+      the same ones a Claude Code session gets from the plugin. They come
+      with this server, so they are listed even when the tenant tree is not.
+    - `tenant`: the tenant's own, under `.claude/skills/` in its tree.
+
+    A skill is a directory holding a `SKILL.md` (instructions, with a `name`
+    and `description` header) and optionally a `references/` folder. A tenant
+    skill with the same name as an engine skill wins: it is listed once, as
+    `tenant`, with `overrides_engine: true`, and `overridden` names every
+    such skill. When the tenant tree cannot be read, `tenant_available` is
+    false and `tenant_error` says why; the engine skills are still listed.
 
     Read-only; team-gated like every tree read.
     """
-    usable, reason = tree_available()
-    if not usable:
-        return {"available": False, "error": reason, "skills": []}
     allowed, denial = caller_is_team_member()
     if not allowed:
         return {"available": False, "error": denial, "skills": []}
-    try:
-        root = tree_root().resolve()
-    except Exception as exc:  # noqa: BLE001
-        return {
-            "available": False,
-            "error": f"tree clone failed: {type(exc).__name__}: {str(exc)[:300]}",
-            "skills": [],
-        }
 
-    skills: list[dict[str, Any]] = []
-    base = root / SKILLS_DIR
-    if base.is_dir():
-        for d in sorted(base.iterdir()):
-            md = d / "SKILL.md"
-            if not d.is_dir() or not md.is_file():
-                continue
-            try:
-                head = md.read_text(encoding="utf-8", errors="replace")[:8192]
-            except OSError:
-                continue
-            fm = _skill_frontmatter(head)
-            refs_dir = d / "references"
-            refs = (
-                sorted(f.name for f in refs_dir.iterdir() if f.is_file())
-                if refs_dir.is_dir()
-                else []
-            )
-            skills.append(
-                {
-                    "name": fm.get("name") or d.name,
-                    "description": fm.get("description", ""),
-                    "path": str(md.relative_to(root)),
-                    "references": refs,
-                }
-            )
+    engine_dir = engine_skills_dir()
+    engine = _skills_under(engine_dir, "engine", ENGINE_SKILLS_REL) if engine_dir else {}
+    tenant_base, tenant_error = _tenant_skills_root()
+    tenant = _skills_under(tenant_base, "tenant", SKILLS_DIR) if tenant_base else {}
 
+    overridden = sorted(set(engine) & set(tenant))
+    for name in overridden:
+        tenant[name]["overrides_engine"] = True
+    merged = {**engine, **tenant}
+    skills = [merged[k] for k in sorted(merged)]
+
+    out: dict[str, Any] = {
+        "available": bool(engine_dir or tenant_base),
+        "caller": caller_subject(),
+        "tenant_available": tenant_base is not None,
+    }
+    if tenant_base is not None:
+        out.update(tree_provenance())
+    else:
+        out["tenant_error"] = tenant_error
+    if engine_dir is None:
+        out["engine_skills_error"] = (
+            "the engine's shipped skills are not on this server "
+            f"(no `{ENGINE_SKILLS_REL}` beside server.py or at the repo root, "
+            "or ENGINE_SKILLS_DIR names a directory that does not exist)"
+        )
+    if not out["available"]:
+        out["error"] = f"{tenant_error}; {out['engine_skills_error']}"
+        out["skills"] = []
+        return out
     audit(user_client(), "list_skills", {}, len(skills))
+    out["skills"] = skills
+    out["overridden"] = overridden
+    out["how_to_load"] = (
+        "load_skill(name) for the instructions; "
+        "load_skill(name, reference=<file>) for one reference document."
+    )
+    return out
+
+
+def _read_engine_skill_file(target: Path, shown: str) -> dict[str, Any]:
+    """One engine skill file as text, under `read_project_file`'s rules: text
+    only, capped at `TREE_MAX_FILE_BYTES`, with an explicit `truncated`."""
+    size = target.stat().st_size
+    try:
+        data = target.open("rb").read(TREE_MAX_FILE_BYTES + 1)
+    except OSError as exc:
+        return {"path": shown, "error": f"could not read: {exc}"}
+    if b"\x00" in data[:8192]:
+        return {"path": shown, "error": "file appears to be binary — this tool serves text only",
+                "bytes": size}
+    truncated = len(data) > TREE_MAX_FILE_BYTES
+    try:
+        if truncated:
+            # A multi-byte character split at the cap is dropped, not fatal.
+            text = data[:TREE_MAX_FILE_BYTES].decode("utf-8", errors="ignore")
+            text += f"\n\n[truncated at {TREE_MAX_FILE_BYTES} bytes of {size}]"
+        else:
+            text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return {"path": shown, "error": "file is not valid UTF-8 text", "bytes": size}
     return {
+        "path": shown,
         "available": True,
         "caller": caller_subject(),
-        **tree_provenance(),
-        "skills": skills,
-        "how_to_load": "load_skill(name) for the instructions; "
-        "load_skill(name, reference=<file>) for one reference document.",
+        "engine_version": SERVER_VERSION,
+        "bytes": size,
+        "truncated": truncated,
+        "text": text,
     }
 
 
 @mcp_server.tool()
 def load_skill(name: str, reference: str | None = None) -> dict[str, Any]:
-    """Return a tenant skill's instructions, or one of its reference documents.
+    """Return a skill's instructions, or one of its reference documents.
 
-    `name` is the skill directory under `.claude/skills/` (see `list_skills`).
-    Without `reference`, this is the SKILL.md — the part that says when and
-    how to apply the skill. With `reference`, it is that file from the skill's
-    `references/` folder — the verbatim source the SKILL.md points at, which is
-    the authority when the two differ.
+    `name` is the skill's directory name (see `list_skills`). Without
+    `reference`, this is the SKILL.md — the part that says when and how to
+    apply the skill. With `reference`, it is that file from the skill's
+    `references/` folder — the verbatim source the SKILL.md points at, which
+    is the authority when the two differ.
 
-    Everything else is `read_project_file`: same team gate, same containment
+    `source` in the result says where it came from. A tenant skill
+    (`.claude/skills/` in the tenant tree) is served when the tenant has one
+    of that name, references included: a tenant's copy is never mixed with
+    the engine's. Otherwise the engine's shipped skill is served, which needs
+    no tenant tree.
+
+    The tenant path is `read_project_file`: same team gate, same containment
     check, same size cap with an explicit `truncated`, same tree provenance.
-    Both arguments are validated as plain names first so a traversal attempt
-    gets a clear refusal rather than a "no such file".
+    The engine path applies the same gate, containment and cap. Both
+    arguments are validated as plain names first so a traversal attempt gets
+    a clear refusal rather than a "no such file".
     """
     raw_name = (name or "").strip()
     if not _SKILL_NAME_RE.match(raw_name):
@@ -8633,7 +8746,7 @@ def load_skill(name: str, reference: str | None = None) -> dict[str, Any]:
             "(lowercase letters, digits, `.`, `_`, `-`)",
         }
     if reference is None:
-        rel = f"{SKILLS_DIR}/{raw_name}/SKILL.md"
+        tail = "SKILL.md"
     else:
         raw_ref = reference.strip()
         if not _SKILL_REF_RE.match(raw_ref) or ".." in raw_ref:
@@ -8643,24 +8756,56 @@ def load_skill(name: str, reference: str | None = None) -> dict[str, Any]:
                 "error": "reference must be a plain file name inside the "
                 "skill's references/ folder",
             }
-        rel = f"{SKILLS_DIR}/{raw_name}/references/{raw_ref}"
+        tail = f"references/{raw_ref}"
+    ident = {"skill": raw_name, **({"reference": reference} if reference else {})}
+    missing = (
+        f"no such skill: {raw_name!r}" if reference is None
+        else f"skill {raw_name!r} has no reference {reference!r}"
+    ) + " — `list_skills()` names what exists"
 
-    result = read_project_file(rel)
-    if result.get("error") == "no such file in the tenant tree":
-        result["error"] = (
-            f"no such skill: {raw_name!r}" if reference is None
-            else f"skill {raw_name!r} has no reference {reference!r}"
-        ) + " — `list_skills()` names what exists"
-    return {"skill": raw_name, **({"reference": reference} if reference else {}), **result}
+    allowed, denial = caller_is_team_member()
+    if not allowed:
+        return {**ident, "available": False, "error": denial}
+
+    tenant_base, tenant_error = _tenant_skills_root()
+    if tenant_base is not None and (tenant_base / raw_name / "SKILL.md").is_file():
+        result = read_project_file(f"{SKILLS_DIR}/{raw_name}/{tail}")
+        if result.get("error") == "no such file in the tenant tree":
+            result["error"] = missing
+        return {**ident, "source": "tenant", **result}
+
+    engine_dir = engine_skills_dir()
+    shown = f"{ENGINE_SKILLS_REL}/{raw_name}/{tail}"
+    if engine_dir is not None and (engine_dir / raw_name / "SKILL.md").is_file():
+        target = (engine_dir / raw_name / tail).resolve()
+        try:
+            target.relative_to(engine_dir)
+        except ValueError:
+            return {**ident, "source": "engine", "path": shown,
+                    "error": "path escapes the engine's skills directory — rejected"}
+        if not target.is_file():
+            audit(user_client(), "load_skill", {**ident, "source": "engine"}, 0)
+            return {**ident, "source": "engine", "path": shown, "error": missing}
+        result = _read_engine_skill_file(target, shown)
+        audit(user_client(), "load_skill", {**ident, "source": "engine"},
+              1 if result.get("available") else 0)
+        return {**ident, "source": "engine", **result}
+
+    if tenant_base is None:
+        return {**ident, "available": False,
+                "error": f"{missing} (no engine skill of that name; the tenant's "
+                f"skills could not be read: {tenant_error})"}
+    audit(user_client(), "load_skill", ident, 0)
+    return {**ident, "error": missing}
 
 
 @mcp_server.prompt()
 def skill(name: str) -> str:
-    """Load a tenant skill's instructions into the conversation.
+    """Load a skill's instructions into the conversation.
 
     The prompt-menu form of `load_skill(name)`, for a person picking a skill
     by hand in the Claude app rather than the model discovering it. Same
-    gate, same file.
+    gate, same file, the tenant's copy before the engine's.
     """
     result = load_skill(name)
     if not result.get("available"):
@@ -8669,7 +8814,8 @@ def skill(name: str) -> str:
             "Ask for `list_skills()` to see what exists."
         )
     return (
-        f"The tenant skill `{name}` follows. Apply it to this conversation. "
+        f"The {result.get('source', 'tenant')} skill `{name}` follows. "
+        "Apply it to this conversation. "
         "Its reference documents are available with "
         f"`load_skill({name!r}, reference=<file>)`.\n\n" + result["text"]
     )
@@ -11709,8 +11855,8 @@ READ_ONLY_TOOLS: dict[str, str] = {
     "semantic_search": "Voyage query embed + read-only match_* RPCs",
     "get_project_state": "reads the tenant-tree clone (git pull of a read-only deploy key)",
     "read_project_file": "reads the tenant-tree clone",
-    "list_skills": "reads .claude/skills on the tree clone",
-    "load_skill": "reads .claude/skills on the tree clone",
+    "list_skills": "reads the engine's shipped plugin/skills and .claude/skills on the tree clone",
+    "load_skill": "reads the engine's shipped plugin/skills and .claude/skills on the tree clone",
     "list_worksets": "reads workset notes",
     "describe_workset": "reads one workset's definition",
     "open_workset": "resolves a workset's live elements (SELECT)",
@@ -11729,7 +11875,7 @@ READ_ONLY_TOOLS: dict[str, str] = {
     "list_lessons": "SELECT lessons / rpc match_lessons (team-gated)",
     "list_freelancers": "SELECT entities, freelancer_reviews, contractor_hours (team-gated)",
     "where_is": "the file map + SELECT projects/project_integrations + lists one Dropbox or Drive folder (team-gated)",
-    "get_map_state": "SELECT agreements, estimator.*, work_item_deliverables, spine_map_marks, fathom_meetings, spine_substance, project_belief_pages; GET mc-2 milestones (team-gated)",
+    "get_map_state": "SELECT agreements, estimator.*, work_item_deliverables, spine_map_marks, fathom_meetings, spine_substance, project_knowledge_pages; GET mc-2 milestones (team-gated)",
 }
 
 # name -> what it writes (the reason it is NOT on `/mcp/read`).
@@ -11784,7 +11930,7 @@ MAIN_ONLY_TOOLS: dict[str, str] = {
     "set_contractor_hours": "INSERT contractor_hours",
     "set_work_item_deliverable": "INSERT/UPDATE/DELETE work_item_deliverables",
     "set_map_mark": "INSERT/UPDATE/DELETE spine_map_marks",
-    "set_belief_page": "INSERT/UPDATE project_belief_pages",
+    "set_knowledge_page": "INSERT/UPDATE project_knowledge_pages",
     "set_phase_agreement": "UPDATE estimator.phases.agreement_id",
     "set_meeting_work_item": "PATCH mc-2 /api/meetings/{recording_id} (caller's JWT)",
     "set_effort": "POST/PATCH mc-2 /api/jobs/{project_id}/milestones (caller's JWT)",

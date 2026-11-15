@@ -97,9 +97,10 @@ class Tables:
     # not as a table: the table admits no signed-in reader.
     WORK_ITEM_DELIVERABLES = "work_item_deliverables"
     SPINE_MAP_MARKS = "spine_map_marks"
-    # The pages a belief check publishes (mc-2 mig 226): one row per page
+    # The pages a knowledge check publishes (mc-2 mig 226, renamed from
+    # `project_belief_pages` by mig 227 on 2026-11-15): one row per page
     # per workstream, with the day it was published and the day answered.
-    PROJECT_BELIEF_PAGES = "project_belief_pages"
+    PROJECT_KNOWLEDGE_PAGES = "project_knowledge_pages"
     # Read-only here: a contractor's billed amounts, the fallback ESTIMATE of
     # actual hours (amount ÷ rate) when no invoice/Gusto hours are recorded.
     PAYABLES = "payables"

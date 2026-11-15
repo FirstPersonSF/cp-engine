@@ -6,7 +6,8 @@
 #
 # WHY A SCRIPT (architecture plan step 1). The image installs cp-engine from
 # the same checkout as server.py, so the build context must hold the repo's
-# `pyproject.toml`, `README.md` and `src/` as well as this directory. The
+# `pyproject.toml`, `README.md`, `src/` and `plugin/skills/` (the skills the
+# server hands to hosted sessions) as well as this directory. The
 # service has no GitHub connection, so the context is whatever `railway up`
 # uploads. Uploading the whole repo root would ship .venv and every test; a
 # root-level railway.toml would be read by other Railway services built from
@@ -14,8 +15,8 @@
 # `git archive HEAD` — the engine and the server are the SAME commit, and that
 # commit is written to BUILD_COMMIT for /health and whoami to report.
 #
-# A working tree with uncommitted changes under src/, pyproject.toml or this
-# directory is refused: the deploy would not be the commit it claims to be.
+# A working tree with uncommitted changes under src/, plugin/skills/,
+# pyproject.toml or this directory is refused: the deploy would not be the commit it claims to be.
 # Commit first (a branch is fine), or pass --allow-dirty to stage the working
 # tree instead (BUILD_COMMIT then ends in "-dirty").
 #
@@ -37,7 +38,7 @@ while [ $# -gt 0 ]; do
     --build-local) mode=build; shift ;;
     --stage-only) mode=stage; shift ;;
     --allow-dirty) allow_dirty=1; shift ;;
-    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
     *) echo "deploy.sh: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -46,7 +47,7 @@ root="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 cd "$root"
 
 # The Dockerfile's COPY sources, minus BUILD_COMMIT (written below).
-paths=(pyproject.toml README.md src
+paths=(pyproject.toml README.md src plugin/skills
        prototypes/hosted-mcp/Dockerfile prototypes/hosted-mcp/railway.toml
        prototypes/hosted-mcp/requirements.txt prototypes/hosted-mcp/server.py
        prototypes/hosted-mcp/observability.py prototypes/hosted-mcp/ported_tools.py)

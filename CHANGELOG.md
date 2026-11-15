@@ -4,6 +4,24 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## Unreleased
+
+**The belief check is now the knowledge check, and every tenant has it.** One verb renamed, none added. Needs MC-2 migration 227 (`project_belief_pages` becomes `project_knowledge_pages`).
+
+The skill lived in one tenant, so no other tenant had it, and a hosted session had it only where a tenant kept a copy.
+
+- **The skill ships in the engine** as `knowledge-check`. Say "knowledge check <code>", "check <code>", "what do you know about <code>" or "is the spine right for <code>". "belief check <code>" still starts it.
+- The page still opens by saying it is what Claude believes after one unattended pass, for the reader to correct.
+- **`set_belief_page` is now `set_knowledge_page`.** There is no alias: the old name is gone.
+- **`get_map_state`** returns `knowledge_pages` in place of `belief_pages`.
+- The engine reads and writes `project_knowledge_pages`. A view keeps the old table name alive for now; the engine does not use it.
+- **Hosted `list_skills` and `load_skill` serve the engine's skills as well as the tenant's.** Each skill says its `source`, `engine` or `tenant`. A tenant skill with the same name wins, and the listing says so. Engine skills load when the tenant tree cannot be read.
+- The hosted image now carries `plugin/skills`. A test fails if the Dockerfile or `deploy.sh` stops shipping it.
+- **Wrap up** runs the knowledge check for each project the session touched, on both paths. The "no such skill in this tenant" skip is gone, because the skill is always there. It still does less when the answers were settled in conversation, when a check already ran on that project, or when the session only read the project.
+- `set_knowledge_page` now sets `updated_at` when it changes a page. It never did, so a page answered later still read as last touched on the day it was recorded.
+- The verb's description now says to pass `published_on`: the default is the UTC day, which is tomorrow's date on a US evening.
+- A tenant that keeps its own `belief-check` skill can remove it.
+
 ## v0.144.0 — 2026-11-14
 
 **A project keeps the links to its belief pages.** One new verb. Needs MC-2 migration 226 (`project_belief_pages`), already applied.

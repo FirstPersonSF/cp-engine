@@ -100,6 +100,27 @@ def test_the_local_build_context_admits_every_copy_source():
         )
 
 
+def test_the_image_ships_the_engines_skills():
+    """`list_skills` / `load_skill` serve `plugin/skills/*` to hosted sessions,
+    which have no plugin. The directory is outside the wheel, so it reaches
+    the image only if all three files name it — and lands where
+    `engine_skills_dir()` looks (beside server.py)."""
+    assert "plugin/skills" in _copy_sources(), "the Dockerfile no longer COPYs plugin/skills"
+    docker = (_HERE / "Dockerfile").read_text(encoding="utf-8")
+    assert re.search(r"^COPY plugin/skills \./plugin/skills$", docker, re.M), (
+        "plugin/skills must land at ./plugin/skills, beside server.py"
+    )
+    assert "plugin/skills" in _staged_paths(), "deploy.sh no longer stages plugin/skills"
+    rules = (_HERE / "Dockerfile.dockerignore").read_text(encoding="utf-8").splitlines()
+    assert "!plugin/skills/" in rules, "the local build context excludes plugin/skills"
+    server_src = (_HERE / "server.py").read_text(encoding="utf-8")
+    assert 'ENGINE_SKILLS_REL = "plugin/skills"' in server_src
+    # Every shipped skill has its SKILL.md; the knowledge check has its page.
+    skills = _ROOT / "plugin" / "skills"
+    assert (skills / "knowledge-check" / "SKILL.md").is_file()
+    assert (skills / "knowledge-check" / "references" / "page-template.html").is_file()
+
+
 def test_railway_toml_points_at_the_dockerfile_from_the_stage_root():
     text = (_HERE / "railway.toml").read_text(encoding="utf-8")
     m = re.search(r'dockerfilePath\s*=\s*"([^"]+)"', text)
@@ -121,6 +142,9 @@ def test_deploy_sh_stages_a_buildable_context():
         assert (stage / "src" / "cp_engine" / "__init__.py").is_file()
         assert (stage / "pyproject.toml").is_file()
         assert (stage / "prototypes/hosted-mcp/server.py").is_file()
+        assert (stage / "plugin/skills/knowledge-check/SKILL.md").is_file()
+        assert (stage / "plugin/skills/knowledge-check/references/page-template.html").is_file()
+        assert not (stage / "plugin/commands").exists(), "only the skills ship"
         commit = (stage / "prototypes/hosted-mcp/BUILD_COMMIT").read_text().strip()
         assert re.fullmatch(r"[0-9a-f]{7,40}(-dirty)?", commit), commit
         assert not (stage / ".venv").exists() and not (stage / "tests").exists()
