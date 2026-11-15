@@ -50,6 +50,7 @@ import binascii
 import contextlib
 import hashlib
 import os
+import re
 import tempfile
 import uuid
 from pathlib import Path
@@ -3008,6 +3009,11 @@ def get_map_state(project_code: str) -> dict[str, Any]:
     name it in `serves`. With no effort named yet the Map shows one default
     line that holds every card. Name or change an effort with `set_effort`.
 
+    `belief_pages` lists the belief-check pages published for this
+    workstream, newest first: each one's `url`, `published_on`,
+    `answered_on` (empty until a person has answered it), `note` and
+    `set_by`. Record one with `set_belief_page`.
+
     Read this before a `set_*` Map verb: names repeat across phases, and the
     ids here settle which one you mean. Team members only.
     """
@@ -3041,6 +3047,7 @@ def get_map_state(project_code: str) -> dict[str, Any]:
     }
     if _lines_are_efforts(client, pid, estimate):
         state.update(_efforts_state(client, pid))
+    state.update(_belief_pages_state(client, pid))
     _srv.audit(client, tool, {"project_code": project_code},
                len(state["phases"]) or len(state.get("efforts") or []))
     return {"project_code": project_code, **state}
@@ -3246,6 +3253,155 @@ def set_map_mark(
     return {"project_code": project_code, "item": item_key, "name": label,
             "mark": mark, "removed": after is None and before is not None,
             "caller": _map_caller()}
+
+
+# ── belief-check pages: the page a belief check publishes ─────────────
+#
+# One row of `project_belief_pages` (mc-2 mig 226) per page per workstream:
+# its link, the day it was published, and the day a person answered it.
+
+_BELIEF_PAGE_COLUMNS = "id, url, published_on, answered_on, note, set_by, created_at"
+_BELIEF_PAGE_FIELDS = ("url", "published_on", "answered_on", "note", "set_by")
+_ISO_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _belief_page_out(row: dict[str, Any]) -> dict[str, Any]:
+    return {k: row.get(k) for k in _BELIEF_PAGE_FIELDS}
+
+
+def _belief_day(value: str, what: str) -> str:
+    """`value` as `YYYY-MM-DD`, or a `MapError` saying what was passed."""
+    from datetime import date
+
+    from cp_engine.spine_map import MapError
+
+    text = (value or "").strip()
+    try:
+        if not _ISO_DAY.fullmatch(text):
+            raise ValueError(text)
+        return date.fromisoformat(text).isoformat()
+    except ValueError as exc:
+        raise MapError(f"{what} must be a date as YYYY-MM-DD (got {value!r})") from exc
+
+
+def _belief_pages_state(client, project_id: str) -> dict[str, Any]:
+    """What `get_map_state` adds: the workstream's belief-check pages, newest
+    first. A failed read is reported beside an empty list, never raised."""
+    from cp_engine.mc2_db import Tables
+
+    try:
+        rows = (
+            client.table(Tables.PROJECT_BELIEF_PAGES)
+            .select(_BELIEF_PAGE_COLUMNS)
+            .eq("project_id", project_id)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as exc:  # noqa: BLE001 — a partial read, not a failed verb
+        return {"belief_pages": [],
+                "belief_pages_error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+    rows.sort(key=lambda r: (str(r.get("published_on") or ""), str(r.get("created_at") or "")),
+              reverse=True)
+    return {"belief_pages": [_belief_page_out(r) for r in rows]}
+
+
+@hosted_tool
+def set_belief_page(
+    project_code: str,
+    url: str,
+    published_on: str | None = None,
+    answered_on: str | None = None,
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Record a belief-check page for a workstream, or change what is recorded.
+
+    A belief check publishes a page of what Claude believes about a project
+    for a person to correct. This keeps the link with the workstream, so the
+    next session finds the page and knows whether it was answered.
+
+    - **First call for a `url`:** records the page. `published_on` is today
+      unless you pass the day it went out.
+    - **A later call for the same `url`:** changes only what you pass.
+      `answered_on` is the day a person answered the page; `""` clears it.
+      `note` is one line on the page; `""` clears it.
+
+    `url` is the page's full `https://` link. Dates are `YYYY-MM-DD`, and a
+    date someone told you or a record states, never a guess. Works on any
+    workstream, with or without an agreement. `get_map_state` lists the
+    pages under `belief_pages`.
+
+    Refused, with nothing written: a `url` that is not `https://`, a date
+    that is not `YYYY-MM-DD`, and clearing `published_on`. Team members only.
+    """
+    tool = "set_belief_page"
+    refused = _team_gate(tool, project_code)
+    if refused:
+        return refused
+    from datetime import UTC, datetime
+
+    from cp_engine import spine_map
+    from cp_engine.mc2_db import Tables
+
+    client = _srv.user_client()
+    found = _resolve(client, project_code)
+    if found is None:
+        return _not_found(client, tool, project_code)
+    pid, _cid = found
+    link = (url or "").strip()
+    if not link.startswith("https://") or len(link) <= len("https://") or any(
+            ch.isspace() for ch in link):
+        return _map_refuse(client, tool, project_code,
+                           f"url must be the page's full https:// link (got {url!r})")
+    try:
+        passed: dict[str, Any] = {}
+        if published_on is not None:
+            if not published_on.strip():
+                raise spine_map.MapError(
+                    "published_on cannot be cleared; pass the day as YYYY-MM-DD")
+            passed["published_on"] = _belief_day(published_on, "published_on")
+        if answered_on is not None:
+            passed["answered_on"] = (_belief_day(answered_on, "answered_on")
+                                     if answered_on.strip() else None)
+        if note is not None:
+            passed["note"] = note.strip() or None
+        existing = (
+            client.table(Tables.PROJECT_BELIEF_PAGES)
+            .select(_BELIEF_PAGE_COLUMNS)
+            .eq("project_id", pid)
+            .eq("url", link)
+            .execute()
+            .data
+            or []
+        )
+        before = existing[0] if existing else None
+        if before is None:
+            row = {"project_id": pid, "url": link,
+                   "published_on": datetime.now(UTC).date().isoformat(),
+                   "answered_on": None, "note": None,
+                   **passed, "set_by": _map_caller()}
+            client.table(Tables.PROJECT_BELIEF_PAGES).insert(row).execute()
+            saved, changed = row, sorted(passed)
+        else:
+            patch = {k: v for k, v in passed.items() if before.get(k) != v}
+            changed = sorted(patch)
+            if patch:
+                patch["set_by"] = _map_caller()
+                client.table(Tables.PROJECT_BELIEF_PAGES).update(patch).eq(
+                    "id", before["id"]).execute()
+            saved = {**before, **patch}
+    except spine_map.MapError as exc:
+        return _map_refuse(client, tool, project_code, str(exc))
+    except Exception as exc:  # noqa: BLE001 — MCP boundary
+        return _map_refuse(client, tool, project_code, f"{type(exc).__name__}: {str(exc)[:300]}")
+    wrote = before is None or bool(changed)
+    _srv.audit(client, tool, {"project_code": project_code, "url": link,
+                              "outcome": ("created" if before is None
+                                          else "updated" if changed else "unchanged")},
+               1 if wrote else 0)
+    return {"project_code": project_code, "belief_page": _belief_page_out(saved),
+            "created": before is None, "changed": changed,
+            "level": _srv._level_for(project_code)}
 
 
 @hosted_tool

@@ -333,6 +333,8 @@ def test_registry_covers_known_tables() -> None:
         # work item serves, and what a person said about one Map item.
         # (Agreements are read through the `map_agreements` function.)
         "work_item_deliverables", "spine_map_marks",
+        # The pages a belief check publishes (mc-2 mig 226).
+        "project_belief_pages",
     }
     names = {
         v
