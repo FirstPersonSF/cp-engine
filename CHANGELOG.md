@@ -4,7 +4,7 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
-## Unreleased
+## v0.145.0 — 2026-11-15
 
 **The belief check is now the knowledge check, and every tenant has it.** One verb renamed, none added. Needs MC-2 migration 227 (`project_belief_pages` becomes `project_knowledge_pages`).
 
