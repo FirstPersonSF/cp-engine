@@ -91,31 +91,38 @@ Next up ≤ 6 bullets; Blockers ≤ 5 bullets). It also flags a summary that
 was never authored although meetings have been ingested ("N meetings
 ingested since <date>") — author that one from its sprint files.
 
-## 1b — Belief check, when the tenant has one
+## 1b — Knowledge check
 
-**Check for the skill before anything else: `.claude/skills/belief-check/SKILL.md`
-in the tenant.** If it is not there, say "no belief-check skill in this tenant"
-in one line and go to step 2. The skill is the tenant's; this step only says
-when to run it.
+**Run the `knowledge-check` skill once for each project the session touched**,
+after that project's Exec Summary is refreshed (the check reads the summary
+you just wrote). One project per run. Never sweep the tenant.
 
-If it is there, run it **once for each project the session touched**, after
-that project's Exec Summary is refreshed (the check reads the summary you just
-wrote). One project per run. Never sweep the tenant.
+The skill ships with this plugin (`cp-engine:knowledge-check`, beside this
+one), so every tenant has it: there is no tenant this step is skipped for. If
+the tenant keeps its own `.claude/skills/knowledge-check/`, follow that copy.
+Load the skill and follow it; do not run a check from this paragraph, which
+carries none of its limits (never retire, never bulk route, never change the
+brief).
 
-A belief check states what a session with no history would believe about the
-project (the brief, what we last shared, what the client said, what we owe,
-who decides), makes only the filing changes the record proves, and gives the
-person a short page to correct. It is how the spine is kept right without
-asking anyone to sort, route or link.
+A knowledge check states what a session with no history would believe about
+the project (the brief, what we last shared, what the client said, what we
+owe, who decides), makes only the filing changes the record proves, and gives
+the person a short page to correct. It is how the spine is kept right without
+asking anyone to sort, route or link. It was called the belief check until
+2026-11-15.
 
 Three cases where you do less, and say so in one line each:
 
 - **The session already settled the five answers with the user in
   conversation.** Skip the page for that project and say that you did.
-- **A belief check ran on that project earlier in this session.** Do not run
-  a second one; name the earlier page.
+- **A knowledge check ran on that project earlier in this session.** Do not
+  run a second one; name the earlier page.
 - **The session only read the project.** A project you did not write to is not
   "touched".
+
+If this session has no way to publish a page, give the five answers, the
+changes you made and the questions in the conversation, and say that there is
+no page.
 
 Do not wait at wrap up for the person to answer the page. Give them the link,
 open a commitment for their check if the skill says to, and carry on with
@@ -337,18 +344,21 @@ rolls off entries older than ~4 weeks; here the verb only REPORTS them
 (`roll_off`, under `backend`). When `roll_off.count` is non-zero, h5's
 `rotate_word_count` performs the trim.
 
-### h1b — Belief check, when the tenant has one
+### h1b — Knowledge check
 
-**`list_skills` first.** If it names no `belief-check` skill, say "no
-belief-check skill in this tenant" in one line and go to h2. If it does, load
-it with `load_skill` (name `belief-check`) and follow it **once for each
-project the session touched**, after h1 has refreshed that project's Exec Summary. One project per
-run. Never sweep the tenant.
+**Load the skill: `load_skill("knowledge-check")`.** It ships with the
+server, so it loads even when the tenant tree cannot be read, and there is no
+tenant this step is skipped for. `list_skills` shows where it comes from:
+`source` is `engine`, or `tenant` when the tenant keeps its own copy, which is
+then the one served. Follow it **once for each project the session touched**,
+after h1 has refreshed that project's Exec Summary. One project per run.
+Never sweep the tenant. Its page template is
+`load_skill("knowledge-check", reference="page-template.html")`.
 
 The same three cases as the CLI path apply: skip the page and say so when the
 session already settled the five answers with the user in conversation, when a
-belief check already ran on that project in this session, or when the session
-only read the project.
+knowledge check already ran on that project in this session, or when the
+session only read the project.
 
 **The page needs a tool this session may not have.** The skill publishes its
 page with the Artifact tool. If this session has no way to publish a page, do

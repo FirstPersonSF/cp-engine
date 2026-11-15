@@ -4,7 +4,7 @@ Mission Control's Map (mc-2 `backend/src/lib/spine_map.py`) is a read-only
 list: one line per deliverable on the scope of work, its work items folded
 inside, and four columns of what was gathered, made, shared and said back.
 Nobody files into it by hand. A person says where things go, in a session or
-on a belief-check page, and Claude records it.
+on a knowledge-check page, and Claude records it.
 
 Four things can be recorded, in three stores mc-2 owns the schema of:
 

@@ -56,7 +56,7 @@ HINT_SUFFIX = " — /cp-help for details"
 
 # Order the plugin entries the way a person meets them, not alphabetically.
 _ORDER = (
-    "cp-wrapup", "cp-prep", "build-stakeholder", "proposal-architect",
+    "cp-wrapup", "cp-prep", "knowledge-check", "build-stakeholder", "proposal-architect",
     "rfp-authoring", "cp-wrap", "cp-help", "cp-tools",
 )
 

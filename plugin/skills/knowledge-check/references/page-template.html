@@ -1,0 +1,160 @@
+<title>{{CODE}} Knowledge Check</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&display=swap">
+<style>
+/* Layout: one column to read top to bottom. Five answers, each with its confidence, its source and a box to correct it; then what was changed, what is uncertain, what could not be done. */
+:root{
+  --bg:#f3f5f8; --surface:#ffffff; --sunk:#e8ecf2; --fg:#172033; --muted:#586377; --line:#d6dce6;
+  --accent:#2d55c4; --accent-fg:#ffffff; --accent-soft:#e3e9fb;
+  --sure:#18794e; --sure-soft:#dcf3e7; --fair:#2d55c4; --fair-soft:#e3e9fb; --guess:#9a5a06; --guess-soft:#fbeed6;
+  --display:"Space Grotesk","Inter",system-ui,sans-serif; --body:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#11141b; --surface:#1a1f29; --sunk:#232a36; --fg:#e6e9f0; --muted:#9aa3b5; --line:#303848;
+  --accent:#8ea6f7; --accent-fg:#0f131b; --accent-soft:#252f52;
+  --sure:#5fd29b; --sure-soft:#173527; --fair:#8ea6f7; --fair-soft:#252f52; --guess:#f0b35c; --guess-soft:#3a2c14;
+  color-scheme:dark } }
+:root[data-theme="dark"]{
+  --bg:#11141b; --surface:#1a1f29; --sunk:#232a36; --fg:#e6e9f0; --muted:#9aa3b5; --line:#303848;
+  --accent:#8ea6f7; --accent-fg:#0f131b; --accent-soft:#252f52;
+  --sure:#5fd29b; --sure-soft:#173527; --fair:#8ea6f7; --fair-soft:#252f52; --guess:#f0b35c; --guess-soft:#3a2c14;
+  color-scheme:dark }
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:var(--body);font-size:15.5px;line-height:1.55}
+.wrap{max-width:780px;margin:0 auto;padding-block:28px 90px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+h1,h2,h3{font-family:var(--display);font-weight:600;text-wrap:balance;margin:0}
+h1{font-size:29px;letter-spacing:-.01em}
+h2{font-size:20px;margin:42px 0 4px}
+h3{font-size:18px}
+p{margin:8px 0}
+ul{margin:8px 0;padding-left:20px}
+li{margin:4px 0}
+.lede{color:var(--muted);font-size:16px}
+.muted{color:var(--muted)}
+.meta{display:flex;flex-wrap:wrap;gap:6px 10px;margin-top:14px;font-size:13px;color:var(--muted);align-items:center}
+.pill{display:inline-flex;align-items:center;border-radius:99px;padding:2px 10px;font-size:12.5px;font-weight:500;background:var(--sunk);color:var(--muted);white-space:nowrap}
+.pill.sure{background:var(--sure-soft);color:var(--sure)}
+.pill.fair{background:var(--fair-soft);color:var(--fair)}
+.pill.guess{background:var(--guess-soft);color:var(--guess)}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin-top:14px}
+.card .head{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;margin-bottom:6px}
+.src{font-size:13.5px;color:var(--muted);border-top:1px solid var(--line);margin-top:12px;padding-top:10px}
+.src b{font-weight:600;color:var(--fg)}
+.fix{margin-top:12px}
+.fix label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:4px}
+textarea{font:inherit;color:inherit;width:100%;border:1px solid var(--line);border-radius:8px;background:var(--bg);padding:8px 10px;resize:vertical;min-height:44px}
+textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.saved{font-size:12px;color:var(--muted);min-height:16px;margin-top:3px}
+.log{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:6px 20px;margin-top:12px}
+.log div{padding:10px 0;border-top:1px solid var(--line)}
+.log div:first-child{border-top:0}
+.log small{display:block;color:var(--muted);font-size:13px}
+.q{counter-reset:q}
+.q .card{counter-increment:q}
+.q h3::before{content:counter(q) ". "}
+
+.done{margin:28px 0 8px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.done button{font:inherit;font-weight:600;padding:12px 28px;border-radius:10px;border:0;cursor:pointer;background:var(--accent,#1f6feb);color:var(--accent-fg,#fff)}
+.done button:disabled{opacity:.6;cursor:default}
+.done span{color:var(--muted,#667)}
+</style>
+
+<!--
+  TEMPLATE. Replace every {{...}} and every block marked FILL. Keep the ids:
+  each correction box is <textarea id="t-<id>" data-about="<the question>"> with a
+  matching <div class="saved" id="s-<id>">. The script finds the boxes by that
+  pattern and saves each to the page database as corrections/<id>.
+  Confidence pill classes: "sure", "fair" (Fairly sure), "guess" (Guessing).
+-->
+<div class="wrap">
+  <h1>{{CODE}} Knowledge Check</h1>
+  <p class="lede">What Claude believes about {{PROJECT NAME}} after one unattended pass, written for {{PERSON}} to correct. Read it like a briefing from someone who has only the records to go on. Where it is wrong, say so in the box; nothing else is needed.</p>
+  <div class="meta">
+    <span>Written {{DATE AND TIME}}</span>
+    <span class="pill sure">Sure</span><span class="pill fair">Fairly sure</span><span class="pill guess">Guessing</span>
+    <span id="state">Connecting</span>
+  </div>
+
+  <h2>Five answers</h2>
+
+  <!-- FILL: one card for each of the five questions, in this order and with these ids:
+       brief, shared, said, owed, who. -->
+  <section class="card" id="c-brief">
+    <div class="head"><h3>What is the brief?</h3><span class="pill fair">Fairly sure</span></div>
+    <p>{{THE BELIEF, IN PLAIN WORDS}}</p>
+    <div class="src"><b>From:</b> {{WHAT WAS READ}}. <b>Not read:</b> {{WHAT WAS NOT}}.</div>
+    <div class="fix"><label for="t-brief">Correct this</label><textarea id="t-brief" data-about="What is the brief?" rows="2"></textarea><div class="saved" id="s-brief"></div></div>
+  </section>
+  <!-- ...shared ("What did we last share?"), said ("What did the client say back?"),
+       owed ("What do we owe?"), who ("Who decides?") follow the same shape. -->
+
+  <h2>What I changed</h2>
+  <p class="muted">{{N}} changes, all reversible. Each is marked as made by this pass.</p>
+  <div class="log">
+    <!-- FILL: one <div> per change; <small> for the reason. -->
+    <div>{{CHANGE}}<small>{{WHY}}</small></div>
+  </div>
+
+  <h2>What I am unsure about</h2>
+  <p class="muted">{{N}} questions. I did not act on any of them.</p>
+  <div class="q">
+    <!-- FILL: at most six. ids q1..q6. -->
+    <section class="card"><h3>{{QUESTION}}</h3><p>{{ONE OR TWO SENTENCES OF CONTEXT}}</p><div class="fix"><label for="t-q1">Answer</label><textarea id="t-q1" data-about="{{QUESTION}}" rows="1"></textarea><div class="saved" id="s-q1"></div></div></section>
+  </div>
+
+  <h2>What this pass could not see</h2>
+  <ul>
+    <!-- FILL: what was not read, what is not in cp, what only a person knows. -->
+    <li>{{LIMIT}}</li>
+  </ul>
+
+  <h2>Anything else wrong?</h2>
+  <div class="card"><div class="fix" style="margin-top:0"><label for="t-other">Tell me</label><textarea id="t-other" data-about="Anything else wrong?" rows="3"></textarea><div class="saved" id="s-other"></div></div></div>
+  <div class="done"><button id="done-btn" type="button">I'm done</button><span id="done-state"></span></div>
+</div>
+
+<script>
+// Every <textarea id="t-<id>" data-about="..."> on the page is a correction box.
+const BOXES = [...document.querySelectorAll('textarea[id^="t-"]')];
+const IDS = BOXES.map(b=>b.id.slice(2));
+const LABEL = Object.fromEntries(BOXES.map(b=>[b.id.slice(2), b.dataset.about||b.id.slice(2)]));
+let db=null;
+const state=document.getElementById("state");
+const timers={};
+function setSaved(id,t){ const el=document.getElementById("s-"+id); if(el) el.textContent=t; }
+IDS.forEach(id=>{
+  const ta=document.getElementById("t-"+id);
+  ta.addEventListener("input",()=>{
+    clearTimeout(timers[id]);
+    if(!db){ setSaved(id,"Not saved in this view"); return; }
+    setSaved(id,"");
+    timers[id]=setTimeout(()=>{
+      db.doc("corrections/"+id).set({about:LABEL[id],text:ta.value,at:new Date().toISOString()})
+        .then(()=>setSaved(id,"Saved")).catch(()=>setSaved(id,"Not saved"));
+    },900);
+  });
+});
+(async()=>{
+  try{ db = window.claude && window.claude.use ? await window.claude.use("db") : null; }catch(e){ db=null; }
+  if(!db){ state.textContent="Corrections can't be saved in this view"; return; }
+  const timer=setTimeout(()=>{ state.textContent="Corrections can't be saved in this view"; },10000);
+  db.collection("corrections").onSnapshot(snap=>{
+    clearTimeout(timer); state.textContent="Corrections save as you type";
+    snap.docs.forEach(d=>{ const ta=document.getElementById("t-"+d.id); const v=(d.data()||{}).text||"";
+      if(ta && document.activeElement!==ta && ta.value!==v) ta.value=v; });
+  },()=>{ clearTimeout(timer); state.textContent="Corrections can't be saved in this view"; });
+})();
+// "I'm done": flush any pending edits, then record that the person has finished.
+const doneBtn=document.getElementById("done-btn"), doneState=document.getElementById("done-state");
+if(doneBtn) doneBtn.addEventListener("click",async()=>{
+  if(!db){ doneState.textContent="Not saved in this view"; return; }
+  doneBtn.disabled=true; doneState.textContent="Saving";
+  try{
+    await Promise.all(IDS.map(id=>{ clearTimeout(timers[id]); const ta=document.getElementById("t-"+id);
+      return ta.value.trim() ? db.doc("corrections/"+id).set({about:LABEL[id],text:ta.value,at:new Date().toISOString()}) : null; }));
+    await db.doc("corrections/done").set({about:"Finished",text:"done",at:new Date().toISOString()});
+    doneState.textContent="Saved. Tell Claude you're done.";
+  }catch(e){ doneState.textContent="Not saved. Try again."; }
+  doneBtn.disabled=false;
+});
+</script>

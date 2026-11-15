@@ -62,6 +62,12 @@ RUN sh -c 'if [ -n "$gh_token" ]; then \
 COPY prototypes/hosted-mcp/server.py prototypes/hosted-mcp/observability.py \
      prototypes/hosted-mcp/ported_tools.py prototypes/hosted-mcp/BUILD_COMMI[T] ./
 
+# The engine's own skills (`plugin/skills/*`): `list_skills` / `load_skill`
+# serve them to a hosted session, which has no plugin. They land beside
+# server.py, where `engine_skills_dir()` looks first. Not part of the pip
+# install above: the plugin directory is not in the wheel.
+COPY plugin/skills ./plugin/skills
+
 # Railway injects PORT; bind all interfaces behind its proxy.
 ENV HOST=0.0.0.0 \
     PYTHONUNBUFFERED=1

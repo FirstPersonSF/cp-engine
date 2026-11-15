@@ -491,7 +491,7 @@ the `spine/` mirror, which may lag the live MC-2 row.
 Mission Control's Map is a read-only list: one line per deliverable on the
 scope of work, its work items folded inside, and four columns (Background,
 Work sessions, Shared, Feedback). Nobody files into it by hand. A person says
-where things go, in chat or on a belief-check page, and you record it with
+where things go, in chat or on a knowledge-check page, and you record it with
 these verbs. Where a CARD sits is still `set_spine_element(serves=...)`:
 route it to a work item or a deliverable, and filing one card that others
 serve places everything hanging off it.
@@ -506,7 +506,7 @@ serve places everything hanging off it.
   its lines are its efforts, under `efforts` (id, name, overview, position,
   status, due date, and `cards`: live cards naming it in `serves`). With no
   effort named, the Map shows one default line that holds every card.
-  `belief_pages` lists the belief-check pages published for the workstream,
+  `knowledge_pages` lists the knowledge-check pages published for the workstream,
   newest first: `url`, `published_on`, `answered_on` (empty until a person
   has answered it), `note`, `set_by`.
 - `set_effort(project_code, name?, effort_id?, status?, overview?, position?)`
@@ -532,10 +532,10 @@ serve places everything hanging off it.
   card and sprint prep warning that the deliverable is past due. On a
   workstream with no agreement, `item` is an effort's id or name. Anything
   left out stays as it is; `""` clears that one thing.
-- `set_belief_page(project_code, url, published_on?, answered_on?, note?)`
-  — keep a belief-check page's link with its workstream. The first call for
-  a `url` records the page; `published_on` is today unless you pass the day
-  it went out. A later call for the same `url` changes only what you pass:
+- `set_knowledge_page(project_code, url, published_on?, answered_on?, note?)`
+  — keep a knowledge-check page's link with its workstream. The first call for
+  a `url` records the page. Pass `published_on`: the default is the UTC day,
+  which is tomorrow's date on a US evening. A later call for the same `url` changes only what you pass:
   `answered_on` is the day a person answered the page. Dates are
   `YYYY-MM-DD`; `""` clears `answered_on` or `note`. `url` is the full
   `https://` link. Works on any workstream, with or without an agreement.

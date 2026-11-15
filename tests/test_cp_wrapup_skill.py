@@ -261,66 +261,103 @@ def _cli_half(skill: str) -> str:
     return skill[: skill.index("## The hosted path")]
 
 
-def test_both_paths_run_the_tenants_belief_check_after_the_summary(
+def _cli_step(skill: str) -> str:
+    """Step 1b of the Claude Code path, found by its heading: the old heading
+    ("Belief check, when the tenant has one") is not this step."""
+    cli = _cli_half(skill)
+    return cli[cli.index("## 1b — Knowledge check\n") : cli.index("## 2 —")]
+
+
+def _hosted_step(hosted_half: str) -> str:
+    return hosted_half[
+        hosted_half.index("### h1b — Knowledge check\n") : hosted_half.index("### h2 —")
+    ]
+
+
+def _flat(text: str) -> str:
+    return " ".join(text.replace("**", "").split())
+
+
+def test_both_paths_run_the_knowledge_check_after_the_summary(
     skill: str, hosted_half: str
 ) -> None:
     """#446. The check reads the Exec Summary the wrap-up just wrote, so it
     sits after step 1 on each path and before the sweeps."""
     cli = _cli_half(skill)
-    assert cli.index("## 1 —") < cli.index("## 1b — Belief check") < cli.index("## 2 —")
+    assert cli.index("## 1 —") < cli.index("## 1b — Knowledge check\n") < cli.index("## 2 —")
     assert (
         hosted_half.index("### h1 —")
-        < hosted_half.index("### h1b — Belief check")
+        < hosted_half.index("### h1b — Knowledge check\n")
         < hosted_half.index("### h2 —")
     )
-    for half in (cli, hosted_half):
-        flat = " ".join(half.replace("**", "").split())
+    for step in (_cli_step(skill), _hosted_step(hosted_half)):
+        flat = _flat(step)
         assert "once for each project the session touched" in flat
         assert "Never sweep the tenant" in flat
 
 
-def test_a_tenant_without_the_skill_is_skipped_not_improvised(
+def test_the_skill_ships_with_the_engine_so_no_tenant_is_skipped(
     skill: str, hosted_half: str
 ) -> None:
-    """The skill is the tenant's. Where it is absent the step must say so and
-    move on: a model that improvises a belief check from this one paragraph
-    files things with none of the skill's limits (never retire, never bulk
-    route, never change the brief)."""
-    cli = _cli_half(skill)
-    assert ".claude/skills/belief-check/SKILL.md" in cli
-    for half in (cli, hosted_half):
-        assert "no belief-check skill in this tenant" in " ".join(half.split())
+    """2026-11-15. The skill moved from one tenant into the engine. The steps
+    used to open by looking for the tenant's copy and skipping in one line
+    when there was none; that skip would now drop the check everywhere the
+    tenant has no copy, which is every tenant but one."""
+    assert (_SKILL.parent.parent / "knowledge-check" / "SKILL.md").is_file()
+    assert (_SKILL.parent.parent / "knowledge-check" / "references" / "page-template.html").is_file()
+    for half in (_cli_half(skill), hosted_half):
+        flat = _flat(half)
+        assert "skill in this tenant" not in flat, "the tenant-has-none skip is back"
+        assert "when the tenant has one" not in flat
+        assert "belief-check" not in flat, "the old skill name is still looked for"
+    cli = _flat(_cli_step(skill))
+    assert "`cp-engine:knowledge-check`" in cli
+    assert "there is no tenant this step is skipped for" in cli
+    # A model that runs a check from the step's own paragraph files things
+    # with none of the skill's limits.
+    assert "do not run a check from this paragraph" in cli
+    assert "never retire, never bulk route, never change the brief" in cli
+    hosted = _flat(_hosted_step(hosted_half))
+    assert "there is no tenant this step is skipped for" in hosted
+
+
+def test_the_three_real_skips_are_kept_on_both_paths(skill: str, hosted_half: str) -> None:
+    """What is left once "the tenant has none" is gone: three cases where the
+    step does less and says so."""
+    cli = _flat(_cli_step(skill))
+    assert "The session already settled the five answers with the user in conversation." in cli
+    assert "A knowledge check ran on that project earlier in this session." in cli
+    assert "The session only read the project." in cli
+    hosted = _flat(_hosted_step(hosted_half))
+    assert "already settled the five answers with the user in conversation" in hosted
+    assert "a knowledge check already ran on that project in this session" in hosted
+    assert "the session only read the project" in hosted
 
 
 def test_the_hosted_path_finds_the_skill_through_the_server(hosted_half: str) -> None:
-    """A hosted session cannot see `.claude/skills/`; the tree exposes skills
-    through two verbs. Naming a file path here would send it to a file it
-    cannot read."""
-    step = hosted_half[
-        hosted_half.index("### h1b — Belief check") : hosted_half.index("### h2 —")
-    ]
-    assert "`list_skills`" in step and "`load_skill`" in step
-    assert ".claude/skills" not in step
+    """A hosted session cannot see the plugin or `.claude/skills/`; the server
+    hands skills out through two verbs. Naming a file path here would send it
+    to a file it cannot read."""
+    step = _hosted_step(hosted_half)
+    assert '`load_skill("knowledge-check")`' in step and "`list_skills`" in step
+    assert '`load_skill("knowledge-check", reference="page-template.html")`' in step
+    assert "`engine`" in step and "`tenant`" in step
+    assert ".claude/skills" not in step and "plugin/skills" not in step
 
 
 def test_no_page_tool_means_answers_in_conversation_not_a_skipped_check(
-    hosted_half: str,
+    skill: str, hosted_half: str,
 ) -> None:
     """The page needs the Artifact tool, which a hosted session may lack. The
     check still runs; only the page is dropped, and no link is invented."""
-    step = " ".join(
-        hosted_half[
-            hosted_half.index("### h1b — Belief check") : hosted_half.index("### h2 —")
-        ].split()
-    )
+    step = _flat(_hosted_step(hosted_half))
     assert "do not skip the check and do not invent a link" in step
     assert "Say that there is no page" in step
+    cli = _flat(_cli_step(skill))
+    assert "no way to publish a page" in cli and "say that there is no page" in cli
 
 
 def test_wrap_up_does_not_wait_on_the_persons_answers(skill: str, hosted_half: str) -> None:
     """A wrap-up that blocks on a person is a wrap-up that does not finish."""
-    assert "Do not wait at wrap up for the person to answer the page" in " ".join(
-        _cli_half(skill).split()
-    )
-    assert "Do not wait for the person to answer before h2" in " ".join(hosted_half.split())
-
+    assert "Do not wait at wrap up for the person to answer the page" in _flat(_cli_step(skill))
+    assert "Do not wait for the person to answer before h2" in _flat(_hosted_step(hosted_half))

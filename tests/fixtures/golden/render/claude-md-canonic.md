@@ -301,6 +301,7 @@ about.
 | `what should we watch for on <code>` | any | That project's lookouts: its client's people and client lessons, its project types' lessons, practice lessons — `list_lessons <code>`. |
 | `promote uphill <code>` | any | Copy a decision or commitment from `<code>` to its PARENT — the `promote_uphill` verb (`cxp promote-uphill`). One level per call. |
 | `prep sprint planning` | any | Draft next sprint's planning agenda from every active workstream — run `/cp-prep`. |
+| `knowledge check <code>` | any | State what Claude believes about a project, ask a few questions, and apply the answers — the `knowledge-check` skill. |
 | `create a stakeholder for <name>` | any | Build a card for someone on a project, from LinkedIn and our meetings — the `build-stakeholder` skill. |
 | `draft a proposal for <code>` | any | Write a client-ready Engagement Summary from approved services — the `proposal-architect` skill. |
 | `draft an RFP for <code>` | any | Write an anonymised partner RFP from a project's real scope — the `rfp-authoring` skill. |
