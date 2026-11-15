@@ -4,6 +4,15 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.144.0 — 2026-11-14
+
+**A project keeps the links to its belief pages.** One new verb. Needs MC-2 migration 226 (`project_belief_pages`), already applied.
+
+- **`set_belief_page`** records the page a belief check published for a workstream: its link, the day it was published, and later the day a person answered it. The first call for a link records it; a later call changes only what is passed. It works on any workstream, with or without an agreement.
+- **`get_map_state`** returns `belief_pages`, newest first, so a new session can see that a check was run and whether it was answered. If that read fails the rest of the Map state still comes back, with the reason beside an empty list.
+- Mission Control shows the newest page as a link on the Map (mc-2 #481).
+- Before this the link lived only in the conversation that made the page.
+
 ## v0.143.0 — 2026-11-14
 
 **The wrap report states the final project margin.** No new verbs, no MC-2 migration.
