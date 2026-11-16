@@ -4,6 +4,14 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.145.1 — 2026-11-16
+
+**A starred brief no longer shows as floating.** No new verbs.
+
+- The health line's "Spine unbound · N floating" and `spine_lint`'s "important-but-floating" warned about a workstream's standing brief (`_authored/inputs-briefing`) when it was starred. The brief is what the project's canon binds to, so it serves nothing itself, and no binding could clear the warning. It is now exempt, the way a deliverable is. The morning spine fix skips it too.
+- Any other starred card with no home still warns, a Brief-layer card included.
+- Needs nothing from MC-2. Separately, MC-2 migration 229 fixes `add_spine_version` leaving an old version live when the row ids of the two versions begin with different project codes.
+
 ## v0.145.0 — 2026-11-15
 
 **The belief check is now the knowledge check, and every tenant has it.** One verb renamed, none added. Needs MC-2 migration 227 (`project_belief_pages` becomes `project_knowledge_pages`).

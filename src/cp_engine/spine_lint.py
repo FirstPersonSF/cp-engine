@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import re
 
+from cp_engine.card_class import ENGAGEMENT_IDS
 from cp_engine.clock import tenant_today
 
 # Mirrors ``sprints._TEMPLATE_PLACEHOLDER_RE`` (the `- _<...>_` scaffold
@@ -41,6 +42,15 @@ def is_deliverable(layer: str | None) -> bool:
     return (layer or "").strip().lower() in ("deliverables", "deliverable")
 
 
+def is_standing_brief(est_item_id: str | None) -> bool:
+    """The standing brief (`_authored/inputs-briefing`) is what the project's
+    canon binds to: it is the anchor, so it serves nothing itself and, like a
+    deliverable, is never floating. Starring it says "this is the brief", not
+    "this needs a home" (2026-11-16: sap-5198's starred brief was the health
+    line's one floating element, and no binding could have cleared it)."""
+    return (est_item_id or "") in ENGAGEMENT_IDS
+
+
 def lint_spine_rows(rows: list[dict], canon_ids=frozenset()) -> list[str]:
     """Checks 1 + 2 over live spine rows.
 
@@ -49,7 +59,8 @@ def lint_spine_rows(rows: list[dict], canon_ids=frozenset()) -> list[str]:
     members of the standing brief (active `canon_of` edges): a canon member
     is bound to the brief, the workstream's current truth, so it is never
     floating even though it serves no single deliverable (2026-10-05).
-    A deliverable is never floating either (`is_deliverable`).
+    A deliverable is never floating either (`is_deliverable`), nor is the
+    standing brief itself (`is_standing_brief`).
     Returns one display-ready warning per finding; [] when clean.
     """
     out: list[str] = []
@@ -60,6 +71,7 @@ def lint_spine_rows(rows: list[dict], canon_ids=frozenset()) -> list[str]:
         if (bool(row.get("important"))
                 and eid not in canon_ids
                 and not is_deliverable(row.get("layer"))
+                and not is_standing_brief(eid)
                 and (row.get("binding") or "") == "unbound"
                 and len(serves) == 0):
             # #319: the remedy names only moves that clear the predicate. The

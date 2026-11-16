@@ -249,3 +249,10 @@ def test_apply_marks_serves_confirmed_and_moves_the_brief_seat(monkeypatch):
     assert (ins["kind"], ins["from_item_id"], ins["to_item_id"]) == ("canon_of", "new", "brief")
     assert any(op == "delete" for _, op, _ in client.log)
     assert steps and steps[0].startswith("Bound by the morning spine fix")
+
+
+def test_the_standing_brief_is_not_a_floating_row():
+    brief = {"project_id": P, "est_item_id": "_authored/inputs-briefing",
+             "important": True, "serves": [], "layer": "Brief"}
+    assert not sa.is_floating(brief)
+    assert sa.is_floating({**brief, "est_item_id": "_authored/partner-brief"})

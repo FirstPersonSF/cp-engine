@@ -34,7 +34,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from cp_engine.mc2_db import Tables
-from cp_engine.spine_lint import is_deliverable
+from cp_engine.spine_lint import is_deliverable, is_standing_brief
 
 log = logging.getLogger(__name__)
 
@@ -60,7 +60,8 @@ class Fix:
 def is_floating(row: dict) -> bool:
     """The `spine_lint` / health-line predicate on one live, unbound row."""
     return (bool(row.get("important")) and not (row.get("serves") or [])
-            and not is_deliverable(row.get("layer")))
+            and not is_deliverable(row.get("layer"))
+            and not is_standing_brief(row.get("est_item_id")))
 
 
 def plan(floating: list[dict], relations: list[dict], substance: list[dict]) -> list[Fix]:
