@@ -247,3 +247,81 @@ def test_both_meeting_prompts_ask_for_lessons_sparingly():
                                    transcript="", team_block="", roster_block="")
         assert "\nlessons:\n" in rendered and "Lessons are rare" in rendered
         assert "Person and client lessons are internal" in rendered
+
+
+# ── The bar (the owner's review of 2026-11-16) ─────────────────────────────
+
+
+def test_a_drafted_lesson_tied_to_one_project_is_skipped():
+    """Test 4 of the bar: a date, a project code, a slide or a file version
+    means the lesson belongs to one project."""
+    c = _meeting_client()
+    out = L.record_meeting_candidates(
+        c, [{"text": "Account for his absence the week of 2026-05-07 when sequencing.", "scope": "practice"},
+            {"text": "Go to her for timing decisions on sap-5171, she owns them.", "scope": "practice"},
+            {"text": "Treat his input as a blocker for Slide 15 and the fork.", "scope": "practice"},
+            {"text": "Fall back to the v08 field-tested pains rather than waiting.", "scope": "practice"},
+            {"text": "Her 7/18 outline removed the words page, watch for it.", "scope": "practice"},
+            {"text": "Price an external sales deck separately from an internal one.", "scope": "practice"}],
+        project_code="ibx-5153", meeting_id="m-9")
+    assert len(out["queued"]) == 1
+    assert [w[2]["text"] for w in _writes(c, "insert")] == [
+        "Price an external sales deck separately from an internal one."]
+    why = " | ".join(out["skipped"])
+    for reason in ("names a date", "names a project code", "names a slide", "names a file version"):
+        assert reason in why
+
+
+def test_a_general_lesson_with_a_number_in_it_is_not_mistaken_for_a_date():
+    for text in ("On fixed-fee jobs under about $10k, ask for one logged deliverable.",
+                 "Budget meeting time as its own line; it has run about 30 hours.",
+                 "Get the PO signed 2 weeks before the shoot."):
+        assert L.one_project_reason(text) is None
+
+
+def test_a_source_may_queue_only_so_many():
+    c = _meeting_client()
+    items = [{"text": f"A general lesson number {w} about how we scope work.", "scope": "practice"}
+             for w in ("one", "two", "three", "four", "five")]
+    out = L.record_candidates(c, items, project_code="ibx-5153", source_kind="wrap_report",
+                              source_ref="close:p:2026-11-16", limit=3)
+    assert len(out["queued"]) == 3
+    assert sum("over the limit of 3" in s for s in out["skipped"]) == 2
+
+
+def test_the_bar_names_what_the_owner_kept_and_rejected():
+    for must in ("It recurs", "says what to do", "would not do it anyway", "stands alone",
+                 "Zero is the usual answer", "belongs on their card"):
+        assert must in L.LESSON_BAR
+
+
+def test_known_lessons_are_ours_and_this_clients_never_anothers():
+    c = _Client()
+    c.responses[("projects", "select")] = [{"id": "p-ibx", "company_id": "ibx"}]
+    c.responses[("lessons", "select")] = [
+        {"id": "aaaaaaaa-1", "text": "Practice lesson.", "scope": "practice", "company_id": None},
+        {"id": "bbbbbbbb-2", "text": "Infoblox lesson.", "scope": "client", "company_id": "ibx"},
+        {"id": "cccccccc-3", "text": "SAP lesson.", "scope": "client", "company_id": "sap"},
+        {"id": "dddddddd-4", "text": "Type lesson.", "scope": "type", "company_id": None},
+    ]
+    known = L.known_lessons(c, project_id="p-ibx")
+    assert [r["text"] for r in known] == ["Practice lesson.", "Infoblox lesson.", "Type lesson."]
+    block = L.known_lessons_block(known)
+    assert "- [aaaaaaaa] Practice lesson." in block and "SAP lesson" not in block
+    assert L.known_lessons_block([]) == "(none yet)"
+
+
+def test_a_lesson_seen_again_gains_evidence_and_no_new_row():
+    c = _Client()
+    known = [{"id": "aaaaaaaa-1", "text": "Practice lesson.", "evidence": "First seen on ibx."},
+             {"id": "aaaaaaab-2", "text": "Another.", "evidence": None}]
+    assert L.note_seen_again(c, known, "[aaaaaaaa]", project_code="sap-5198",
+                             evidence="Scope was argued after delivery.", today="2026-11-16")
+    upd = _writes(c, "update")
+    assert len(upd) == 1 and not _writes(c, "insert")
+    assert upd[0][2]["evidence"] == ("First seen on ibx.\nSeen again on sap-5198, 2026-11-16: "
+                                     "Scope was argued after delivery.")
+    # An id that matches nothing, or more than one lesson, changes nothing.
+    assert not L.note_seen_again(c, known, "zzzzzzzz", project_code="x", evidence="e", today="t")
+    assert not L.note_seen_again(c, known, "aaaaaa", project_code="x", evidence="e", today="t")
+    assert len(_writes(c, "update")) == 1

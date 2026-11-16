@@ -13,11 +13,11 @@ with no step flag it only reports what it would do (a dry run).
   --publish   upload each drafted close-out report (wrap-report-*.md in the
               local tenant) to its project's Dropbox spine folder and ingest
               it, so MC-2 shows it on the job page.
-  --dossiers  draft person lookouts (candidates) from the account-scoped
-              stakeholder dossiers, Janet's first.
+  --dossiers  RETIRED 2026-11-16: person cards are not a source of lessons;
+              the flag stops with that message.
 
 Needs SUPABASE_URL / SUPABASE_SERVICE_KEY (and ANTHROPIC_API_KEY for
---close/--dossiers, VOYAGE_API_KEY for embeddings) in the environment, e.g.
+--close, VOYAGE_API_KEY for embeddings) in the environment, e.g.
 `railway run -s cp-engine -- python scripts/backfill_learning.py ...`.
 Prints codes and counts only, never env values.
 """
@@ -33,19 +33,6 @@ from pathlib import Path
 from supabase import create_client
 
 from cp_engine.mc2_db import Tables
-
-_DOSSIER_PROMPT = """\
-From this internal stakeholder dossier, list the LOOKOUTS a teammate should
-know before working with this person: how they decide, what they need to
-see, what tends to go wrong, what to avoid. Only what the dossier supports;
-never invent. 0–4 items, each one sentence, phrased as what to do or watch
-for. Return ONLY a JSON list:
-[{{"text": "...", "moments": ["<optional, from: {moments}>"], "evidence": "<the dossier line>"}}]
-
-# Dossier — {name}
-{body}
-"""
-
 
 def _client():
     url, key = os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_SERVICE_KEY")
@@ -190,37 +177,14 @@ def step_publish(client, url, key, projects, tenant: Path, apply: bool) -> None:
 
 
 def step_dossiers(client, apply: bool) -> None:
-    from cp_engine.lessons import known_lists, record_candidates
-
-    rows = (client.table(Tables.SPINE_SUBSTANCE)
-            .select("id, est_item_id, framing, body, company_id, project_id")
-            .eq("layer", "Stakeholders").eq("scope", "account").eq("status", "live")
-            .execute().data or [])
-    rows.sort(key=lambda r: (0 if "janet" in (r.get("framing") or "").lower() else 1,
-                             r.get("framing") or ""))
-    print(f"  {len(rows)} account-scoped dossiers")
-    if not apply:
-        return
-    llm, embed = _llm(), _embed()
-    _types, moments = known_lists(client)
-    for r in rows:
-        name = (r.get("framing") or "").split(" - ")[0].split(" — ")[0].strip()
-        body = (r.get("body") or "").strip()
-        if len(body) < 200 or not r.get("company_id"):
-            continue
-        try:
-            raw = llm(_DOSSIER_PROMPT.format(name=name, body=body[:12000], moments=", ".join(moments)))
-            start, end = raw.find("["), raw.rfind("]")
-            items = json.loads(raw[start:end + 1]) if start >= 0 else []
-        except Exception as exc:  # noqa: BLE001
-            print(f"  {name}: FAILED {str(exc)[:120]}")
-            continue
-        for it in items:
-            it.update(scope="person", person=name)
-        # Person lessons carry the company; record_candidates takes it from the project.
-        out = record_candidates(client, items, project_code=None, project_id=r.get("project_id"),
-                                source_kind="dossier", source_ref=r.get("est_item_id"), embed=embed)
-        print(f"  {name}: queued {len(out['queued'])}, skipped {len(out['skipped'])}")
+    """Retired 2026-11-16. This step turned every person card into "lessons",
+    101 of them. The owner's review kept 12: the rest restated the card (who
+    to route things through, how a name is spelled) or were generic advice
+    drawn from a LinkedIn page. A fact about a person stays on their card;
+    a person lesson is logged by someone who saw the behaviour
+    (`remember this`), or drafted at close from what happened on the job."""
+    raise SystemExit("--dossiers is retired: person cards are not a source of lessons "
+                     "(see the docstring of step_dossiers)")
 
 
 def main() -> None:
