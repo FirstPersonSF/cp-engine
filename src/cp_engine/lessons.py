@@ -380,6 +380,104 @@ def voyage_embedder(input_type: str = "document") -> Embedder:
     return _embed
 
 
+# ── The bar a drafted lesson has to clear ───────────────────────────────
+#
+# The owner's review of the first 175 drafted lessons (2026-11-16) kept 37.
+# The rest were card facts restated as instructions, dated tasks from one
+# project, generic advice, or complaints about an empty record. This text is
+# what every drafting prompt is given, with examples taken from that review.
+
+LESSON_BAR = """\
+A lesson is something to carry to the NEXT project. Draft one only if it
+passes all four tests:
+1. It recurs: it could come up on another project, or with this client again.
+2. It says what to do, and when. "Handle carefully" is not an instruction.
+3. A competent person would not do it anyway.
+4. It stands alone: no dates, project codes, slide numbers or file names.
+
+Kept by the owner:
+- "When a client sales deck is going external, price it separately from an
+  internal field deck."
+- "Resolve the scope conversation while the work is still in flight, not
+  after delivery."
+- "At kickoff, get in writing who on the client side can end a review round."
+
+Rejected by the owner, and why:
+- "Route visual-asset handoffs through Hector." A fact about a person's
+  role. It belongs on their card.
+- "While Joe is on vacation, use Carla as the backup contact." A dated task.
+- "Expect a pragmatic, collaborative working style." True of any client.
+- "Handle contacts with Aoileann and Bria carefully." No instruction.
+- "Require a deliverable link before a project can be archived." A request
+  for the system, not something a person should have to remember.
+- "Spell his name Jarrod." A spelling, not a lesson.
+
+Zero is the usual answer. Never draft a lesson about the record itself being
+empty or incomplete."""
+
+_ONE_PROJECT = (
+    (_re.compile(r"\b\d{4}-\d{2}-\d{2}\b"), "names a date"),
+    (_re.compile(r"(?<![\w/])\d{1,2}/\d{1,2}(?![\w/])"), "names a date"),
+    (_re.compile(r"\b[a-z]{3}-\d{4}\b", _re.IGNORECASE), "names a project code"),
+    (_re.compile(r"\bslides?[ -]?\d+", _re.IGNORECASE), "names a slide"),
+    (_re.compile(r"\bv\d{2}\b"), "names a file version"),
+)
+
+
+def one_project_reason(text: str) -> str | None:
+    """Why a drafted lesson is tied to one project, or None (test 4 of the
+    bar, the one a pattern can check). A lesson a person logs with
+    `remember this` is not put through this: the person is the review."""
+    for pattern, why in _ONE_PROJECT:
+        if pattern.search(text or ""):
+            return why
+    return None
+
+
+def known_lessons(client, *, project_id: str | None = None, limit: int = 60) -> list[dict]:
+    """The confirmed lessons a drafting prompt should see so it does not
+    draft them again: practice and type lessons, plus the client and person
+    lessons of this project's company (never another company's)."""
+    company = None
+    if project_id:
+        rows = (client.table(Tables.PROJECTS).select("id, company_id")
+                .eq("id", project_id).limit(1).execute().data or [])
+        company = rows[0].get("company_id") if rows else None
+    rows = (client.table(Tables.LESSONS).select("id, text, scope, company_id, evidence")
+            .eq("status", "confirmed").limit(500).execute().data or [])
+    keep = [r for r in rows if r.get("scope") in ("practice", "type")
+            or (company and r.get("company_id") == company)]
+    return keep[: max(0, limit)]
+
+
+def known_lessons_block(rows: Sequence[dict]) -> str:
+    """Those lessons as prompt lines, each with the short id a model cites."""
+    if not rows:
+        return "(none yet)"
+    return "\n".join(f"- [{str(r['id'])[:8]}] {r.get('text') or ''}" for r in rows)
+
+
+def note_seen_again(client, known: Sequence[dict], ref: str, *, project_code: str,
+                    evidence: str, today: str) -> bool:
+    """Record that a lesson we already hold showed up on another project:
+    its evidence gains a line. This is how a lesson gathers weight across
+    projects instead of being drafted again as a new row each time."""
+    ref = (ref or "").strip().strip("[]")
+    if len(ref) < 6:
+        return False
+    hits = [r for r in known if str(r["id"]).startswith(ref)]
+    if len(hits) != 1:
+        return False
+    row = hits[0]
+    line = f"Seen again on {project_code}, {today}: {str(evidence or '').strip()[:300]}"
+    old = (row.get("evidence") or "").strip()
+    if line in old:
+        return False
+    client.table(Tables.LESSONS).update(
+        {"evidence": (old + "\n" + line).strip()[-2000:]}).eq("id", row["id"]).execute()
+    return True
+
+
 def record_meeting_candidates(client, items, *, project_code, meeting_id, embed=None) -> dict:
     """Meeting ingest's lesson queue (phase 2) — `record_candidates` keyed
     on the meeting."""
@@ -396,9 +494,14 @@ def record_candidates(
     source_ref: str | None,
     embed: Embedder | None = None,
     project_id: str | None = None,
+    limit: int | None = None,
 ) -> dict:
     """Queue lessons a meeting ingest proposed, as `candidate`s for the
     project owner to confirm (Drew, 2026-11-11: the owner reviews).
+
+    A drafted lesson that names a date, a project code, a slide or a file
+    version is tied to one project and is skipped (`one_project_reason`).
+    `limit` caps how many one source may queue; the rest are skipped, said.
 
     Never raises and never fails the caller: a bad item is skipped with a
     reason. Idempotent per source (`source_ref`: a meeting, a close-out
@@ -446,6 +549,13 @@ def record_candidates(
         text = str(item.get("text") or "").strip()
         if text.lower() in already:
             out["skipped"].append(f"already queued: {text[:60]}")
+            continue
+        tied = one_project_reason(text)
+        if tied:
+            out["skipped"].append(f"tied to one project ({tied}): {text[:60]}")
+            continue
+        if limit is not None and len(out["queued"]) >= limit:
+            out["skipped"].append(f"over the limit of {limit}: {text[:60]}")
             continue
         scope = str(item.get("scope") or "practice").strip().lower()
         moments = [m for m in _clean_list(item.get("moments")) if m in known_moments]

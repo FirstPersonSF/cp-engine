@@ -131,6 +131,69 @@ def test_run_close_writes_the_draft_queues_lessons_and_requests_reviews(tmp_path
     assert "invoicing" in prompts[0] and "ALLOCATED" in prompts[0]
 
 
+def test_close_drafts_against_the_bar_and_the_lessons_we_hold(tmp_path, monkeypatch):
+    from cp_engine import lessons
+
+    _work, queued = _patch_engine(monkeypatch, tmp_path)
+    known = [{"id": "aaaaaaaa-1", "text": "Resolve scope while the work is in flight.",
+              "evidence": "First seen on ibx-5192."}]
+    monkeypatch.setattr(lessons, "known_lessons", lambda c, **k: known)
+    noted = []
+    monkeypatch.setattr(lessons, "note_seen_again",
+                        lambda c, rows, ref, **k: noted.append((ref, k)) or True)
+    prompts = []
+    llm = lambda p: prompts.append(p) or json.dumps({  # noqa: E731
+        "report_markdown": "## Summary\nDone.",
+        "lessons": [{"text": "Price an external deck separately.", "scope": "practice"}],
+        "seen_again": [{"id": "aaaaaaaa", "evidence": "The SOW was argued after delivery."},
+                       "not a mapping"]})
+    out = C.run_close(_store(), code="ibx-5192", project_id="p1", tenant_root=tmp_path,
+                      llm=llm, today=date(2026, 11, 16))
+    prompt = prompts[0]
+    assert "Lessons: 0–3" in prompt and "0–8" not in prompt
+    assert "Zero is the usual answer" in prompt                      # the bar
+    assert "- [aaaaaaaa] Resolve scope while the work is in flight." in prompt
+    assert "seen_again" in prompt
+    _items, kw = queued[0]
+    assert kw["limit"] == C.MAX_LESSONS_PER_CLOSE == 3
+    assert noted == [("aaaaaaaa", {"project_code": "ibx-5192",
+                                   "evidence": "The SOW was argued after delivery.",
+                                   "today": "2026-11-16"})]
+    assert out["steps"]["lessons"]["seen_again"] == 1
+
+
+def test_a_project_with_nothing_on_record_teaches_nothing(tmp_path, monkeypatch):
+    """The first closes ran on empty projects and drafted 32 lessons about
+    the record being empty. The report is still written; no lesson is."""
+    from cp_engine import wrap_report
+
+    _work, queued = _patch_engine(monkeypatch, tmp_path)
+    bundle = SimpleNamespace(name="Stub", account_manager="Drew Fiero")
+    empty = {"effort": {"total_hours": 0, "verified": True}, "meetings": {"count": 0},
+             "deliverables": []}
+    monkeypatch.setattr(wrap_report, "build_wrap", lambda *a, **k: (bundle, empty))
+    llm = lambda p: json.dumps({  # noqa: E731
+        "report_markdown": "## Summary\nNothing on record.",
+        "lessons": [{"text": "Require a deliverable link before archiving.", "scope": "practice"}]})
+    out = C.run_close(_store(), code="ibx-5192", project_id="p1", tenant_root=tmp_path,
+                      llm=llm, today=date(2026, 11, 16))
+    assert out["steps"]["report"]["ok"] and not queued and out["lesson_ids"] == []
+    assert out["steps"]["lessons"]["skipped"] == ["nothing on record to learn from"]
+
+
+def test_unknown_is_not_empty():
+    """An unread or missing figure never counts as an empty record."""
+    assert C.nothing_on_record({"effort": {"total_hours": 0, "verified": True},
+                                "meetings": {"count": 0}, "deliverables": []})
+    assert not C.nothing_on_record({"effort": {}})
+    assert not C.nothing_on_record({"effort": {"total_hours": 0, "verified": False},
+                                    "meetings": {"count": 0}, "deliverables": []})
+    assert not C.nothing_on_record({"effort": {"total_hours": 0, "verified": True},
+                                    "meetings": {"count": 2}, "deliverables": []})
+    assert not C.nothing_on_record({"effort": {"total_hours": 12.5, "verified": True},
+                                    "meetings": {"count": 0}, "deliverables": []})
+
+
 def test_a_failed_model_call_still_requests_reviews(tmp_path, monkeypatch):
     _patch_engine(monkeypatch, tmp_path)
 

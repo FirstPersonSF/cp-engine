@@ -55,6 +55,9 @@ blanks. Say plainly when a fact is missing.
 # Exec Summary at close
 {exec_summary}
 
+# Lessons we already hold
+{known}
+
 # Write
 
 Return ONE JSON object, nothing else:
@@ -67,6 +70,10 @@ Return ONE JSON object, nothing else:
       "person": "<name, only for scope person>",
       "moments": ["<from: {moments}>"],
       "evidence": "<the fact in this report that teaches it>"}}
+  ],
+  "seen_again": [
+    {{"id": "<the bracketed id of a lesson we already hold>",
+      "evidence": "<what happened on this project that shows it again>"}}
   ]
 }}
 
@@ -78,10 +85,33 @@ what we would price differently); Not assessed (the human-entry fields, as
 blanks to fill). Be specific and adversarial: a report that only records
 wins is worth nothing.
 
-Lessons: 0–8, only ones the facts support. Each is something to do
-differently next time, not a summary. Person and client lessons are
+Lessons: 0–3, only ones the facts support. Person and client lessons are
 internal and never reach the client.
+
+{bar}
+
+If this project is another case of a lesson we already hold, do NOT draft
+it again: name it under `seen_again` with what happened here. A lesson that
+turns up on several projects is worth more than several lessons.
 """
+
+
+#: One close may queue this many new lessons. The first fifteen closes
+#: queued up to eight each and the owner kept about one in five.
+MAX_LESSONS_PER_CLOSE = 3
+
+
+def nothing_on_record(payload: dict) -> bool:
+    """True only when the facts SAY the project has no hours, no meetings and
+    no deliverables. A missing or unread figure is unknown, not empty."""
+    effort = payload.get("effort") or {}
+    meetings = payload.get("meetings") or {}
+    if "total_hours" not in effort or "count" not in meetings or "deliverables" not in payload:
+        return False
+    if effort.get("verified") is False:
+        return False
+    return (not effort.get("total_hours") and not meetings.get("count")
+            and not payload.get("deliverables"))
 
 
 def _json_block(text: str) -> dict:
@@ -201,10 +231,16 @@ def run_close(
             if llm is None:
                 raise RuntimeError("no model configured")
             _types, moments = L.known_lists(client)
+            try:
+                known = L.known_lessons(client, project_id=project_id)
+            except Exception:  # noqa: BLE001 — a failed read costs the list, not the report
+                known = []
             raw = llm(_PROMPT.format(
                 facts=json.dumps(payload, default=str, indent=1)[:40000],
                 exec_summary=_exec_summary(workdir) or "(none)",
                 moments=", ".join(moments),
+                known=L.known_lessons_block(known),
+                bar=L.LESSON_BAR,
             ))
             draft = _json_block(raw)
             path = write_report(workdir, code, bundle.name or code, bundle.account_manager,
@@ -214,13 +250,26 @@ def run_close(
             if publish is not None:
                 pub = publish(path)
                 steps["publish"] = {"ok": not pub.get("error"), **pub}
-            queued = L.record_candidates(
-                client, list(draft.get("lessons") or []), project_code=code,
-                project_id=project_id, source_kind="wrap_report",
-                source_ref=f"close:{project_id}:{today.isoformat()}", embed=embed)
-            out["lesson_ids"] = queued["queued"]
-            steps["lessons"] = {"ok": True, "queued": len(queued["queued"]),
-                                "skipped": queued["skipped"]}
+            if nothing_on_record(payload):
+                # A project with no hours, meetings or deliverables teaches
+                # only that its record is empty, which is not a lesson.
+                steps["lessons"] = {"ok": True, "queued": 0, "seen_again": 0,
+                                    "skipped": ["nothing on record to learn from"]}
+            else:
+                queued = L.record_candidates(
+                    client, list(draft.get("lessons") or []), project_code=code,
+                    project_id=project_id, source_kind="wrap_report",
+                    source_ref=f"close:{project_id}:{today.isoformat()}", embed=embed,
+                    limit=MAX_LESSONS_PER_CLOSE)
+                again = 0
+                for item in draft.get("seen_again") or []:
+                    if isinstance(item, dict) and L.note_seen_again(
+                            client, known, str(item.get("id") or ""), project_code=code,
+                            evidence=str(item.get("evidence") or ""), today=today.isoformat()):
+                        again += 1
+                out["lesson_ids"] = queued["queued"]
+                steps["lessons"] = {"ok": True, "queued": len(queued["queued"]),
+                                    "seen_again": again, "skipped": queued["skipped"]}
         except Exception as exc:  # noqa: BLE001
             steps.setdefault("report", {"ok": False, "error": str(exc)[:300], "warnings": notes})
             steps.setdefault("lessons", {"ok": False, "error": "no report to learn from"})

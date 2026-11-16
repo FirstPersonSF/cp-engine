@@ -841,7 +841,12 @@ lessons:
    Moments, when one fits: kickoff, estimating, process-order,
    booking-resources, hiring-freelancers, contractor-hours, scope-change,
    travel, shoot, client-review-round, legal-review, workload,
-   final-delivery, invoicing. Most meetings have none: omit `lessons`.
+   final-delivery, invoicing. A lesson must be something to carry to the
+   NEXT project: it could recur, it says what to do and when, a competent
+   person would not do it anyway, and it names no date, project code,
+   slide or file. A fact about someone's role, a task for this project, a
+   name spelling and a wish for a better tool are NOT lessons.
+   Most meetings have none: omit `lessons`.
    Person and client lessons are internal and never reach the client.
 
 # Output format
@@ -1024,7 +1029,12 @@ lessons:
    Moments, when one fits: kickoff, estimating, process-order,
    booking-resources, hiring-freelancers, contractor-hours, scope-change,
    travel, shoot, client-review-round, legal-review, workload,
-   final-delivery, invoicing. Most meetings have none: omit `lessons`.
+   final-delivery, invoicing. A lesson must be something to carry to the
+   NEXT project: it could recur, it says what to do and when, a competent
+   person would not do it anyway, and it names no date, project code,
+   slide or file. A fact about someone's role, a task for this project, a
+   name spelling and a wish for a better tool are NOT lessons.
+   Most meetings have none: omit `lessons`.
    Person and client lessons are internal and never reach the client.
 
 # Output format

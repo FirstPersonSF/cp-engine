@@ -4,6 +4,18 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.145.2 — 2026-11-16
+
+**Drafted lessons have a bar to clear.** No new verbs.
+
+The owner reviewed the first 175 drafted lessons and kept 37. The rest were facts about a person restated as instructions, dated tasks from one project, generic advice, or complaints about an empty record.
+
+- **Every drafting prompt carries the bar**, with examples the owner kept and rejected: a lesson recurs, says what to do and when, is not something a competent person does anyway, and names no date, project code, slide or file.
+- **A drafted lesson that names a date, a project code, a slide or a file version is skipped**, with the reason. A lesson a person logs with `remember this` is not checked.
+- **A close may queue three new lessons, down from eight**, and none when the project has no hours, no meetings and no deliverables. A figure that could not be read counts as unknown, not empty.
+- **A close sees the lessons we already hold.** When the project is another case of one, it adds a line to that lesson's evidence and drafts nothing new.
+- **Person cards are no longer turned into lessons.** `backfill_learning.py --dossiers` stops with a message.
+
 ## v0.145.1 — 2026-11-16
 
 **A starred brief no longer shows as floating.** No new verbs.
