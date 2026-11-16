@@ -4,6 +4,12 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.145.3 — 2026-11-16
+
+**A planning scope no longer loses a workstream when it is renamed.** No new verbs.
+
+The `storyos-mc` sprint-planning scope named its two workstreams by full code (`cnc-9004-storyos`, `1pi-9005-mission-control`). A full code is built from the workstream's name, so renaming one would have dropped it from that meeting's ingest, and an unmatched code was skipped without a warning. The scope now names them by company and number (`cnc-9004`, `1pi-9005`), which a rename does not change. Its label reads "Canonic Platform + Mission Control"; the scope's key stays `storyos-mc`, since meetings are already tagged with it.
+
 ## v0.145.2 — 2026-11-16
 
 **Drafted lessons have a bar to clear.** No new verbs.
