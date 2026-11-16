@@ -44,7 +44,7 @@ from typing import Any
 
 from cp_engine.clock import tenant_now, tenant_timezone
 from cp_engine.mc2_db import Tables
-from cp_engine.spine_lint import is_deliverable
+from cp_engine.spine_lint import is_deliverable, is_standing_brief
 
 log = logging.getLogger(__name__)
 
@@ -468,7 +468,8 @@ def check_unbound(client, *, fix: bool = False, today: str | None = None) -> Che
               if r.get("layer") == "Stakeholders"}
     floating_all = {(r.get("project_id"), r.get("est_item_id")) for r in rows
                     if r.get("important") and not (r.get("serves") or [])
-                    and not is_deliverable(r.get("layer"))}
+                    and not is_deliverable(r.get("layer"))
+                    and not is_standing_brief(r.get("est_item_id"))}
     # A canon member is bound to its workstream's standing brief, so it is
     # never floating. A failed read keeps it in the warning (over-report).
     try:

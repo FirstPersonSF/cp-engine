@@ -671,3 +671,17 @@ def test_unbound_nothing_floating_renders_one_line():
     c = dh.check_unbound(_Client({"spine_substance": rows}))
     assert c.ok and c.items == [] and "\n" not in c.render()
     assert "floating_elements" not in c.detail
+
+
+def test_unbound_standing_brief_is_not_floating():
+    """A starred standing brief is the anchor others bind to, not a card
+    waiting for a home (2026-11-16)."""
+    rows = [{"project_id": "p", "est_item_id": "_authored/inputs-briefing",
+             "important": True, "serves": [], "layer": "Brief"},
+            {"project_id": "p", "est_item_id": "_authored/partner-brief",
+             "important": True, "serves": [], "layer": "Brief"}]
+    c = dh.check_unbound(_Client({"spine_substance": rows}))
+    assert c.detail["floating"] == 1
+    assert c.detail["floating_elements"] == [
+        {"project": "p", "est_item_id": "_authored/partner-brief"}]
+    assert dh.check_unbound(_Client({"spine_substance": rows[:1]})).ok

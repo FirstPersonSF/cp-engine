@@ -746,3 +746,14 @@ def test_deliverable_is_not_floating():
                binding="unbound", serves=())
     assert lint_spine_rows([row]) == []
     assert lint_spine_rows([{**row, "layer": "Synthesis"}])  # still floats
+
+
+def test_the_standing_brief_is_not_floating():
+    """The brief is what canon binds to: starred and serving nothing is its
+    normal state (2026-11-16)."""
+    row = _row("_authored/inputs-briefing", layer="Brief", important=True,
+               binding="unbound", serves=())
+    assert lint_spine_rows([row]) == []
+    # Another starred Brief-layer card with no home still floats: the
+    # exemption is the standing brief's id, not the layer.
+    assert lint_spine_rows([{**row, "est_item_id": "_authored/partner-brief"}])
