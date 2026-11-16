@@ -370,6 +370,27 @@ def test_list_active_for_scope_explicit_codes(tmp_path: Path, monkeypatch) -> No
     assert [p.code for p in out] == ["cnc-9004-storyos", "1pi-9005-mission-control"]
 
 
+def test_explicit_scope_survives_a_workstream_rename(tmp_path: Path, monkeypatch) -> None:
+    """The slug half of a code follows the workstream's name. Renaming
+    StoryOS to Canonic Platform must not drop it from `storyos-mc`:
+    before this the scope listed full codes, and an unmatched one was
+    skipped silently."""
+    renamed = [
+        make_project(
+            "cnc-9004-canonic-platform", "Canonic Platform", has_agreement=False,
+            company_kind="self-canonic", company_code="CNC",
+            company_name="Canonic", status="Open",
+        )
+        if p.code == "cnc-9004-storyos" else p
+        for p in _population()
+    ]
+    _stub_backend(monkeypatch, renamed)
+    out = list_active_for_scope(make_tenant(tmp_path), "storyos-mc")
+    assert [p.code for p in out] == [
+        "cnc-9004-canonic-platform", "1pi-9005-mission-control",
+    ]
+
+
 def test_list_active_for_scope_unknown_raises(tmp_path: Path, monkeypatch) -> None:
     _stub_backend(monkeypatch, _population())
     with pytest.raises(AccountPlanError, match="unknown sprint-planning scope"):

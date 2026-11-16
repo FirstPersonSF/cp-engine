@@ -587,13 +587,18 @@ _SCOPE_TO_KIND = {
 
 # Phase D.7: explicit-list scopes that don't map to a single company.kind.
 # `storyos-mc` is Drew + Tony's standing weekly Canonic + Mission Control
-# product/engineering sync — pairs StoryOS with Mission Control. If you add
-# a new explicit-list scope later, list its target workstream codes here;
+# product/engineering sync — pairs the Canonic product workstream (9004,
+# "StoryOS" until 2026-11-16) with Mission Control. If you add a new
+# explicit-list scope later, list its target workstreams here;
 # list_active_for_scope falls through to a code-allowlist lookup when the
 # scope isn't in _SCOPE_TO_KIND.
+#
+# SHORT codes (`<company>-<number>`), never the full slug: the slug is
+# derived from the workstream's NAME, so a full code here stops matching
+# the day someone renames the workstream — and an unmatched code is
+# skipped without a word. The number does not change on a rename.
 _SCOPE_TO_EXPLICIT_CODES = {
-    # The merged workstream codes (mc-2 mig 192, cp-engine #301).
-    "storyos-mc": ("cnc-9004-storyos", "1pi-9005-mission-control"),
+    "storyos-mc": ("cnc-9004", "1pi-9005"),
 }
 
 # Valid scope names: the kind-based ones plus the explicit-code ones.
@@ -603,7 +608,7 @@ _SCOPE_LABEL = {
     "1p": "1P (all active client engagements)",
     "fpsf": "First Person internal (all active FPSF initiatives)",
     "canonic": "Canonic internal (all active Canonic initiatives)",
-    "storyos-mc": "StoryOS + Mission Control (Drew + Tony product/engineering sync)",
+    "storyos-mc": "Canonic Platform + Mission Control (Drew + Tony product/engineering sync)",
 }
 
 
@@ -618,7 +623,7 @@ def list_active_for_scope(
          - 'fpsf'     → all active initiatives under self-fpsf companies
          - 'canonic'  → all active initiatives under self-canonic companies
       2. Explicit-code (mapped via _SCOPE_TO_EXPLICIT_CODES):
-         - 'storyos-mc' → fixed pair: StoryOS + Mission Control
+         - 'storyos-mc' → fixed pair: Canonic Platform + Mission Control
 
     Sister function to `list_active_subtree` but the discriminator is the
     company kind OR an explicit code list, not a parent node. Used by the
@@ -643,10 +648,14 @@ def list_active_for_scope(
     # name reads).
     if scope in _SCOPE_TO_EXPLICIT_CODES:
         target_codes = _SCOPE_TO_EXPLICIT_CODES[scope]
-        by_code = {p.code: p for p in all_projects}
+        by_short: dict[str, ProjectState] = {}
+        for p in all_projects:
+            parsed = parse_code(p.code)
+            if parsed is not None:
+                by_short.setdefault(parsed.short, p)
         out: list[ProjectState] = []
         for code in target_codes:
-            p = by_code.get(code)
+            p = by_short.get(code)
             if p is None:
                 # Skip silently — a project listed in an explicit scope
                 # that's no longer in MC-2 shouldn't block the rest.
