@@ -4,6 +4,12 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.145.4 — 2026-11-17
+
+**Moving a bullet to the right workstream no longer blocks a push.** No new verbs.
+
+`cxp merge-check` (and so `cxp session commit`) compared each file only with itself. When a misfiled bullet was moved by hand from one sprint file to another, hash and all, it was reported as lost and the push was refused. A hash missing from its file is now treated as moved when it sits, outside an engine-managed region, in another file that did not hold it on the reference commit. Two cases are still reported as lost: deleting one of two copies that both existed before, and a move into an engine-managed region, which sync regenerates. The extra scan runs only when something is missing.
+
 ## v0.145.3 — 2026-11-16
 
 **A planning scope no longer loses a workstream when it is renamed.** No new verbs.
