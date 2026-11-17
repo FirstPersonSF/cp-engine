@@ -145,10 +145,21 @@ def check_merge(
     the content survived. A file deleted locally but present on `ref` reports
     all of its hashes as lost, which is the correct reading — deleting a file
     full of ingest bullets is exactly the accident this catches.
+
+    A hash that left its file is also present if it was MOVED: it now sits,
+    outside any managed region, in another working-tree file that did not
+    carry it on `ref`. Moving a misfiled bullet to the workstream it belongs
+    to is a deliberate edit, and reading it as loss blocked a push
+    (2026-11-17, sap-5171 → sap-5198). A copy that was already in that other
+    file on `ref` does not count: deleting one of two copies still loses
+    content from that file. Nor does a copy inside a managed region, which
+    sync regenerates.
     """
     listing = _git(["ls-tree", "-r", "--name-only", ref], repo_root)
     lost: list[LostContent] = []
     checked = 0
+    # On `ref`, which checked files carried each hash outside a region.
+    ref_files_by_hash: dict[str, set[str]] = {}
 
     for rel in listing.splitlines():
         rel = rel.strip()
@@ -165,6 +176,8 @@ def check_merge(
             continue
 
         checked += 1
+        for h in ref_hashes:
+            ref_files_by_hash.setdefault(h, set()).add(rel)
         local = repo_root / rel
         local_body = local.read_text(encoding="utf-8") if local.is_file() else ""
         local_hashes = set(_HASH_RE.findall(local_body))
@@ -179,7 +192,43 @@ def check_merge(
                     )
                 )
 
+    if lost:
+        moved_to = _new_homes(
+            repo_root, {i.hash for i in lost}, ref_files_by_hash
+        )
+        lost = [i for i in lost if not moved_to.get(i.hash)]
+
     return lost, checked
+
+
+def _new_homes(
+    repo_root: Path,
+    wanted: set[str],
+    ref_files_by_hash: dict[str, set[str]],
+) -> dict[str, set[str]]:
+    """For each wanted hash, the working-tree files that carry it OUTSIDE a
+    managed region and did NOT carry it on the reference commit — the files
+    it moved to. Read only when something is missing, so a clean merge costs
+    nothing extra. Untracked files count: a move into a new file is a move."""
+    listing = _git(
+        ["ls-files", "--cached", "--others", "--exclude-standard"], repo_root
+    )
+    homes: dict[str, set[str]] = {}
+    for rel in sorted(set(listing.splitlines())):
+        rel = rel.strip()
+        if not rel.endswith(_CHECKED_SUFFIXES):
+            continue
+        path = repo_root / rel
+        if not path.is_file():
+            continue
+        try:
+            body = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for h in _hashes_with_context(body).keys() & wanted:
+            if rel not in ref_files_by_hash.get(h, set()):
+                homes.setdefault(h, set()).add(rel)
+    return homes
 
 
 def commits_behind_upstream(repo_root: Path) -> tuple[str, int] | None:
