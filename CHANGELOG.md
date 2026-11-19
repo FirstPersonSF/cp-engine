@@ -4,6 +4,15 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.146.0 — 2026-11-19
+
+**Scope Studio from a chat: draft and read estimates through cp-hosted.** Two new verbs (hosted 83 → 85).
+
+- `build_estimate(project_code, brief, estimate_id?, new_estimate?, estimate_name?)` has Mission Control's Scope Studio draft an estimate on the server from a brief (a plain description, or a full outline whose hours are used exactly). It starts the job's first estimate, a new one with `new_estimate=true`, or builds on a pending one; a job that already has estimates and no say in which is refused rather than guessed at. It returns at once.
+- `get_estimate(project_code, estimate_id?)` lists a job's estimates (status, total, schedule, any build in progress, a link) or returns one in full: each phase's activities with every role's hours, rate and subtotal, deliverables, and `unpriced` on any activity with no price. Poll it to follow a build. On `/mcp/read`.
+
+Both call Mission Control under the caller's own sign-in (needs mc-2 `GET /api/estimates/for-job/{id}`, `POST /api/estimates` and `POST /api/scope-studio/sessions/by-estimate/{id}`, mc-2 #498). Nothing is approved or sent to a client. Asked for by Tony, 2026-11-19, so a partner working in Claude Desktop can use Scope Studio.
+
 ## v0.145.4 — 2026-11-17
 
 **Moving a bullet to the right workstream no longer blocks a push.** No new verbs.

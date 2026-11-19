@@ -551,6 +551,27 @@ A work item, deliverable or phase is named by its name, a distinct part of
 it, its id, or `"<phase> / <name>"`. A name that fits more than one is
 refused with the candidates; nothing is guessed.
 
+## Estimates and Scope Studio
+
+Draft and read a job's estimates from a chat, through Mission Control under
+your own sign-in. Nothing is approved or sent to a client: an estimate stays
+pending until a person approves it in Mission Control. Team members only.
+
+- `get_estimate(project_code, estimate_id?)` — with no `estimate_id`, every
+  estimate on the job: status (pending, approved, abandoned), total, whether
+  it is on the job schedule, any Scope Studio build in progress, and a link
+  to open it. With `estimate_id`, that estimate in full: description,
+  included / excluded, each phase's activities with every role's hours, rate
+  and subtotal, deliverables. An activity with no price is marked `unpriced`.
+- `build_estimate(project_code, brief, estimate_id?, new_estimate?,
+  estimate_name?)` — Scope Studio drafts the estimate on the server from
+  `brief` (a plain description or a full outline with hours; given hours
+  are used exactly). `estimate_id` builds on an existing pending estimate;
+  `new_estimate=true` starts another. With neither, a job with no estimates
+  gets its first and a job with some is refused rather than guessed at.
+  Returns at once; poll `get_estimate(project_code, estimate_id)` until
+  `build.state` is no longer `running`, then read the estimate back.
+
 ## The queues the retired tabs held
 
 Mission Control's Inputs, Suggestions and Archive tabs were retired: filing
