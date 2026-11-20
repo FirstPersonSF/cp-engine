@@ -616,9 +616,9 @@ mcp_server = MCPServer(
         "sequence for a session like this one, which has no `cxp` and no file "
         "editing. Read `master-cp.md` for the project index; get each "
         "project's path from there rather than constructing it.\n\n"
-        "MOST TOOLS READ; 48 OF THEM WRITE. The writers are the `create_*`, `set_*`, "
+        "MOST TOOLS READ; 49 OF THEM WRITE. The writers are the `create_*`, `set_*`, "
         "`add_*`, `remove_*`, `promote_*`, `retire_*`, `resolve_*`, "
-        "`route_*`, `rotate_*`, `restore_*`, `seal_to_*` and `capture_*` verbs, plus "
+        "`route_*`, `rotate_*`, `restore_*`, `seal_to_*`, `build_*` and `capture_*` verbs, plus "
         "`log_improvement`, `log_lesson`, `review_freelancer`, `push_to_dropbox`, `push_to_drive` and `ingest_url` — a name that "
         "sounds like a mutation is one (a read-only endpoint, `/mcp/read`, "
         "carries none of them). Every tenant write is delegated upstream under "
@@ -11845,6 +11845,7 @@ READ_ONLY_TOOLS: dict[str, str] = {
     "list_spine_relations": "SELECT spine_relations",
     "list_unrouted_emails": "GET mc-2 unrouted emails",
     "list_inbox_cards": "GET mc-2 to-frame cards",
+    "get_estimate": "GET mc-2 job estimates and one estimate's document source",
     "pull_spine_element": "SELECT spine_substance",
     "list_commitments": "SELECT commitments",
     "list_services": "SELECT Service Library",
@@ -11881,6 +11882,7 @@ READ_ONLY_TOOLS: dict[str, str] = {
 # name -> what it writes (the reason it is NOT on `/mcp/read`).
 MAIN_ONLY_TOOLS: dict[str, str] = {
     "route_unrouted_email": "POST/PATCH mc-2 unrouted email (route runs the ingest)",
+    "build_estimate": "POST mc-2 estimate create + Scope Studio session + autonomous start",
     "resolve_inbox_card": "POST mc-2 inbox card (frame-promote or dismiss)",
     "resolve_spine_proposals": "POST mc-2 relations confirm/dismiss",
     "restore_spine_element": "PATCH mc-2 substance (un-archive)",

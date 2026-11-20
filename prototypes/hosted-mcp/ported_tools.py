@@ -4153,3 +4153,223 @@ def set_effort(
                               "outcome": "updated", "changed": sorted(patch)}, 1)
     return {"project_code": project_code, "effort": effort, "created": False,
             "changed": sorted(patch), "note": hint, "caller": _map_caller()}
+
+
+# ── Estimates and Scope Studio from a chat (Tony, 2026-11-19) ─────────
+#
+# Scope Studio built estimates only inside the Mission Control web app. A
+# partner who works in Claude Desktop could read an estimate's phases off
+# the Spine Map but could not start one or have one drafted. Tony,
+# 2026-11-19: Brandon "can add a connector ... and basically use Scope
+# Studio from inside a Claude session".
+#
+# Two verbs, and both go through mc-2 under the caller's own sign-in: mc-2
+# owns estimates, pricing and the Scope Studio agent, and a second copy of
+# any of them here is how two systems come to disagree about a price.
+# `build_estimate` runs Scope Studio's AUTONOMOUS mode, which applies its
+# own changes on the server; the click-to-accept mode lives in the browser.
+
+MC2_APP_BASE = "https://mc2.1p.is"
+
+
+def _estimate_link(project_id: str, estimate_id: str) -> str:
+    return f"{MC2_APP_BASE}/jobs/{project_id}/scope?estimate={estimate_id}"
+
+
+def _job_estimates(project_id: str) -> dict[str, Any]:
+    return _srv.call_mc2_get(f"/api/estimates/for-job/{quote(project_id, safe='')}",
+                             "the job's estimates")
+
+
+def _estimate_row(project_id: str, row: dict[str, Any]) -> dict[str, Any]:
+    build = row.get("build") or None
+    return {
+        "estimate_id": row.get("id"),
+        "name": row.get("name"),
+        "status": row.get("status"),
+        "on_schedule": bool(row.get("on_schedule")),
+        "total": row.get("total"),
+        "build": build and {k: build.get(k) for k in ("state", "turns_used", "max_turns", "error")},
+        "open_in_mission_control": _estimate_link(project_id, str(row.get("id"))),
+    }
+
+
+def _estimate_content(source: dict[str, Any]) -> dict[str, Any]:
+    """The document source, cut to what a reader needs: who does what, for how long, for how much."""
+    phases = []
+    for p in sorted(source.get("phases") or [], key=lambda x: x.get("position") or 0):
+        activities, phase_total = [], 0.0
+        for a in p.get("activities") or []:
+            roles = [
+                {"role": line.get("display_name") or line.get("service_name"),
+                 "hours": line.get("qty"), "rate": line.get("rate"),
+                 "subtotal": round(float(line.get("qty") or 0) * float(line.get("rate") or 0), 2),
+                 "rate_unresolved": bool(line.get("rateUnresolved"))}
+                for line in a.get("serviceLines") or []
+            ]
+            costs = [
+                {"name": c.get("name"), "quantity": c.get("quantity"),
+                 "subtotal": round(float(c.get("quantity") or 0) * float(c.get("sell_unit_cost") or 0), 2)}
+                for c in a.get("hardCosts") or []
+            ]
+            subtotal = round(sum(r["subtotal"] for r in roles) + sum(c["subtotal"] for c in costs), 2)
+            phase_total += subtotal
+            activities.append({"name": a.get("name"), "description": a.get("description"),
+                               "roles": roles, "hard_costs": costs, "subtotal": subtotal,
+                               "unpriced": not roles and not costs})
+        phases.append({"name": p.get("name"), "weeks": p.get("duration_weeks"),
+                       "overview": p.get("overview"), "activities": activities,
+                       "deliverables": [d.get("name") for d in p.get("deliverables") or []],
+                       "subtotal": round(phase_total, 2)})
+    return {
+        "description": source.get("description"),
+        "included": source.get("scopeIncluded") or [],
+        "excluded": source.get("scopeExcluded") or [],
+        "limits": source.get("scopeLimits") or [],
+        "phases": phases,
+        "adjustments": source.get("estimateLines") or [],
+    }
+
+
+@hosted_tool
+def get_estimate(project_code: str, estimate_id: str = "") -> dict[str, Any]:
+    """A job's estimates, or one estimate in full.
+
+    Without `estimate_id`: every estimate on the job, oldest first, with its
+    status (pending, approved or abandoned), total, whether it is on the job
+    schedule, any Scope Studio build in progress, and a link to open it in
+    Mission Control.
+
+    With `estimate_id`: that estimate's description, what is included and
+    excluded, and each phase's activities with every role's hours, rate and
+    subtotal, plus deliverables and the total. An activity with no roles and
+    no costs is marked `unpriced`. Use it to follow a `build_estimate` run:
+    `build.state` is `running` until the build finishes. Team members only.
+    """
+    tool = "get_estimate"
+    refused = _team_gate(tool, project_code)
+    if refused:
+        return refused
+    client = _srv.user_client()
+    found = _resolve(client, project_code)
+    if found is None:
+        return _not_found(client, tool, project_code)
+    pid, _cid = found
+    listing = _job_estimates(pid)
+    if not listing.get("ok"):
+        return _queue_error(client, tool, project_code, listing)
+    rows = [_estimate_row(pid, r) for r in (listing.get("data") or {}).get("estimates") or []]
+    eid = (estimate_id or "").strip()
+    if not eid:
+        _srv.audit(client, tool, {"project_code": project_code}, len(rows))
+        out: dict[str, Any] = {"project_code": project_code, "count": len(rows), "estimates": rows}
+        if not rows:
+            out["note"] = "No estimates yet. `build_estimate` starts one and has Scope Studio draft it."
+        return out
+    row = next((r for r in rows if r["estimate_id"] == eid), None)
+    if row is None:
+        return _queue_error(client, tool, project_code,
+                            {"reason": f"estimate {eid!r} is not on {project_code}; "
+                                       "call get_estimate without estimate_id to list them"})
+    source = _srv.call_mc2_get(f"/api/documents/by-estimate/{quote(eid, safe='')}/preview",
+                               "the estimate")
+    if not source.get("ok"):
+        return _queue_error(client, tool, project_code, source)
+    _srv.audit(client, tool, {"project_code": project_code, "estimate_id": eid}, 1)
+    return {"project_code": project_code, **row, **_estimate_content(source.get("data") or {})}
+
+
+@hosted_tool
+def build_estimate(
+    project_code: str,
+    brief: str,
+    estimate_id: str = "",
+    new_estimate: bool = False,
+    estimate_name: str = "",
+) -> dict[str, Any]:
+    """Have Scope Studio draft an estimate from a brief, on the server.
+
+    `brief` is what the engagement is, in plain words or as a full outline
+    (phases, activities, each role's hours, deliverables, budget). The more
+    exact the brief, the more exact the estimate: given hours, Scope Studio
+    uses them; given only a budget, it prices from the activity library.
+
+    Which estimate: pass `estimate_id` to build on an existing one (it adds
+    to what is there), or `new_estimate=true` to start a new one (optionally
+    named `estimate_name`). With neither, a job with no estimates gets its
+    first; a job that already has one is refused rather than guessed at.
+
+    The build runs in Mission Control and takes a few minutes. This returns
+    at once; follow it with `get_estimate(project_code, estimate_id)` until
+    `build.state` is no longer `running`. Nothing is approved or sent to a
+    client: the estimate stays pending until a person approves it in
+    Mission Control. Team members only.
+    """
+    tool = "build_estimate"
+    refused = _team_gate(tool, project_code)
+    if refused:
+        return refused
+    client = _srv.user_client()
+    goal = (brief or "").strip()
+    if not goal:
+        return _queue_error(client, tool, project_code, {"reason": "say what to build in `brief`"})
+    eid = (estimate_id or "").strip()
+    if eid and new_estimate:
+        return _queue_error(client, tool, project_code,
+                            {"reason": "pass estimate_id to build on one, or new_estimate=true, not both"})
+    found = _resolve(client, project_code)
+    if found is None:
+        return _not_found(client, tool, project_code)
+    pid, _cid = found
+    listing = _job_estimates(pid)
+    if not listing.get("ok"):
+        return _queue_error(client, tool, project_code, listing)
+    rows = (listing.get("data") or {}).get("estimates") or []
+    live = [r for r in rows if r.get("status") != "abandoned"]
+    if eid:
+        row = next((r for r in rows if r.get("id") == eid), None)
+        if row is None:
+            return _queue_error(client, tool, project_code,
+                                {"reason": f"estimate {eid!r} is not on {project_code}"})
+        if row.get("status") != "pending":
+            return _queue_error(client, tool, project_code,
+                                {"reason": f"{row.get('name')} is {row.get('status')}; "
+                                           "Scope Studio drafts only pending estimates"})
+        if (row.get("build") or {}).get("state") == "running":
+            return _queue_error(client, tool, project_code,
+                                {"reason": f"{row.get('name')} already has a build running; "
+                                           "follow it with get_estimate"})
+    elif new_estimate or not live:
+        created = _srv.call_mc2_send("POST", "/api/estimates",
+                                     {"job_id": pid, "name": (estimate_name or "").strip() or None},
+                                     "creating the estimate")
+        if not created.get("ok"):
+            return _queue_error(client, tool, project_code, created)
+        eid = str(((created.get("data") or {}).get("estimate") or {}).get("id") or "")
+        if not eid:
+            return _queue_error(client, tool, project_code,
+                                {"reason": "mc-2 created no estimate; nothing was built"})
+    else:
+        names = ", ".join(f"{r.get('name')} ({r.get('id')})" for r in live)
+        return _queue_error(client, tool, project_code, {
+            "reason": f"{project_code} already has estimates: {names}. Pass estimate_id to build "
+                      "on one, or new_estimate=true to start another."})
+    session = _srv.call_mc2_send("POST", f"/api/scope-studio/sessions/by-estimate/{quote(eid, safe='')}",
+                                 None, "opening Scope Studio")
+    if not session.get("ok"):
+        return _queue_error(client, tool, project_code, session)
+    sid = str((session.get("data") or {}).get("id") or "")
+    started = _srv.call_mc2_send("POST", f"/api/scope-studio/sessions/{quote(sid, safe='')}/autonomous/start",
+                                 {"goal": goal}, "starting the build")
+    if not started.get("ok"):
+        return _queue_error(client, tool, project_code, started)
+    _srv.audit(client, tool, {"project_code": project_code, "estimate_id": eid}, 1)
+    return {
+        "project_code": project_code,
+        "estimate_id": eid,
+        "build": {"state": (started.get("data") or {}).get("state") or "running"},
+        "open_in_mission_control": _estimate_link(pid, eid),
+        "next": "Call get_estimate(project_code, estimate_id) every minute or two until build.state "
+                "is no longer 'running', then read the estimate back to the user.",
+        "caller": _map_caller(),
+    }
